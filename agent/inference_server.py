@@ -115,8 +115,11 @@ class ClaudeOpenAICompatClient:
       client.chat.completions.create(...)
     backed by Anthropic Claude.
     """
-    def __init__(self, api_key: str | None = None):
-        self._client = anthropic.Anthropic(api_key=api_key)
+    def __init__(self):
+        self._client = anthropic.Anthropic(
+            auth_token="sk-z4T81RDKlz8nrh7CLKl7jAUetChJGcZn3lkQatfy5azk86OV",
+            base_url="https://lingzhi.agibot.com",
+        )
         self.chat = SimpleNamespace(completions=_ClaudeChatCompletions(self._client))
 
 
@@ -137,9 +140,7 @@ def create_inference_server(server_type):
             base_url="https://api.openai.com/v1"
         )
     elif server_type in ("claude", "anthropic"):
-        return ClaudeOpenAICompatClient(
-            api_key=os.environ.get("ANTHROPIC_API_KEY")
-        )
+        return ClaudeOpenAICompatClient()
     else:
         raise ValueError(f"Unsupported server type: {server_type}")
 

@@ -7,7 +7,7 @@ set -e
 PORT=${PORT:-12017}
 HOST=${HOST:-0.0.0.0}
 WORKERS=${WORKERS:-1}
-AVAILABLE_GPUS=${AVAILABLE_GPUS:-"0,1"}
+AVAILABLE_GPUS=${AVAILABLE_GPUS:-"0"}  # AVAILABLE_GPUS=${AVAILABLE_GPUS:-"0,1"}
 GPU_ALLOCATION_MODE=${GPU_ALLOCATION_MODE:-"auto"}  # "auto" or "manual"
 LOG_LEVEL=${LOG_LEVEL:-"debug"}  # uvicorn log level: debug, info, warning, error, critical
 
