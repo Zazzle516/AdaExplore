@@ -418,3 +418,11 @@ if __name__ == "__main__":
     else:
         print("Average speedup: N/A (no test problems)")
         print("Accuracy: N/A (no test problems)")
+
+
+# export LIBRARY_PATH=/usr/local/cuda/lib64/stubs:$LIBRARY_PATH
+# python agent/agent_entry.py --config config/KB-l1/config_KB-l1_AdaExplore_50.yaml
+
+# LIBRARY_PATH=/usr/local/cuda/lib64/stubs:$LIBRARY_PATH  python3 -m uvicorn online_judge.app_with_queue:app --host 0.0.0.0 --port 12017 --workers 1 --log-level debug
+
+# cat /proc/$(lsof -ti:12017)/environ | tr '\0' '\n' | grep LIBRARY_PATH
