@@ -694,6 +694,50 @@ def time_execution_with_cuda_event(
     return elapsed_times
 
 
+def _chunked_allclose_with_diff(
+    a: torch.Tensor,
+    b: torch.Tensor,
+    atol: float,
+    rtol: float,
+    chunk_elems: int = 1 << 24,
+) -> tuple[bool, float, float]:
+    """Memory-bounded `torch.allclose` that also returns max-abs-diff and
+    mean-abs-diff in a single streaming pass.
+
+    `torch.allclose` materializes ~3-5 full-shape intermediates internally
+    (`a-b`, `abs(...)`, `rtol*abs(b)`, `atol+...`, the boolean mask). For
+    multi-GB tensors this OOMs on the comparison itself — even after the
+    forward passes succeeded. This helper iterates flat slices of
+    `chunk_elems` so peak intermediate memory is bounded by chunk size,
+    not tensor size.
+    """
+    if a.shape != b.shape:
+        return False, float("nan"), float("nan")
+    a_flat = a.reshape(-1)
+    b_flat = b.reshape(-1)
+    n = a_flat.numel()
+    if n == 0:
+        return True, 0.0, 0.0
+    passed = True
+    max_diff = 0.0
+    sum_diff = 0.0
+    for i in range(0, n, chunk_elems):
+        end = min(i + chunk_elems, n)
+        ac = a_flat[i:end]
+        bc = b_flat[i:end]
+        diff = (ac - bc).abs_()
+        max_diff = max(max_diff, float(diff.max().item()))
+        sum_diff += float(diff.sum().item())
+        if passed:
+            threshold = bc.abs().mul_(rtol).add_(atol)
+            if not bool((diff <= threshold).all().item()):
+                passed = False
+            del threshold
+        del diff
+    avg_diff = sum_diff / n
+    return passed, max_diff, avg_diff
+
+
 def run_and_check_correctness(
     original_model_instance: nn.Module,
     new_model_instance: nn.Module,
@@ -767,12 +811,18 @@ def run_and_check_correctness(
                         compiled=True, correctness=False, metadata=metadata
                     )
 
-                # check output value difference
-                if not torch.allclose(
+                # Free inputs before the comparison — they're not needed once both
+                # outputs exist, and on multi-GB inputs (e.g. 4096x393216 fp32 = 6.4 GB)
+                # leaving them resident leaves no headroom for `allclose`'s intermediates.
+                inputs = None
+                torch.cuda.empty_cache()
+
+                # Chunked comparison — `torch.allclose` directly on the full tensors
+                # OOMs because it materializes 3-5 full-shape intermediates.
+                passed, max_diff, avg_diff = _chunked_allclose_with_diff(
                     output, output_new, atol=5e-02, rtol=5e-02
-                ):  # fail
-                    max_diff = torch.max(torch.abs(output - output_new)).item()
-                    avg_diff = torch.mean(torch.abs(output - output_new)).item()
+                )
+                if not passed:
                     metadata.setdefault("max_difference", []).append(f"{max_diff:.6f}")
                     metadata.setdefault("avg_difference", []).append(f"{avg_diff:.6f}")
                     metadata["correctness_issue"] = "Output mismatch"
@@ -797,6 +847,16 @@ def run_and_check_correctness(
                     compiled=True, correctness=False, metadata=metadata
                 )
                 # break
+            finally:
+                # Free intermediates each trial to avoid OOM when comparing two full tensors.
+                # `output` and `inputs` are always assigned before the try block; `output_new`
+                # may not be if model_new(*inputs) raised before assignment.
+                del output, inputs
+                try:
+                    del output_new
+                except NameError:
+                    pass
+                torch.cuda.empty_cache()
 
     if verbose:
         print(

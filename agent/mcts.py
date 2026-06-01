@@ -49,20 +49,23 @@ class MCTSNode:
     children: List['MCTSNode'] = field(default_factory=list)
     
     # MCTS statistics
-    visits: int = 0
-    total_reward: float = 0.0
-    max_reward: float = 0.0
+    # reward: float = 0.0           # A property computed from self.metrics => reward()
+    visits: int = 0                 # how many times this node has been on a backprop path (越高 => 在这个分支上继续优化的概率越低)
+    total_reward: float = 0.0       # sum of every reward backed up through this node
+    max_reward: float = 0.0         # best reward ever observed anywhere in this node's subtree
     
     # Metadata
     node_id: int = 0
     depth: int = 0
     created_by: str = "root"  # "large_step" or "small_step"
-    context_node_ids: List[int] = field(default_factory=list)  # Context nodes used when creating this node
+    context_node_ids: List[int] = field(default_factory=list)  # Context nodes used when creating this node     # Q: 这里说的 context 是什么
     prompt: str = ""  # Prompt used to generate this node
     
     # Cache for score (to avoid repeated calculation)
     _score_cache: tuple = field(default=None, repr=False)
-    
+
+    # Q: 这里的 score 是针对单个 Node 还是整个 branch
+    # Q: score 和 reward 有区别吗  区别是什么       A: 只是本次执行结果
     @property
     def score(self) -> tuple:
         """Get the score tuple (compiled, correct, speedup).
@@ -70,13 +73,15 @@ class MCTSNode:
         """
         if self._score_cache is not None:
             return self._score_cache
-        self._score_cache = calculate_score(self.metrics)
+        self._score_cache = calculate_score(self.metrics)       # (compiled, correct, speedup)
         return self._score_cache
-    
+
+    # Q: 这个 reward 和 score 的关系是什么
     @property
     def reward(self) -> float:
+        # converts the kernel's evaluation result into the value MCTS will back-propagate   kernel quality => MCTS arithmetic
         """Calculate reward from cached score for MCTS backpropagation.
-        Returns a value in [0, 1] range.
+        Returns a value in [0, 1.6] range.
         """
         compiled, correct, speedup = self.score
         
@@ -84,9 +89,9 @@ class MCTSNode:
             return REWARD_NOT_COMPILED
         if not correct:
             return REWARD_COMPILED_BUT_INCORRECT
-        
+
         # Normalize speedup to [REWARD_MIN, REWARD_MAX] range
-        speedup_clipped = max(min(speedup, SPEEDUP_MAX), SPEEDUP_MIN)
+        speedup_clipped = max(min(speedup, SPEEDUP_MAX), SPEEDUP_MIN)   # 实际的 speedup 不一定超过 SPEEDUP_MIN Q: 这里是在判断加速的效果吗
         reward_range = REWARD_MAX - REWARD_MIN
         speedup_range = SPEEDUP_MAX - SPEEDUP_MIN
         return min(REWARD_MAX, max(REWARD_MIN, REWARD_MIN + reward_range * (speedup_clipped - SPEEDUP_MIN) / speedup_range))
@@ -102,11 +107,12 @@ class MCTSNode:
         """Blend max and avg reward: alpha * max + (1 - alpha) * avg."""
         return reward_alpha * self.max_reward + (1 - reward_alpha) * self.avg_reward
 
+    # Q: ucb1 表示什么
     def ucb1(self, exploration_weight: float = 1.414, reward_alpha: float = 1.0) -> float:
         """
         Calculate UCB1 score for node selection.
         UCB1 = reward + exploration_weight * sqrt(ln(parent_visits) / visits)
-        
+
         Args:
             exploration_weight: UCB1 exploration constant
             reward_alpha: Blend coefficient, 1.0 = max_reward, 0.0 = avg_reward
@@ -232,7 +238,7 @@ class MCTSKernelOptimizer:
         self.expand_exploration_ratio = getattr(args, 'expand_exploration_ratio', 1.0)
         self.expand_exploration_weight = self.exploration_weight * self.expand_exploration_ratio
         self.reward_alpha = getattr(args, 'reward_alpha', 1.0)  # α*max + (1-α)*avg in UCB1 (1.0=max, 0.0=avg)
-        self.small_step_limit = getattr(args, 'small_step_limit', 2)  # Max number of small steps per node
+        self.small_step_limit = getattr(args, 'small_step_limit', 2)  # Max number of small steps per node  强制执行 Large Step 前允许的最大 Small Step 数量
         
         if log_path is not None:
             os.makedirs(log_path, exist_ok=True)
@@ -668,7 +674,7 @@ class MCTSKernelOptimizer:
             
             # Logging
             if self.log_path is not None:
-                self._save_step_log(step_idx, new_node)
+                self._save_step_log(step_idx, new_node)     # Q: 都保存了哪些文件   哪些是要传给 Agent 的
         
         return self.global_best_node.kernel, self.global_best_node.metrics
     
@@ -732,7 +738,7 @@ def mcts_search(
     """
     Main entry point for MCTS kernel optimization.
     Returns (best_kernel, best_metrics).
-    
+
     Args:
         ref_arch_src: Reference architecture source code
         inference_server: Inference server for LLM queries
@@ -742,12 +748,12 @@ def mcts_search(
     from agent.mcts_utils import load_from_logs
     
     optimizer = MCTSKernelOptimizer(
-        ref_arch_src=ref_arch_src,
+        ref_arch_src=ref_arch_src,              # src file in dataset
         inference_server=inference_server,
-        args=args,
-        log_path=log_path,
+        args=args,                              # YAML
+        log_path=log_path,                      # output path
     )
-    
+
     total_steps = getattr(args, 'total_steps', 25)
     start_step = 0
     
