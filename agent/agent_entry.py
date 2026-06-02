@@ -426,3 +426,24 @@ if __name__ == "__main__":
 # LIBRARY_PATH=/usr/local/cuda/lib64/stubs:$LIBRARY_PATH  python3 -m uvicorn online_judge.app_with_queue:app --host 0.0.0.0 --port 12017 --workers 1 --log-level debug
 
 # cat /proc/$(lsof -ti:12017)/environ | tr '\0' '\n' | grep LIBRARY_PATH
+
+
+# DEBUG mode
+
+# DEBUG=true LOG_LEVEL=debug bash online_judge/start_server.sh
+
+# DEBUG=true python agent/agent_entry.py --config config/KB-l2/config_KB-l2_AdaExplore_50.yaml --debug
+
+# single debug test
+# DEBUG=true python agent/agent_entry.py \
+# --config config/KB-l2/config_KB-l2_AdaExplore_50.yaml \
+# --test_list_path "" \
+# --level 2 \
+# --problem_id 1 \
+# --total_steps 2 \
+# --num_processes 1 \
+# --debug
+
+# 或者直接修改 YAML 文件  debug=true  dummy=true
+
+

@@ -1043,7 +1043,7 @@ def _remote_eval_with_retry(
         metadata={'error': error_msg, 'attempts': max_retries}
     )
 
-
+# 每次都重新启动一个 subprocess 去执行该 Agent 生成的结果   防止相互影响
 def _local_subprocess_eval(
     original_model_src: str,
     custom_model_src: str,
@@ -1154,6 +1154,7 @@ def _local_subprocess_eval(
         )
 
 
+# 把 Agent 写好的 kernel 去执行实际测试
 def wrapped_eval_kernel_against_ref(
     original_model_src: str,
     custom_model_src: str,

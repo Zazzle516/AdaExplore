@@ -102,13 +102,22 @@ class MCTSNode:
         if self.visits == 0:
             return 0.0
         return self.total_reward / self.visits
-    
+
+    # 综合该 Node 历史最好和平均的得分
     def _blended_reward(self, reward_alpha: float) -> float:
         """Blend max and avg reward: alpha * max + (1 - alpha) * avg."""
         return reward_alpha * self.max_reward + (1 - reward_alpha) * self.avg_reward
 
-    # Q: ucb1 表示什么
+    # UCB1: Upper Confidence Bound 1
+    # decide which existing kernel node/branch should be explored next
+    # Walk down the tree by choosing the child with the highest ucb1
+    # 结合该 Node 的历史表现和未来潜力给出一个综合性得分
     def ucb1(self, exploration_weight: float = 1.414, reward_alpha: float = 1.0) -> float:
+        # exploitation: how good this branch has been so far
+        # exploration: bonus for trying less-visited nodes
+        
+        # policy: if "reward_alpha=1.0"  => "exploitation=max_reward"
+        # policy: if "visits=0" => "exploration=inf" => try new node at least once
         """
         Calculate UCB1 score for node selection.
         UCB1 = reward + exploration_weight * sqrt(ln(parent_visits) / visits)
@@ -119,15 +128,18 @@ class MCTSNode:
         """
         if self.visits == 0:
             return float('inf')
-        
+
+        # History
         exploitation = self._blended_reward(reward_alpha)
         
         if self.parent is None or self.parent.visits == 0:
+            # 一个新结点 reward_alpha == max_reward  => return
             return exploitation
-        
+
+        # Future: 如果该 Node 的父节点被访问多次但是自己几乎没有被访问过  会提高自己的权重
         exploration = exploration_weight * math.sqrt(math.log(self.parent.visits) / self.visits)
         return exploitation + exploration
-    
+
     def expand_ucb1(self, exploration_weight: float = 1.414, reward_alpha: float = 1.0) -> float:
         """
         Calculate UCB1 score for the "expand" action (adding a new child).
@@ -150,8 +162,10 @@ class MCTSNode:
         if self.visits == 0:
             return exploitation
         exploration = exploration_weight * math.sqrt(math.log(self.visits) / (n_expand ** 2))
+
+        # 如果当前 node 的 children 数量较多  相应的降低权重
         return exploitation + exploration
-    
+
     def should_expand(
         self,
         exploration_weight: float = 1.414,
@@ -176,7 +190,7 @@ class MCTSNode:
     def is_leaf(self) -> bool:
         """Check if this node is a leaf (no children)."""
         return len(self.children) == 0
-    
+
     def get_path_to_root(self) -> List['MCTSNode']:
         """Get the path from this node to the root."""
         path = [self]
@@ -185,7 +199,8 @@ class MCTSNode:
             path.append(node.parent)
             node = node.parent
         return path[::-1]  # Reverse to get root-to-node path
-    
+
+    # 在 Agent 进行第一次优化的时候  该 step 默认是 large_step
     def get_path_to_cut(self) -> List['MCTSNode']:
         """Get the path from this node to the first ancestor node that is a large step node.
         Since all nodes from dummy_root are created via large_step, this will always find a large_step ancestor
@@ -212,7 +227,7 @@ class MCTSKernelOptimizer:
     - Siblings: Different kernel proposals (large steps)
     - Parent-child: Refinements of a kernel (small steps)
     """
-    
+
     def __init__(
         self,
         ref_arch_src: str,
@@ -224,25 +239,25 @@ class MCTSKernelOptimizer:
         self.inference_server = inference_server
         self.args = args
         self.log_path = log_path
-        
+
         # Tree state
         self.root: Optional[MCTSNode] = None
         self.all_nodes: List[MCTSNode] = []
         self.node_counter: int = 0
-        
+
         # Global best tracking
         self.global_best_node: Optional[MCTSNode] = None
-        
+
         # MCTS parameters
         self.exploration_weight = getattr(args, 'exploration_weight', 0.2828)
         self.expand_exploration_ratio = getattr(args, 'expand_exploration_ratio', 1.0)
         self.expand_exploration_weight = self.exploration_weight * self.expand_exploration_ratio
         self.reward_alpha = getattr(args, 'reward_alpha', 1.0)  # α*max + (1-α)*avg in UCB1 (1.0=max, 0.0=avg)
         self.small_step_limit = getattr(args, 'small_step_limit', 2)  # Max number of small steps per node  强制执行 Large Step 前允许的最大 Small Step 数量
-        
+
         if log_path is not None:
             os.makedirs(log_path, exist_ok=True)
-    
+
     def _create_node(
         self,
         kernel: str,
@@ -306,7 +321,7 @@ class MCTSKernelOptimizer:
                 node = best_child
 
         return node
-    
+
     def _get_small_step_component(self, start_node: MCTSNode) -> List[MCTSNode]:
         """
         Get all nodes in the small_step connected component starting from start_node.
@@ -337,7 +352,7 @@ class MCTSKernelOptimizer:
                     queue.append(child)
         
         return component
-    
+
     def _get_diverse_pool_for_large_step(self, node: MCTSNode) -> List[MCTSNode]:
         """
         Get a diverse pool of kernels for large_step expansion by:
@@ -357,7 +372,7 @@ class MCTSKernelOptimizer:
         pool_size = getattr(self.args, 'pool_size', 5)
         
         # Step 1: Get path from current node to root
-        path_to_root = node.get_path_to_root()
+        path_to_root = node.get_path_to_root()      # A node list(reverse)
         
         # Step 2: Identify large_step nodes in the path (these are branch points)
         # Note: dummy_root is not a branch point since all its children are large_step
@@ -367,20 +382,20 @@ class MCTSKernelOptimizer:
         # and select only the best one from each component
         # Note: Each large_step node starts a disjoint component (separated by large_step boundaries),
         selected_nodes = []
-        
+
         for branch_node in branch_points:
             # Get all nodes in the small_step component starting from this branch point
             # This includes the branch_node itself and all nodes reachable via small_step
             component_nodes = self._get_small_step_component(branch_node)
-            
+
             # Filter to only correct kernels
             correct_component_nodes = [n for n in component_nodes if n.score[1]]
-            
+
             # Select only the best kernel from this component
             if correct_component_nodes:
                 best_node = max(correct_component_nodes, key=lambda n: n.score)
                 selected_nodes.append(best_node)
-        
+
         # Step 4: If we have more nodes than pool_size, randomly select pool_size nodes
         # If we have fewer, don't fill (keep it diverse)
         if len(selected_nodes) > pool_size:
@@ -597,7 +612,7 @@ class MCTSKernelOptimizer:
             self._save_step_log(0, self.root)
         
         logger.debug(f"Tree initialized with dummy root node")
-    
+
     def step(self, step_idx: int) -> MCTSNode:
         """
         Perform one MCTS iteration:
@@ -641,6 +656,8 @@ class MCTSKernelOptimizer:
             return selected_node
         
         # Simulation
+        # Q: 这个 num_rollouts 看起来没什么用???
+        # Q: 在这个结点还没有执行的情况下吗   A: 已经在 expand_large/expand_small 中执行了
         reward = self.simulate(new_node, num_rollouts=1)
         
         # Backpropagation
@@ -671,11 +688,11 @@ class MCTSKernelOptimizer:
         for i in tqdm(range(remaining), desc=f"MCTS on problem {self.args.level}_{self.args.problem_id}"):
             step_idx = start_step + i + 1
             new_node = self.step(step_idx)
-            
+
             # Logging
             if self.log_path is not None:
                 self._save_step_log(step_idx, new_node)     # Q: 都保存了哪些文件   哪些是要传给 Agent 的
-        
+
         return self.global_best_node.kernel, self.global_best_node.metrics
     
     def _save_step_log(self, step_idx: int, node: MCTSNode):

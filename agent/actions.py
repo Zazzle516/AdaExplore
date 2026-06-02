@@ -14,6 +14,8 @@ def _use_performance_metric(args: argparse.Namespace) -> bool:
     test_source = str(getattr(args, "test_source", "KB")).upper()
     return test_source not in {"TBG"}
 
+# core file: 如何根据前面的结果重构 prompt
+
 def single_small_step(ref_arch_src: str, inference_server: str, previous_kernels: list, previous_metrics: list, args: argparse.Namespace):
     # Reviser Agent (if disabled, no reviser agent will be used)
     # Check if all previous kernels are wrong - if so, skip reviewer

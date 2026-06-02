@@ -7,15 +7,15 @@ Q: 目前的项目是怎么和 MCTS 交互的
 ### Prompts
 
 single_large_step
+
   1. Builds a "pool prompt" from kernel_pool + metrics_pool (recent and elite) via generate_pool_prompt_dual.
   2. Wraps it with generate_proposer_prompt (problem statement + memory + hardware + task).
   3. LLM returns a complete kernel; it gets compiled+evaluated by wrapped_eval_kernel_against_ref → KernelExecResult.
 
 single_small_step
-  1. Reviser (generate_reviser_prompt, tuner_prompt.py is the partner): receives the last kernel + last run_info and returns 1–3 sentence
-  guidance.
-  2. Tuner (generate_tuner_prompt): receives the whole memory window of (kernel, metric) pairs plus the reviser's guidance, and returns
-  <old_str>/<new_str> patch edits applied via str_replace.
+
+  1. Reviser (generate_reviser_prompt, tuner_prompt.py is the partner): receives the last kernel + last run_info and returns 1–3 sentence guidance.
+  2. Tuner (generate_tuner_prompt): receives the whole memory window of (kernel, metric) pairs plus the reviser's guidance, and returns <old_str>/<new_str> patch edits applied via str_replace.
 
 
 ## MCTS Layer
@@ -24,11 +24,8 @@ single_small_step
   2. Decide use_large_step:
     - dummy_root → always large
     - else → True if num_small_step_children >= small_step_limit or random() < p_large (default 0.25).
-  3. expand_large (mcts.py:444) calls _get_diverse_pool_for_large_step to assemble context: walks path-to-root, takes one best correct
-  kernel per large_step "branch", then optionally tops up via softmax sampling of best nodes from off-path branches → calls
-  single_large_step.
-  4. expand_small (mcts.py:484) takes node.get_path_to_cut() (this node back to its enclosing large_step ancestor), trims to
-  max_memory_round → calls single_small_step.
+  3. expand_large (mcts.py:444) calls _get_diverse_pool_for_large_step to assemble context: walks path-to-root, takes one best correct kernel per large_step "branch", then optionally tops up via softmax sampling of best nodes from off-path branches → calls single_large_step.
+  4. expand_small (mcts.py:484) takes node.get_path_to_cut() (this node back to its enclosing large_step ancestor), trims to max_memory_round → calls single_small_step.
   5. simulate simply returns node.reward (no rollouts).
   6. backpropagate updates visits, total_reward, max_reward up to root.
 
