@@ -22,6 +22,7 @@ from agent.utils import extract_edits, str_replace
 import re
 from agentprompt.prompt_modules import generate_experience_guidance_prompt
 from agentprompt.prompt_modules import generate_hardware_information_prompt
+from agentprompt.prompt_modules import generate_optimization_rules_prompt
 
 def _extract_format_keys(template: str):
     """Extract format keys from a template string."""
@@ -29,7 +30,7 @@ def _extract_format_keys(template: str):
 
 PROBLEM_STATEMENT = """## Problem Statement
 
-You tune the custom Triton kernels in the given architecture to get better performance. The architecture is the reference architecture, and the custom kernels are the previous kernels you have generated. Beyond low-level kernel tuning, you may also restructure the computation order when it is mathematically equivalent and can unlock better fusion or memory access patterns.
+You tune the custom Triton kernels in the given architecture to get better performance. The architecture is the reference architecture, and the custom kernels are the previous kernels you have generated. Follow the Optimization Rules below — focus on low-level kernel tuning and fusion, and do not introduce graph-level algebraic shortcuts that eliminate a heavy operator.
 
 """
 
@@ -66,7 +67,7 @@ The tuning metrics contain the following information:
 
 ### Goal
 
-- Perform small, localized updates to code in the last version of the custom kernels with the str_replace command to correct the correctness errors or improve the performance of the custom kernels. Keep the overall model interface unchanged, but you may reorder or restructure internal operations when mathematically equivalent for better performance.
+- Perform small, localized updates to code in the last version of the custom kernels with the str_replace command to correct the correctness errors or improve the performance of the custom kernels. Keep the overall model interface unchanged. Apply the Optimization Rules above — do not introduce algebraic shortcuts that eliminate the reference's heavy operators.
 When making edits:
    - Ensure the edit results in idiomatic, correct code
    - Do not leave the code in a broken state
@@ -138,22 +139,6 @@ Previously, you have generated the following custom kernels and got the followin
 
 """
 
-HARDWARE_INFORMATION = """## Hardware Information
-
-Here is some information about the underlying hardware that you should keep in mind:
-
-- The GPU that will run the kernel is NVIDIA {gpu_name}, {gpu_architecture} architecture.
-
-"""
-
-EXPERIENCE_GUIDANCE = """## Experience Guidance
-
-Here is some experience guidance that you should keep in mind:
-
-{experience_guidance}
-
-"""
-
 def _is_correct_metric(metric) -> bool:
     """Check if a metric indicates correctness. Handles both KernelExecResult objects and string representations."""
     if isinstance(metric, KernelExecResult):
@@ -208,6 +193,7 @@ def generate_tuner_prompt(
                 raise ValueError(f"Missing required parameter: {key}")
     
     prompt = PROBLEM_STATEMENT
+    prompt += generate_optimization_rules_prompt()
     prompt += generate_experience_guidance_prompt(experience_guidance_path, threshold=knowledge_1_threshold)
     prompt += generate_hardware_information_prompt(task_params.get('gpu_name'), task_params.get('gpu_architecture'))
     prompt += TASK_INSTRUCTION.format(**format_dict)

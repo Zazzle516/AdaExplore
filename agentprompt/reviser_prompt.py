@@ -1,6 +1,7 @@
 import re
 from agentprompt.prompt_modules import generate_experience_guidance_prompt
 from agentprompt.prompt_modules import generate_hardware_information_prompt
+from agentprompt.prompt_modules import generate_optimization_rules_prompt
 from src.utils import read_file
 from src.eval import KernelExecResult
 import os
@@ -18,7 +19,7 @@ REPO_TOP_PATH = os.path.abspath(
 
 PROBLEM_STATEMENT = """## Problem Statement
 
-You revise the custom Triton kernels in the given architecture to get better performance. Beyond kernel-level tuning, also consider whether reordering mathematically equivalent operations could enable better fusion or memory access patterns.
+You revise the custom Triton kernels in the given architecture to get better performance. Follow the Optimization Rules below — focus on kernel-level fusion, tiling, and (when the torch convolution dominates runtime) replacing it with a custom Triton kernel; do not propose graph-level algebraic shortcuts that eliminate a heavy operator.
 
 """
 
@@ -54,26 +55,10 @@ The tuning metrics contain the following information:
 
 ### Goal
 
-Your goal is to help the agent improve the performance of the custom Triton kernels, and correct the correctness errors if any. Improvements may include not only low-level kernel optimizations, but also restructuring the computation order when mathematically equivalent (e.g., reordering elementwise ops, folding normalization into linear layers) to enable better fusion or memory access.
+Your goal is to help the agent improve the performance of the custom Triton kernels, and correct the correctness errors if any. Improvements may include low-level kernel optimizations (tiling, vectorization, occupancy), kernel-level fusion (combining adjacent operators into one Triton kernel), or — when the torch convolution dominates runtime (symptom: `fast_p < 0.8` while the epilogue is already fused) — replacing `nn.Conv*` / `nn.ConvTranspose*` with a custom Triton kernel. Do **not** propose graph-level algebraic shortcuts that elide a heavy operator (see the Optimization Rules above).
 
 Output a concise guidance to the agent on how to improve the performance of the custom Triton kernels, remember:
 - The revise is iterative, so the guidance should be concise and only contain 1-3 most important improvements.
-
-"""
-
-HARDWARE_INFORMATION = """## Hardware Information
-
-Here is some information about the underlying hardware that you should keep in mind:
-
-- The GPU that will run the kernel is NVIDIA {gpu_name}, {gpu_architecture} architecture.
-
-"""
-
-EXPERIENCE_GUIDANCE = """## Experience Guidance
-
-Here is some experience guidance that you should keep in mind:
-
-{experience_guidance}
 
 """
 
@@ -97,6 +82,7 @@ def generate_reviser_prompt(custom_triton_kernels: str=None, run_info: str=None,
                 raise ValueError(f"Missing required parameter: {key}")
     
     prompt = PROBLEM_STATEMENT
+    prompt += generate_optimization_rules_prompt()
     prompt += generate_experience_guidance_prompt(experience_guidance_path, threshold=knowledge_1_threshold)
     prompt += generate_hardware_information_prompt(task_params.get('gpu_name'), task_params.get('gpu_architecture'))
     prompt += TASK_INSTRUCTION.format(**format_dict)

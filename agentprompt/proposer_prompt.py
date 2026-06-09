@@ -1,6 +1,7 @@
 import re
 from agentprompt.prompt_modules import generate_experience_guidance_prompt
 from agentprompt.prompt_modules import generate_hardware_information_prompt
+from agentprompt.prompt_modules import generate_optimization_rules_prompt
 from agentprompt.benchmarks.KB_prompt import KB_TRITON_PROMPT
 from agentprompt.benchmarks.FIT_prompt import FIT_TRITON_PROMPT
 from agentprompt.benchmarks.TBG_prompt import TBG_TRITON_PROMPT
@@ -38,7 +39,7 @@ PROBLEM_STATEMENT = """## Problem Statement
 
 You write custom kernels to replace the pytorch operators in the given architecture to get speedups.
 
-You have complete freedom to choose the set of operators you want to replace. You may make the decision to replace some operators with custom kernels and leave others unchanged. You may replace multiple operators with custom implementations, consider operator fusion opportunities (combining multiple operators into a single kernel, for example, combining matmul+relu), or algorithmic changes (such as online softmax). You may also reorder mathematically equivalent operations to enable better fusion or memory access patterns (for example, rearranging the order of elementwise ops, or folding normalization parameters into preceding linear layers). You are only limited by your imagination.
+You have complete freedom to choose the set of operators you want to replace. You may make the decision to replace some operators with custom kernels and leave others unchanged. You may replace multiple operators with custom implementations, consider operator fusion opportunities (combining multiple operators into a single kernel, for example, combining matmul+relu), or algorithmic changes (such as online softmax). You are only limited by your imagination — within the constraints of the Optimization Rules below.
 
 """
 
@@ -55,14 +56,6 @@ The example new arch with custom Triton kernels looks like this:
 ```
 {example_new_arch_src}
 ```
-
-"""
-
-EXPERIENCE_GUIDANCE = """## Experience Guidance
-
-Here is some experience guidance that you should keep in mind:
-
-{experience_guidance}
 
 """
 
@@ -87,6 +80,7 @@ Now generate a kernel that can potentially outperform the best existing kernel a
 
 def generate_proposer_prompt(experience_guidance_path: str=None, pool_prompt: str=None, task: str="KB", task_params: dict=None, knowledge_1_threshold: int=3):
     prompt = PROBLEM_STATEMENT
+    prompt += generate_optimization_rules_prompt()
 
     if task_params.get("example_arch_src", None) is not None and task_params.get("example_new_arch_src", None) is not None and task == "KB":
         prompt += EXAMPLE_FORMATS.format(example_arch_src=task_params.get("example_arch_src"), example_new_arch_src=task_params.get("example_new_arch_src"))
