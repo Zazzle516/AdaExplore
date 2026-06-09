@@ -340,3 +340,60 @@ flowchart TD
   classDef best  fill:#fff4cc,stroke:#d4a017,stroke-width:5px,color:#000
   classDef fail  stroke:#d33,stroke-dasharray:4 3,stroke-width:2px
 ```
+
+## `MCTSKernelOptimizer.step()` — Execution Flow
+
+`step(step_idx)` runs one MCTS iteration in `agent/mcts.py:601`. It follows the textbook four phases (Select → Expand → Simulate → Backpropagate), with project-specific logic in how the expansion type (large vs small step) is chosen and how failed proposals fall back.
+
+### Phases
+
+1. **Selection** (`mcts.py:610`, body at `mcts.py:285`)
+   - Start at `self.root` and descend by repeatedly picking `argmax(child.ucb1)`.
+   - At each internal node, check `should_expand(...)`: if the "open a new child" UCB exceeds the best existing child's UCB, stop descent and return that node as the expansion point.
+   - Otherwise continue until a leaf is reached.
+
+2. **Decide expansion type** (`mcts.py:616`)
+   - If the selected node is `dummy_root` → always `large_step`.
+   - Else: count children with `created_by == "small_step"`. Force `large_step` when that count `>= small_step_limit`; otherwise pick large with probability `p_large` (default `0.25`), else small.
+
+3. **Expansion** (`mcts.py:627`)
+   - `expand_large(selected_node)` — builds a *diverse pool* of best-of-component kernels along the path-to-root (plus optional softmax/geometric-sampled extras from off-path components), calls `single_large_step` to propose a new kernel, attaches it as a child labelled `large_step`.
+   - `expand_small(selected_node)` — walks `get_path_to_cut()` (up to the nearest `large_step` ancestor), feeds the last `max_memory_round` kernels as context to `single_small_step`, attaches the refined kernel as a child labelled `small_step`.
+   - Each new node is built via `_create_node`, which updates `global_best_node` if its `score` tuple is higher (`mcts.py:279`).
+
+4. **Fallback on failure** (`mcts.py:632`)
+   - If the chosen expansion returned `None`, retry with the other expansion type.
+   - If that also returns `None`, log a warning and return `selected_node` (no new node added, no simulate/backprop).
+
+5. **Simulation** (`mcts.py:644`, body at `mcts.py:532`)
+   - `simulate(new_node, num_rollouts=1)` just returns `new_node.reward` — the reward derived from `(compiled, correct, speedup)` via the `REWARD_*` / `SPEEDUP_*` constants. No real rollouts are performed (multi-rollout path raises `NotImplementedError`).
+
+6. **Backpropagation** (`mcts.py:647`, body at `mcts.py:546`)
+   - Walk from `new_node` upward to the root: for each ancestor increment `visits`, add `reward` to `total_reward`, and update `max_reward` if beaten.
+
+7. **Return** `new_node` (or `selected_node` on total expansion failure).
+
+### Mermaid call-flow
+
+```mermaid
+flowchart TD
+  STEP([step]) --> SEL[select<br/>descend by ucb1 / should_expand]
+
+  SEL --> DEC{large step?}
+
+  DEC -- yes --> EL[expand_large<br/>_get_diverse_pool_for_large_step<br/>→ single_large_step<br/>→ _create_node]
+  DEC -- no  --> ES[expand_small<br/>get_path_to_cut<br/>→ single_small_step<br/>→ _create_node]
+
+  EL --> SIM[simulate<br/>reward = new_node.reward]
+  ES --> SIM
+  SIM --> BP[backpropagate<br/>walk parents:<br/>visits, total_reward, max_reward]
+  BP --> RET([return new_node])
+
+  classDef phase fill:#cfe8ff,stroke:#1f6feb,color:#000
+  classDef decision fill:#fff4cc,stroke:#b58900,color:#000
+  classDef terminal fill:#e8e8e8,stroke:#555,color:#000
+  class SEL,EL,ES,SIM,BP phase
+  class DEC decision
+  class STEP,RET terminal
+```
+

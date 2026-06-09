@@ -707,7 +707,44 @@ class MCTSKernelOptimizer:
         }
         with open(os.path.join(self.log_path, f"step_{step_idx}_log.json"), "w") as f:
             json.dump(log_dict, f, indent=4)
-    
+
+        self._save_tree_snapshot(step_idx)
+
+    def _save_tree_snapshot(self, step_idx: int):
+        """Snapshot UCB1 and core stats for every node after this step's backprop.
+
+        Writes step_{step_idx}_tree.json so UCB1 trajectories per node can be
+        reconstructed across the run. inf values (visits==0, or no children for
+        expand_ucb1) are emitted as None to keep the file strict-JSON parseable.
+        """
+        nodes_snapshot = []
+        for node in self.all_nodes:
+            ucb = node.ucb1(self.exploration_weight, self.reward_alpha)
+            expand_ucb = node.expand_ucb1(self.expand_exploration_weight, self.reward_alpha)
+            nodes_snapshot.append({
+                "node_id": node.node_id,
+                "parent_node_id": node.parent.node_id if node.parent else None,
+                "depth": node.depth,
+                "created_by": node.created_by,
+                "num_children": len(node.children),
+                "visits": node.visits,
+                "total_reward": node.total_reward,
+                "max_reward": node.max_reward,
+                "avg_reward": node.avg_reward,
+                "ucb1": None if math.isinf(ucb) else ucb,
+                "expand_ucb1": None if math.isinf(expand_ucb) else expand_ucb,
+            })
+
+        snapshot = {
+            "step": step_idx,
+            "exploration_weight": self.exploration_weight,
+            "expand_exploration_weight": self.expand_exploration_weight,
+            "reward_alpha": self.reward_alpha,
+            "nodes": nodes_snapshot,
+        }
+        with open(os.path.join(self.log_path, f"step_{step_idx}_tree.json"), "w") as f:
+            json.dump(snapshot, f, indent=4)
+
     def get_tree_stats(self) -> Dict[str, Any]:
         """Get statistics about the current tree."""
         if not self.all_nodes:
