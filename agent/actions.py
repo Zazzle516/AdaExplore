@@ -30,6 +30,26 @@ def _extract_direction(output: str) -> Optional[str]:
     matches = re.findall(r"<direction>\s*(large|small)\s*</direction>", output)
     return matches[-1] if matches else None
 
+def extract_proposal_kernel(output: str) -> str:
+    """Pull the complete kernel file from a proposer response.
+
+    1. Preferred: the last <kernel>...</kernel> block (per the output contract).
+    2. Fallback: the last fenced block that defines class ModelNew.
+    3. Last resort: the first fenced block (legacy extract_first_code) — saved
+       as-is so it compile-fails visibly rather than silently picking a fragment.
+    """
+    tagged = _extract_tag(output, "kernel")
+    if tagged:
+        # tolerate a code fence nested inside the tags
+        tagged = re.sub(r"^```(?:python|cpp)?\s*|\s*```$", "", tagged).strip()
+        if "class ModelNew" in tagged:
+            return tagged
+    blocks = re.findall(r"```(?:python|cpp)?\s*(.*?)```", output, re.DOTALL)
+    for block in reversed(blocks):
+        if "class ModelNew" in block:
+            return block.strip()
+    return extract_first_code(output, ["python", "cpp"])
+
 def _extract_validity(output: str) -> Optional[bool]:
     """Return the last <valid>true|false</valid> as a bool, or None if missing/malformed.
 
@@ -157,7 +177,7 @@ def single_large_step(
         prompt=proposer_prompt,
         max_completion_tokens=args.max_completion_tokens,
     )
-    proposal_kernel = extract_first_code(proposer_output, ["python", "cpp"])
+    proposal_kernel = extract_proposal_kernel(proposer_output)
     measure_performance = _use_performance_metric(args)
     proposal_metrics = wrapped_eval_kernel_against_ref(
         ref_arch_src,

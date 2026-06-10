@@ -1093,3 +1093,166 @@ field remain readable, new logs gain one field.
    `outputs/KB-l*_AdaExplore_50/` — confirm nothing in the new code path
    chokes on a missing `evaluator_valid` field (the IR/MCTS code only
    writes it; nothing reads it back from old logs).
+
+---
+
+# Plan — Fix large-step kernel extraction (sentinel tags)
+
+## Context
+
+On problem `2_13` the agent's best kernel stalled at `fast_p = 0.72` (28.7 ms vs
+20.69 ms baseline — actually *slower* than baseline). Diagnosis of
+`outputs/KB-l2_AdaExplore_50/2_13` showed the agent took 27 large steps, but
+every large step that attempted the ambitious custom conv **failed to compile**
+— not with Triton logic errors, but catastrophically:
+
+- `step_8/38/45.py`: file starts with `@triton.jit` at line 1, **no imports** →
+  `NameError: name 'triton' is not defined`.
+- `step_44.py`: the "kernel" is a half-written `forward` trailing into the
+  comment *"Hmm, let me reconsider."* → `module has no attribute 'ModelNew'`.
+
+Root cause: `extract_first_code` (`src/utils.py:17`) grabs the **first**
+fenced code block. When the proposer sketches a kernel body or thinks out loud
+in a fence before emitting the final file, that fragment — missing imports and
+`class ModelNew` — becomes the saved kernel. The agent's best ideas were
+discarded at the extraction boundary before they ever ran, so the conv
+bottleneck was never genuinely explored. This is a near-pure prompt/extraction
+bug, distinct from the genuinely-hard task of out-engineering cuDNN/TRT on a 3D
+transposed conv.
+
+Goal: give the large-step proposer an unambiguous output contract (wrap the one
+complete file in `<kernel>...</kernel>`) and extract robustly, so multi-block /
+sketch-first / prose-laden outputs no longer truncate to a fragment.
+
+Decisions (per user):
+
+- **Sentinel tags, not JSON.** <kernel>...</kernel>
+- **Fallback then fail.** Try tags → else last fenced block containing
+  `class ModelNew` → else save as-is and let it compile-fail (current
+  behavior). No extra LLM call / no retry.
+
+## Scope
+
+Single extraction path: `extract_first_code` is only used for kernels in
+`single_large_step` (`agent/actions.py:160`). That function is the shared entry
+for MCTS `expand_large` (`agent/mcts.py:495`), IR-mode `run_large_loop`
+(`agent/large_loop.py:136`), and the iteration-0 root proposal in
+`run_small_loop` (`agent/small_loop.py:181`). So one fix covers every
+orchestrator. Small steps use `extract_edits` (str_replace tags) and are
+unaffected. (`synthesis/generate_data.py:482` also calls `extract_first_code`
+but is training-data synthesis — out of scope, leave unchanged.)
+
+## Design
+
+### 1. New extractor — `agent/actions.py` (next to `_extract_tag`, ~line 40)
+
+Add `extract_proposal_kernel(output: str) -> str`, reusing the existing
+`_extract_tag`:
+
+```python
+def extract_proposal_kernel(output: str) -> str:
+    """Pull the complete kernel file from a proposer response.
+
+    1. Preferred: the last <kernel>...</kernel> block (per the output contract).
+    2. Fallback: the last fenced block that defines class ModelNew.
+    3. Last resort: the first fenced block (legacy extract_first_code) — saved
+       as-is so it compile-fails visibly rather than silently picking a fragment.
+    """
+    tagged = _extract_tag(output, "kernel")
+    if tagged:
+        # tolerate a code fence nested inside the tags
+        tagged = re.sub(r"^```(?:python|cpp)?\s*|\s*```$", "", tagged).strip()
+        if "class ModelNew" in tagged:
+            return tagged
+    blocks = re.findall(r"```(?:python|cpp)?\s*(.*?)```", output, re.DOTALL)
+    for block in reversed(blocks):
+        if "class ModelNew" in block:
+            return block.strip()
+    return extract_first_code(output, ["python", "cpp"])
+```
+
+Swap the call at `agent/actions.py:160`:
+`proposal_kernel = extract_proposal_kernel(proposer_output)`.
+Keep the `from src.utils import extract_first_code` import (used by the
+fallback).
+
+### 2. Output contract in the prompt — `agentprompt/proposer_prompt.py`
+
+Add an `OUTPUT_FORMAT` block and append it **last** in
+`generate_proposer_prompt` (after `task_template` and `pool_prompt`) so it is
+the final, binding instruction regardless of task (KB/FIT/SYN/TBG):
+
+```python
+OUTPUT_FORMAT = """## Output Format
+
+Return exactly ONE complete, runnable Python file wrapped in a single
+<kernel>...</kernel> block. The file MUST include every import (torch, triton,
+triton.language, etc.) and the full `class ModelNew` definition. Do NOT emit
+sketches, partial snippets, or multiple code blocks — only the final complete
+file inside the <kernel> tags. Put no prose inside the tags.
+
+<kernel>
+# imports + @triton.jit kernels + class ModelNew(nn.Module): ...
+</kernel>
+"""
+```
+
+- Append `prompt += OUTPUT_FORMAT` at the end of `generate_proposer_prompt`
+  (after the `if pool_prompt is not None:` block, before `return prompt`).
+- Reinforce by wrapping the one-shot example: in `EXAMPLE_FORMATS`, change the
+  `{example_new_arch_src}` plain fenced block to a `<kernel>...</kernel>` block
+  so the example mirrors the requested format.
+
+### 3. Remove the conflicting instruction — `agentprompt/benchmarks/KB_prompt.py`
+
+The line at `KB_prompt.py:18` says *"Output the new code in codeblocks ... Just
+output the new model code"*. Drop the "in codeblocks" phrasing so it does not
+contradict the new `<kernel>` contract (the `OUTPUT_FORMAT` section, appended
+after, is authoritative). Minimal edit: replace "Output the new code in
+codeblocks." with "Output the new code in the format described below." Leave
+FIT/TBG prompts unchanged (they inherit the appended `OUTPUT_FORMAT`).
+
+## Files to modify
+
+| Path | Change |
+|---|---|
+| `agent/actions.py` | Add `extract_proposal_kernel`; use it at line 160. |
+| `agentprompt/proposer_prompt.py` | Add `OUTPUT_FORMAT`, append last in `generate_proposer_prompt`; wrap example in `<kernel>` tags. |
+| `agentprompt/benchmarks/KB_prompt.py` | Soften the "in codeblocks" line to avoid contradicting the contract. |
+
+No changes to small-step / tuner / evaluator paths, MCTS scoring, or IR loops.
+
+## What is intentionally NOT being done
+
+- **No JSON output format.** Rejected — escaping a ~100-line code payload into a
+  JSON string is unreliable and fails closed (whole output lost on one bad
+  escape).
+- **No retry on malformed output.** If no valid complete kernel is extracted,
+  the best-effort fallback is saved and allowed to compile-fail visibly. No
+  extra LLM call.
+- **No change to small-step / tuner extraction.** Small steps already use the
+  robust `<old_str_N>`/`<new_str_N>` str_replace tags via `extract_edits`.
+- **`synthesis/generate_data.py` unchanged.** Its `extract_first_code` call is
+  training-data synthesis, not the agent loop.
+
+## Verification
+
+1. **Extractor unit test** (add a `__main__` or pytest in `agent/actions.py`),
+   four fixtures:
+   - Complete file in `<kernel>` tags → returns it.
+   - Sketch in a fenced block, then complete file in `<kernel>` tags → returns
+     the tagged complete file (not the sketch).
+   - No tags, two fenced blocks where only the last defines `ModelNew` →
+     returns the last block.
+   - Fragment only (no tags, no `ModelNew`) → returns the fragment (legacy
+     fallback) so it compile-fails visibly.
+2. **Prompt smoke render.** `python -m agentprompt.proposer_prompt` — confirm
+   the `## Output Format` section appears once at the end and the example is
+   wrapped in `<kernel>` tags. Confirm no `KeyError` on format substitution.
+3. **End-to-end re-run on `2_13`.** Run a short MCTS trial (e.g. 15-20 steps)
+   and inspect `step_*_metrics.json` for large steps. Confirm the
+   `NameError: name 'triton' is not defined` and `no attribute 'ModelNew'`
+   failures are gone — large-step failures, if any, should now be real Triton
+   compile/correctness errors (evidence the custom-conv ideas actually ran),
+   not extraction artifacts. Compare the share of compiled large steps before
+   (≈4/27 distinct, rest fragments) vs after.

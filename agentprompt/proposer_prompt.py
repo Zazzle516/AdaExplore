@@ -53,9 +53,9 @@ Here's an example to show you the syntax of inline embedding custom Triton kerne
 
 The example new arch with custom Triton kernels looks like this:
 
-```
+<kernel>
 {example_new_arch_src}
-```
+</kernel>
 
 """
 
@@ -88,6 +88,19 @@ approach is better.
 
 """
 
+OUTPUT_FORMAT = """## Output Format
+
+Return exactly ONE complete, runnable Python file wrapped in a single
+<kernel>...</kernel> block. The file MUST include every import (torch, triton,
+triton.language, etc.) and the full `class ModelNew` definition. Do NOT emit
+sketches, partial snippets, or multiple code blocks — only the final complete
+file inside the <kernel> tags. Put no prose inside the tags.
+
+<kernel>
+# imports + @triton.jit kernels + class ModelNew(nn.Module): ...
+</kernel>
+"""
+
 def generate_proposer_prompt(experience_guidance_path: str=None, pool_prompt: str=None, task: str="KB", task_params: dict=None, knowledge_1_threshold: int=3, large_guidance: str=None):
     prompt = PROBLEM_STATEMENT
     prompt += generate_skill_prompt(task_params.get("arc_src"), step_type="large")
@@ -118,6 +131,7 @@ def generate_proposer_prompt(experience_guidance_path: str=None, pool_prompt: st
     prompt += task_template.format(**format_dict)
     if pool_prompt is not None:
         prompt += pool_prompt
+    prompt += OUTPUT_FORMAT
     return prompt
 
 def generate_pool_prompt(
