@@ -107,12 +107,21 @@ EXAMPLE_NEW_ARCH_SRC = read_file(
     os.path.join(REPO_TOP_PATH, "agentprompt/examples/model_new_ex_add_triton.py")
 )
 
-def calculate_score(metric: KernelExecResult):
+def calculate_score(metric: KernelExecResult, evaluator_valid: "bool | None" = None):
+    """Return (compiled, correctness, speedup).
+
+    evaluator_valid=False forces (1, 0, 0) — same shape as a correctness
+    failure — so cheating kernels (e.g. algebraic-shortcut wins) are
+    sorted/selected like incorrect ones. None and True pass through, honoring
+    the default-valid policy for a missing/malformed <valid> tag.
+    """
     if metric is None:
         return (0, 0, 0)
     if not metric.compiled:
         return (0, 0, 0)
     if not metric.correctness:
+        return (1, 0, 0)
+    if evaluator_valid is False:
         return (1, 0, 0)
     else:
         fast_p = metric.runtime_stats.get("fast_p", 0) if metric.runtime_stats else 0

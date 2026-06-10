@@ -71,7 +71,7 @@ GOAL = """### Goal
 
 You evaluate the most recent custom Triton kernel and its measured
 performance, then emit guidance for the next iteration. Produce exactly
-three tagged blocks, in this order:
+four tagged blocks, in this order:
 
 <small_guidance>
 1-3 concrete tuning bullets — block sizes, num_warps, num_stages, layout,
@@ -94,10 +94,25 @@ promising than continued tuning.
 <direction>small</direction>  if you believe continued tuning of the
 current kernel will close the gap.
 
-Emit exactly one <direction> tag. Both guidance blocks are always required
-even if one is short. On compile failure, default to <direction>large</direction>
-unless the traceback points at a trivially-fixable issue (e.g. a typo, a
-wrong constexpr, a missing import).
+<valid>false</valid>  if the kernel reaches its measured performance via an
+algebraic shortcut — i.e. one or more operators in the reference forward have
+been collapsed at init time, folded into a downstream reduction, or replaced
+with a substitute that does materially less arithmetic than the reference.
+The "_base" skill section describes this contract; emit `false` whenever it
+is violated, even if compile + correctness checks pass and the speedup looks
+real.
+
+<valid>true</valid>  in all other cases — including kernels that are slow,
+compile-failed, or numerically wrong. Validity is about *whether the kernel
+is doing the reference work*, not whether it is doing it well.
+
+Emit exactly one <direction> tag and exactly one <valid> tag. Both guidance
+blocks are always required even if one is short. <valid>true</valid> is the
+default — if you omit or malform the tag it will be treated as valid, so only
+emit <valid>false</valid> when you are confident the contract was violated.
+On compile failure, default to <direction>large</direction> unless the
+traceback points at a trivially-fixable issue (e.g. a typo, a wrong
+constexpr, a missing import).
 
 """
 

@@ -66,6 +66,10 @@ class MCTSNode:
     small_guidance: str = ""
     large_guidance: str = ""
     evaluator_direction: Optional[str] = None
+    # Evaluator validity gate: False means the kernel reached its measured
+    # performance via an algebraic shortcut and its score is collapsed to
+    # (1, 0, 0). None/True pass through (default-valid).
+    evaluator_valid: Optional[bool] = None
     
     # Cache for score (to avoid repeated calculation)
     _score_cache: tuple = field(default=None, repr=False)
@@ -79,7 +83,7 @@ class MCTSNode:
         """
         if self._score_cache is not None:
             return self._score_cache
-        self._score_cache = calculate_score(self.metrics)       # (compiled, correct, speedup)
+        self._score_cache = calculate_score(self.metrics, self.evaluator_valid)       # (compiled, correct, speedup)
         return self._score_cache
 
     # Q: 这个 reward 和 score 的关系是什么
@@ -260,6 +264,7 @@ class MCTSKernelOptimizer:
         small_guidance: str = "",
         large_guidance: str = "",
         evaluator_direction: Optional[str] = None,
+        evaluator_valid: Optional[bool] = None,
     ) -> MCTSNode:
         """Create a new node and add it to the tree."""
         if context_node_ids is None:
@@ -279,6 +284,7 @@ class MCTSKernelOptimizer:
             small_guidance=small_guidance,
             large_guidance=large_guidance,
             evaluator_direction=evaluator_direction,
+            evaluator_valid=evaluator_valid,
         )
         self.node_counter += 1
         self.all_nodes.append(node)
@@ -500,9 +506,9 @@ class MCTSKernelOptimizer:
 
         # Run the evaluator on the new kernel (skip in dummy mode) so the next
         # iteration's guidance + MCTS soft-bias have a direction to read.
-        small_guidance, large_guidance, direction = "", "", None
+        small_guidance, large_guidance, direction, valid = "", "", None, None
         if not is_dummy:
-            small_guidance, large_guidance, direction = run_evaluator(
+            small_guidance, large_guidance, direction, valid = run_evaluator(
                 self.ref_arch_src,
                 proposal_kernel,
                 proposal_metrics,
@@ -521,6 +527,7 @@ class MCTSKernelOptimizer:
             small_guidance=small_guidance,
             large_guidance=large_guidance,
             evaluator_direction=direction,
+            evaluator_valid=valid,
         )
 
         return new_node
@@ -567,9 +574,9 @@ class MCTSKernelOptimizer:
         prompt = logs.get("prompt", "")
 
         # Run the evaluator on the new kernel (skip in dummy mode).
-        small_guidance, large_guidance, direction = "", "", None
+        small_guidance, large_guidance, direction, valid = "", "", None, None
         if not is_dummy:
-            small_guidance, large_guidance, direction = run_evaluator(
+            small_guidance, large_guidance, direction, valid = run_evaluator(
                 self.ref_arch_src,
                 refined_kernel,
                 refined_metrics,
@@ -587,6 +594,7 @@ class MCTSKernelOptimizer:
             small_guidance=small_guidance,
             large_guidance=large_guidance,
             evaluator_direction=direction,
+            evaluator_valid=valid,
         )
 
         return new_node
@@ -778,6 +786,7 @@ class MCTSKernelOptimizer:
             "small_guidance": node.small_guidance,
             "large_guidance": node.large_guidance,
             "evaluator_direction": node.evaluator_direction,
+            "evaluator_valid": node.evaluator_valid,
             "total_nodes": len(self.all_nodes),
             "global_best_node_id": self.global_best_node.node_id if self.global_best_node else None,
             "global_best_score": list(self.global_best_node.score) if self.global_best_node else None,

@@ -30,13 +30,23 @@ def _extract_direction(output: str) -> Optional[str]:
     matches = re.findall(r"<direction>\s*(large|small)\s*</direction>", output)
     return matches[-1] if matches else None
 
+def _extract_validity(output: str) -> Optional[bool]:
+    """Return the last <valid>true|false</valid> as a bool, or None if missing/malformed.
+
+    Missing/malformed → None; downstream treats None as valid (default-true).
+    """
+    matches = re.findall(r"<valid>\s*(true|false)\s*</valid>", output, re.IGNORECASE)
+    return matches[-1].lower() == "true" if matches else None
+
 def run_evaluator(ref_arch_src: str, kernel: str, metrics: KernelExecResult, inference_server: str, args: argparse.Namespace):
     """Run the evaluator on a freshly produced kernel.
 
-    Returns (small_guidance, large_guidance, direction). Either guidance may be
-    an empty string on parse failure; direction is None if the tag is missing or
-    malformed. Runs even when the kernel failed to compile — the prompt
-    assembler injects the traceback into a dedicated section.
+    Returns (small_guidance, large_guidance, direction, valid). Either guidance
+    may be an empty string on parse failure; direction is None if the tag is
+    missing or malformed; valid is None when the <valid> tag is absent or
+    malformed (treated as valid downstream). Runs even when the kernel failed to
+    compile — the prompt assembler injects the traceback into a dedicated
+    section.
     """
     evaluator_prompt = generate_evaluator_prompt(
         task_params=args.task_params,
@@ -54,7 +64,8 @@ def run_evaluator(ref_arch_src: str, kernel: str, metrics: KernelExecResult, inf
     small_guidance = _extract_tag(evaluator_output, "small_guidance")
     large_guidance = _extract_tag(evaluator_output, "large_guidance")
     direction = _extract_direction(evaluator_output)
-    return small_guidance, large_guidance, direction
+    valid = _extract_validity(evaluator_output)
+    return small_guidance, large_guidance, direction, valid
 
 def single_small_step(ref_arch_src: str, inference_server: str, previous_kernels: list, previous_metrics: list, args: argparse.Namespace, tuning_guidance: str = ""):
     # Pure executor: the evaluator (run by the orchestrator) supplies

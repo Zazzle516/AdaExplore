@@ -18,9 +18,14 @@ def run_large_loop(ref_arch_src: str, inference_server: str, args: argparse.Name
     kernel_pool = []
     metrics_pool = []
     proposal_ids = []  # Track original proposal IDs for context logging
+    # Parallel to kernel_pool/metrics_pool: the evaluator's validity verdict for
+    # each pooled kernel (None when unknown, e.g. resumed-from-disk). False
+    # collapses the kernel's score to (1, 0, 0) in the elite sort below.
+    validity_pool = []
     elite_pool = []
     elite_metrics_pool = []
     elite_proposal_ids = []
+    elite_validity_pool = []
 
     resume_start = 0
     if args.agent_type == "PS" and args.resume_from is not None:
@@ -43,14 +48,16 @@ def run_large_loop(ref_arch_src: str, inference_server: str, args: argparse.Name
             kernel_pool.append(kernel_src)
             metrics_pool.append(metrics)
             proposal_ids.append(pid)
+            # Resumed kernels carry no stored validity verdict — treat as valid.
+            validity_pool.append(None)
 
         if kernel_pool:
             sorted_data = sorted(
-                zip(kernel_pool, metrics_pool, proposal_ids),
-                key=lambda x: calculate_score(x[1]),
+                zip(kernel_pool, metrics_pool, proposal_ids, validity_pool),
+                key=lambda x: calculate_score(x[1], x[3]),
                 reverse=True,
             )
-            elite_pool, elite_metrics_pool, elite_proposal_ids = [list(x) for x in zip(*sorted_data)]
+            elite_pool, elite_metrics_pool, elite_proposal_ids, elite_validity_pool = [list(x) for x in zip(*sorted_data)]
 
         resume_start = len(kernel_pool)
         logger.info(f"Resumed {resume_start} proposals from {resume_dir}")
@@ -99,7 +106,7 @@ def run_large_loop(ref_arch_src: str, inference_server: str, args: argparse.Name
                 candidate_idx: list[int] = []
                 candidate_fast_p: list[float] = []
                 for j, m in enumerate(elite_metrics_pool):
-                    score = calculate_score(m)
+                    score = calculate_score(m, elite_validity_pool[j])
                     if score[0] == 1 and score[1] == 1 and elite_proposal_ids[j] not in recent_context_ids:
                         candidate_idx.append(j)
                         candidate_fast_p.append(score[2])
@@ -141,10 +148,12 @@ def run_large_loop(ref_arch_src: str, inference_server: str, args: argparse.Name
 
         # Evaluate the fresh proposal to update design guidance for the next
         # proposal. Direction tag parsed and logged but unused (fixed ratio).
-        _small_guidance, large_guidance, direction = run_evaluator(
+        # The validity verdict gates the proposal out of the elite pool if it
+        # won via an algebraic shortcut.
+        _small_guidance, large_guidance, direction, valid = run_evaluator(
             ref_arch_src, proposal_kernel, proposal_metrics, inference_server, args
         )
-        logger.debug(f"Proposal evaluator direction (ignored): {direction}")
+        logger.debug(f"Proposal evaluator direction (ignored): {direction}, valid: {valid}")
         
         # log the proposal
         if log_path is not None:
@@ -174,7 +183,8 @@ def run_large_loop(ref_arch_src: str, inference_server: str, args: argparse.Name
                 "compiled": proposal_metrics.compiled if proposal_metrics else False,
                 "correctness": proposal_metrics.correctness if proposal_metrics else False,
                 "runtime": proposal_metrics.runtime if proposal_metrics else -1.0,
-                "score": calculate_score(proposal_metrics),
+                "evaluator_valid": valid,
+                "score": calculate_score(proposal_metrics, valid),
             }
             with open(os.path.join(log_path, f"proposal_{i+1}_log.json"), "w") as f:
                 json.dump(step_log, f, indent=2)
@@ -194,21 +204,25 @@ def run_large_loop(ref_arch_src: str, inference_server: str, args: argparse.Name
             local_best_metrics = proposal_metrics
 
         logger.debug(f"Local Best Metrics: {local_best_metrics}")
-        logger.debug(f"Local Best Score: {calculate_score(local_best_metrics)}")
+        logger.debug(f"Local Best Score: {calculate_score(local_best_metrics, valid)}")
         kernel_pool.append(local_best_kernel)
         metrics_pool.append(local_best_metrics)
         proposal_ids.append(i + 1)  # Track the original proposal ID
-        
+        # The validity verdict was measured on the proposal; carry it for the
+        # pooled (possibly refined) kernel from this proposal's lineage.
+        validity_pool.append(valid)
+
         # Maintain a separately sorted elite pool for best-kernel context (do NOT reorder kernel_pool).
         sorted_data = sorted(
-            zip(kernel_pool, metrics_pool, proposal_ids),
-            key=lambda x: calculate_score(x[1]),
+            zip(kernel_pool, metrics_pool, proposal_ids, validity_pool),
+            key=lambda x: calculate_score(x[1], x[3]),
             reverse=True,
         )
-        elite_pool, elite_metrics_pool, elite_proposal_ids = zip(*sorted_data)
+        elite_pool, elite_metrics_pool, elite_proposal_ids, elite_validity_pool = zip(*sorted_data)
         elite_pool = list(elite_pool)
         elite_metrics_pool = list(elite_metrics_pool)
         elite_proposal_ids = list(elite_proposal_ids)
+        elite_validity_pool = list(elite_validity_pool)
 
     if len(elite_pool) == 0:
         raise ValueError("No kernels were generated; empty pool.")

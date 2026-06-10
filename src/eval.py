@@ -820,7 +820,7 @@ def run_and_check_correctness(
                 # Chunked comparison — `torch.allclose` directly on the full tensors
                 # OOMs because it materializes 3-5 full-shape intermediates.
                 passed, max_diff, avg_diff = _chunked_allclose_with_diff(
-                    output, output_new, atol=5e-02, rtol=5e-02
+                    output, output_new, atol=1e-03, rtol=1e-03
                 )
                 if not passed:
                     metadata.setdefault("max_difference", []).append(f"{max_diff:.6f}")
