@@ -30,6 +30,7 @@ hidden_size  = 8192
 scaling_factor = 1.5
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     return [torch.rand(batch_size, input_size)]
 
 def get_init_inputs():

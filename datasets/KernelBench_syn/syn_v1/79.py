@@ -82,6 +82,7 @@ class Model(nn.Module):
         return out
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, height, width)
     return [x]
 

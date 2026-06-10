@@ -119,6 +119,7 @@ def get_inputs():
     Returns:
         List[torch.Tensor]: [x] where x has shape (BATCH, C_IN, D, H, W)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(BATCH, C_IN, D, H, W)
     return [x]
 

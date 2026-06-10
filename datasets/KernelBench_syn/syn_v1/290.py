@@ -103,6 +103,7 @@ def get_inputs() -> List[torch.Tensor]:
     Returns a list of example input tensors for the module.
     The primary input is a random 5D tensor (batch_size, channels, depth, height, width).
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, channels, depth, height, width)
     return [x]
 

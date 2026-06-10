@@ -80,6 +80,7 @@ def get_inputs():
     Returns:
         List containing one input tensor with shape (BATCH, SEQ_LEN, EMBED)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(BATCH, SEQ_LEN, EMBED)
     return [x]
 

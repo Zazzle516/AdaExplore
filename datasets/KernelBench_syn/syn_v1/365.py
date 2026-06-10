@@ -99,6 +99,7 @@ def get_inputs():
     Create a random 5D tensor suitable for BatchNorm3d:
     Shape: (batch_size, channels, depth, height, width)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, channels, depth, height, width)
     return [x]
 

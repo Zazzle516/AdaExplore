@@ -20,6 +20,7 @@ input_shape = (num_classes,)
 dim = 1
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     return [torch.rand(batch_size, *input_shape), torch.randint(0, num_classes, (batch_size,))]
 
 def get_init_inputs():

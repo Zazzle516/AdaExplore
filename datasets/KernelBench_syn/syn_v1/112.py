@@ -200,6 +200,7 @@ def get_inputs() -> List[torch.Tensor]:
     Creates a sample input tensor with shape (batch_size, in_channels, depth, H, W).
     The values are random normal as in the examples.
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, depth, input_h, input_w)
     return [x]
 

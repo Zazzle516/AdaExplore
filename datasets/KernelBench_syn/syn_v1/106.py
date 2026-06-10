@@ -103,6 +103,7 @@ def get_inputs():
     Returns:
         list with the input tensor(s) expected by Model.forward
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(BATCH_SIZE, CHANNELS, DEPTH, HEIGHT, WIDTH)
     return [x]
 

@@ -82,6 +82,7 @@ def get_inputs():
           - volume has shape (BATCH_SIZE, IN_CHANNELS_3D, DEPTH, HEIGHT, WIDTH)
           - image has shape (BATCH_SIZE, IMAGE_CHANNELS, HEIGHT, WIDTH)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     volume = torch.randn(BATCH_SIZE, IN_CHANNELS_3D, DEPTH, HEIGHT, WIDTH)
     image = torch.randn(BATCH_SIZE, IMAGE_CHANNELS, HEIGHT, WIDTH)
     return [volume, image]

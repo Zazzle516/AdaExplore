@@ -66,6 +66,7 @@ output_classes = 10
 
 def get_inputs():
     """ Generates random input tensor of shape (batch_size, input_channels, height, width) """
+    torch.seed()  # reseed: fresh random inputs per run
     return [torch.rand(batch_size, input_channels, image_height, image_width)]
 
 def get_init_inputs():

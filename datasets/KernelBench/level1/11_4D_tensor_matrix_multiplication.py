@@ -37,6 +37,7 @@ l = 256
 k = 768
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     A = torch.rand(b, i, j, l)
     B = torch.rand(l, k)
     return [A, B]

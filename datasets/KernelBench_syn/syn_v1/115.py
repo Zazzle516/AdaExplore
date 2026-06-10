@@ -120,6 +120,7 @@ def get_inputs():
       - seq tensor: (batch_size, seq_channels, seq_length)
       - img tensor: (batch_size, img_channels, img_height, img_width)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     seq = torch.randn(batch_size, seq_channels, seq_length)
     img = torch.randn(batch_size, img_channels, img_height, img_width)
     return [seq, img]

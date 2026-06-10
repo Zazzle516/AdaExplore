@@ -66,6 +66,7 @@ num_heads = 4
 num_classes = 1000
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     return [torch.rand(batch_size, in_channels, image_size, image_size)]
 
 def get_init_inputs():

@@ -89,6 +89,7 @@ def get_inputs():
     Returns:
         A list containing a single random input tensor consistent with the module-level configuration.
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(BATCH, IN_CHANNELS, HEIGHT, WIDTH)
     return [x]
 

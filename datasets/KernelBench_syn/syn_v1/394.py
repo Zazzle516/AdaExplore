@@ -105,6 +105,7 @@ def get_inputs():
         x: (BATCH, IN_CHANNELS, H, W)
         h0: initial hidden state (BATCH, HIDDEN_DIM)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(BATCH, IN_CHANNELS, H, W)
     h0 = torch.randn(BATCH, HIDDEN_DIM)
     return [x, h0]

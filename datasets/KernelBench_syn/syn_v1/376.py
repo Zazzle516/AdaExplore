@@ -123,6 +123,7 @@ def get_inputs():
     Returns a list of input tensors matching the forward signature of Model:
     [x1, x2, vol]
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x1 = torch.randn(BATCH, BIL_IN1)
     x2 = torch.randn(BATCH, BIL_IN2)
     vol = torch.randn(BATCH, VOL_CHANNELS, VOL_D, VOL_H, VOL_W)

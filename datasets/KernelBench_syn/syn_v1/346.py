@@ -99,6 +99,7 @@ def get_inputs():
             images: Tensor of shape (BATCH_SIZE, IN_CHANNELS, H, W)
             context: Tensor of shape (BATCH_SIZE, L_POOLED)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     images = torch.randn(BATCH_SIZE, IN_CHANNELS, H, W, dtype=DTYPE, device=DEVICE)
     # context values around 1.0 (so modulation scales around identity) but random
     context = torch.randn(BATCH_SIZE, L_POOLED, dtype=DTYPE, device=DEVICE) * 0.5 + 1.0

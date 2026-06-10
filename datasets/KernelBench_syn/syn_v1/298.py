@@ -94,6 +94,7 @@ def get_inputs():
       - x: random input tensor of shape (batch_size, channels, height, width)
       - gating: random gating tensor of shape (batch_size, channels)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, channels, height, width)
     gating = torch.randn(batch_size, channels)
     return [x, gating]

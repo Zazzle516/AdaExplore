@@ -34,6 +34,7 @@ image_height = 128
 image_width = 128
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     return [torch.rand(batch_size, num_channels, image_height, image_width)]
 
 def get_init_inputs():

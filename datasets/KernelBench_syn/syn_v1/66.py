@@ -116,6 +116,7 @@ def get_inputs():
     - seq: (BATCH_SIZE, SEQ_CHANNELS, SEQ_LENGTH)
     - vol: (BATCH_SIZE, VOL_CHANNELS, DEPTH, HEIGHT, WIDTH)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     seq = torch.randn(BATCH_SIZE, SEQ_CHANNELS, SEQ_LENGTH)
     vol = torch.randn(BATCH_SIZE, VOL_CHANNELS, DEPTH, HEIGHT, WIDTH)
     return [seq, vol]

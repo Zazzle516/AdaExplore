@@ -119,6 +119,7 @@ layers = [3, 4, 23, 3]
 num_classes = 1000
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     return [torch.rand(batch_size, 3, height, width)]
 
 def get_init_inputs():

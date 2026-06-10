@@ -93,6 +93,7 @@ def get_inputs():
     """
     Returns a list containing a single input tensor suitable for the Model's forward method.
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, height, width)
     return [x]
 

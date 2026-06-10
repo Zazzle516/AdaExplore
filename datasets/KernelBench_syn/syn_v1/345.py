@@ -98,6 +98,7 @@ def get_inputs() -> List[torch.Tensor]:
     Returns a list with a single input tensor shaped (batch_size, in_channels, height, width).
     Values are randomly sampled from a standard normal distribution.
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, height, width)
     return [x]
 

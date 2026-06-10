@@ -97,6 +97,7 @@ def get_inputs():
     - x2d: (batch_size, in_channels, H, W)
     - x3d: (batch_size, c3, D, H3, W3)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x2d = torch.randn(batch_size, in_channels, H, W)
     x3d = torch.randn(batch_size, c3, D, H3, W3)
     return [x2d, x3d]

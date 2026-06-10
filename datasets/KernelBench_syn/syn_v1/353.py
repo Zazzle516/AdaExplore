@@ -99,6 +99,7 @@ def get_inputs():
     Returns a list containing the primary input tensor for the model:
       - x: shape (batch_size, seq_len, dim), dtype float32
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, seq_len, dim, dtype=torch.float32)
     return [x]
 

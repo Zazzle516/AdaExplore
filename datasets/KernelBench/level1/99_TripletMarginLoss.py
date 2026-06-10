@@ -20,6 +20,7 @@ input_shape = (8192,)
 dim = 1
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     scale = torch.rand(())
     return [torch.rand(batch_size, *input_shape)*scale, torch.rand(batch_size, *input_shape), torch.rand(batch_size, *input_shape)]
     

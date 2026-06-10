@@ -130,6 +130,7 @@ def get_inputs():
     Returns a list containing a single input tensor of shape (batch_size, in_channels, seq_len).
     The sequence length is H * W to enable reshaping into 2D feature maps.
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, seq_len)
     return [x]
 

@@ -43,6 +43,7 @@ padding = 1
 dilation = 2
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.rand(batch_size, in_channels, length)
     return [x]
 

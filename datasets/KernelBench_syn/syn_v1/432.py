@@ -104,6 +104,7 @@ def get_inputs():
     Returns the input 5D tensor required by the Model:
       - x shape: (BATCH, CHANNELS, DEPTH, HEIGHT, WIDTH)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(BATCH, CHANNELS, DEPTH, HEIGHT, WIDTH)
     return [x]
 

@@ -102,6 +102,7 @@ def get_inputs():
       - vol: (B, C, D, H, W)
       - feat2d: (B, C, H, W)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     vol = torch.randn(batch_size, channels, depth, height, width)
     feat2d = torch.randn(batch_size, channels, height, width)
     return [vol, feat2d]

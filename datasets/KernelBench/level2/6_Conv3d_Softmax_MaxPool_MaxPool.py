@@ -32,6 +32,7 @@ kernel_size = 3
 pool_kernel_size = 2
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     return [torch.rand(batch_size, in_channels, depth, height, width)]
 
 def get_init_inputs():

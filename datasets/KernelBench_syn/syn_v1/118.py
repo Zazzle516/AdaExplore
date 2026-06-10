@@ -73,6 +73,7 @@ def get_inputs():
       - X: a random 5D tensor (N, C, D, H, W)
       - W: a random projection matrix (C, M)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     X = torch.randn(N, C, D, H, W_sp)
     W = torch.randn(C, M)
     return [X, W]

@@ -96,6 +96,7 @@ def get_inputs():
     Returns typical example inputs for the model:
       - A 5D tensor with shape (BATCH_SIZE, IN_CHANNELS, DEPTH, HEIGHT, WIDTH)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(BATCH_SIZE, IN_CHANNELS, DEPTH, HEIGHT, WIDTH)
     return [x]
 

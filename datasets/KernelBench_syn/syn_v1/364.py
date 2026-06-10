@@ -84,6 +84,7 @@ def get_inputs():
     Returns:
         List containing a single 5D input tensor shaped (N, C, D, H, W)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, channels, depth, height, width)
     return [x]
 

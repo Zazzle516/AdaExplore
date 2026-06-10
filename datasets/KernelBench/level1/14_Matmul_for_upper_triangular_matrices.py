@@ -30,6 +30,7 @@ def get_inputs():
     Returns:
         list: A list containing two upper triangular matrices of shape (N, N).
     """
+    torch.seed()  # reseed: fresh random inputs per run
     A = torch.triu(torch.rand(N, N))
     B = torch.triu(torch.rand(N, N))
     return [A, B]

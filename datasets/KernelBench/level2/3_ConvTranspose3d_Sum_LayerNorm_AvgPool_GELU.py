@@ -34,6 +34,7 @@ norm_shape = (out_channels,)
 pool_kernel_size = (2, 2, 2)
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     return [torch.rand(batch_size, in_channels, depth, height, width)]
 
 def get_init_inputs():

@@ -101,6 +101,7 @@ def get_inputs() -> List[torch.Tensor]:
     - 3D volume tensor of shape (batch_size, in_channels, D, H, W)
     - External projection matrix of shape (d_model, out_features)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, D, H, W)
     projection_matrix = torch.randn(d_model, out_features)
     return [x, projection_matrix]

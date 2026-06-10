@@ -48,6 +48,7 @@ output_size = 128
 sequence_length = 256
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     return [
         torch.rand(sequence_length, batch_size, input_size),
         torch.rand(batch_size, hidden_size)

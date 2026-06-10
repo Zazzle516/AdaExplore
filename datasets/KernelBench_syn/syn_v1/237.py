@@ -96,6 +96,7 @@ def get_inputs():
         x: (batch_size, in_channels, D, H, W)
         memory: (mem_seq_len, batch_size, in_channels)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, D, H, W)
     memory = torch.randn(mem_seq_len, batch_size, in_channels)
     return [x, memory]

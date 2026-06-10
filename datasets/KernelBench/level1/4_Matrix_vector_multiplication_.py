@@ -25,6 +25,7 @@ M = 256 * 8 # 2048
 K = 131072 * 8 # 1048576
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     A = torch.rand(M, K)
     B = torch.rand(K, 1)
     return [A, B]

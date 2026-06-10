@@ -82,6 +82,7 @@ def get_inputs():
     - x: (batch_size, seq_len, d_model)
     - W_q, W_k, W_v: (d_model, d_hidden)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     # Use float32 for a mix of stability and performance on CPU/GPU
     x = torch.randn(batch_size, seq_len, d_model, dtype=torch.float32)
     W_q = torch.randn(d_model, d_hidden, dtype=torch.float32)

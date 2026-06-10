@@ -33,6 +33,7 @@ num_groups   = 8
 height, width = 32, 32
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     return [torch.rand(batch_size, in_channels, height, width)]
 
 def get_init_inputs():

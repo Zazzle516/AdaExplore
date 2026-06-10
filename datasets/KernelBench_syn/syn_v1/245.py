@@ -91,6 +91,7 @@ def get_inputs():
     """
     Returns input tensors for the model.
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(BATCH_SIZE, INPUT_DIM)
     return [x]
 

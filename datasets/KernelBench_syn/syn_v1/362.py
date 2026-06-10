@@ -135,6 +135,7 @@ hidden_dim = 128
 
 def get_inputs():
     # Random input tensor matching the configuration above
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, height, width)
     return [x]
 

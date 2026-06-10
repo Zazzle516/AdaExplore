@@ -115,6 +115,7 @@ def get_inputs():
         x: (batch, seq_len, input_size)
         h0: (num_layers * num_directions, batch, hidden_size)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     num_directions = 2 if BIDIRECTIONAL else 1
     x = torch.randn(BATCH_SIZE, SEQ_LEN, INPUT_SIZE)
     h0 = torch.randn(NUM_LAYERS * num_directions, BATCH_SIZE, HIDDEN_SIZE)

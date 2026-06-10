@@ -94,6 +94,7 @@ def get_inputs() -> List[torch.Tensor]:
     Returns example input tensors for the model. The LazyConvTranspose1d will infer
     its in_channels from the provided input tensor's shape.
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, input_length)
     return [x]
 

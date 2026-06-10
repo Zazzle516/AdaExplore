@@ -19,6 +19,7 @@ sequence_length = 256
 batch_size = 32
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     inputs = torch.randint(0, vocab_size, (batch_size, sequence_length))
     return [inputs]
 

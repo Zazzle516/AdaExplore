@@ -112,6 +112,7 @@ out_dim = 32
 
 def get_inputs():
     # Volumetric input: (batch, channels, D, H, W)
+    torch.seed()  # reseed: fresh random inputs per run
     vol = torch.randn(batch_size, channels, D, H, W)
     # Token sequence: (batch, seq_len, embed_dim)
     seq = torch.randn(batch_size, seq_len, embed_dim)

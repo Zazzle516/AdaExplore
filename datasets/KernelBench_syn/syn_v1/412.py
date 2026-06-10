@@ -120,6 +120,7 @@ def get_inputs():
             - video_tensor: (BATCH_SIZE, CHANNELS, VIDEO_DEPTH, VIDEO_HEIGHT, VIDEO_WIDTH)
             - image_tensor: (BATCH_SIZE, CHANNELS, IMAGE_HEIGHT, IMAGE_WIDTH)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     video = torch.randn(BATCH_SIZE, CHANNELS, VIDEO_DEPTH, VIDEO_HEIGHT, VIDEO_WIDTH)
     image = torch.randn(BATCH_SIZE, CHANNELS, IMAGE_HEIGHT, IMAGE_WIDTH)
     return [video, image]

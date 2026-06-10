@@ -100,6 +100,7 @@ def get_inputs():
     """
     Returns typical input tensors for running the module.
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(BATCH, IN_CHANNELS, HEIGHT, WIDTH)
     return [x]
 

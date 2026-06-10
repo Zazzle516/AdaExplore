@@ -88,6 +88,7 @@ def get_inputs():
     Returns input tensors for the model:
     - A single volumetric tensor of shape (batch_size, C, D, H, W)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     A = torch.randn(batch_size, C, D, H, W, dtype=torch.float32)
     return [A]
 

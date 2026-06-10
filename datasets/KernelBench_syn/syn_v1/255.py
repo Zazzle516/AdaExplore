@@ -156,6 +156,7 @@ def get_inputs() -> List[torch.Tensor]:
       - vol: (batch_size, vol_in_channels, vol_depth, vol_height, vol_width)
       - img: (batch_size, img_channels, img_height, img_width)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     vol = torch.randn(batch_size, vol_in_channels, vol_depth, vol_height, vol_width)
     img = torch.randn(batch_size, img_channels, img_height, img_width)
     return [vol, img]

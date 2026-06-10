@@ -123,6 +123,7 @@ def get_inputs():
       - x: spatial input tensor of shape (batch_size, in_channels, height, width)
       - cond: conditioning vector of shape (batch_size, cond_dim)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, height, width)
     cond = torch.randn(batch_size, cond_dim)
     return [x, cond]

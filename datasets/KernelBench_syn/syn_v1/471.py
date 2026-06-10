@@ -109,6 +109,7 @@ def get_inputs():
     """
     Returns example inputs for the forward pass.
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(BATCH, IN_CHANNELS, DEPTH, HEIGHT, WIDTH)
     return [x]
 

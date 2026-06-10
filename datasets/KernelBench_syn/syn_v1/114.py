@@ -141,6 +141,7 @@ def get_inputs():
     Returns:
         list: single-element list containing the input tensor.
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, image_size, image_size)
     return [x]
 

@@ -78,6 +78,7 @@ dropout = 0.0
 emb_dropout = 0.0
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     return [torch.rand(2, channels, image_size, image_size)]
 
 def get_init_inputs():

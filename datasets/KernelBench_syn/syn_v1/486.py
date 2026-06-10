@@ -108,6 +108,7 @@ def get_inputs():
               src is (batch_size, src_len, d_model)
               tgt is (batch_size, tgt_len, d_model)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     src = torch.randn(batch_size, src_len, d_model)
     tgt = torch.randn(batch_size, tgt_len, d_model)
     return [src, tgt]

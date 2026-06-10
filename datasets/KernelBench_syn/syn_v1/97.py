@@ -84,6 +84,7 @@ def get_inputs():
     - x: volumetric input (N, C, D, H, W)
     - B: external projection matrix (hidden_features, out_features)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(BATCH, IN_CHANNELS, DEPTH, HEIGHT, WIDTH)
     B = torch.randn(HIDDEN, OUT_FEATURES)
     return [x, B]

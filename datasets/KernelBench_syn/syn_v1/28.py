@@ -119,6 +119,7 @@ groups = 1
 pad_value = -0.5
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, height, width)
     return [x]
 

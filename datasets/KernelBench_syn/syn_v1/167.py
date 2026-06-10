@@ -112,6 +112,7 @@ def get_inputs():
           - h0: initial hidden state (num_layers * num_directions, batch, hidden_size)
           - c0: initial cell state (num_layers * num_directions, batch, hidden_size)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     num_directions = 2 if bidirectional else 1
     x = torch.randn(batch_size, seq_len, input_size)
     h0 = torch.randn(num_layers * num_directions, batch_size, hidden_size)

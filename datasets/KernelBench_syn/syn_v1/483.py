@@ -89,6 +89,7 @@ def get_inputs():
       - An input image tensor of shape (BATCH, IN_CHANNELS, HEIGHT, WIDTH)
       - A symmetric channel mixing matrix of shape (OUT_CHANNELS, OUT_CHANNELS)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(BATCH, IN_CHANNELS, HEIGHT, WIDTH)
 
     # Create a symmetric mixing matrix for stability / interpretability

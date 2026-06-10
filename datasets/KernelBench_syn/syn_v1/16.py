@@ -98,6 +98,7 @@ def get_inputs():
         List containing the input sequence tensor:
           - x: torch.Tensor of shape (BATCH_SIZE, SEQ_LEN, INPUT_SIZE)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(BATCH_SIZE, SEQ_LEN, INPUT_SIZE)
     return [x]
 

@@ -33,6 +33,7 @@ groups = 8
 bias = False
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     return [torch.rand(batch_size, in_channels, D, H, W)]
 
 def get_init_inputs():

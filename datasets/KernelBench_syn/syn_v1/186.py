@@ -106,6 +106,7 @@ def get_inputs():
     Returns example input tensors for the module's forward pass:
       - x: random volumetric tensor shaped (B, C, D, H, W)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(B, C, D, H, W)
     return [x]
 

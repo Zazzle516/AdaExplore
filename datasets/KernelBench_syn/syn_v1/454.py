@@ -122,6 +122,7 @@ def get_inputs():
     """
     Generates a list with a single input tensor matching the configuration above.
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, height, width)
     return [x]
 

@@ -130,6 +130,7 @@ def get_inputs():
     - img: batch of images with shape (batch_size, in_channels, H, W)
     - aux: auxiliary vector with shape (batch_size, vec_dim)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     img = torch.randn(batch_size, in_channels, H, W)
     aux = torch.randn(batch_size, vec_dim)
     return [img, aux]

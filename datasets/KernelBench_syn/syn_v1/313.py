@@ -82,6 +82,7 @@ def get_inputs():
     Returns the primary input tensor for the model:
     - A random float tensor shaped (batch_size, channels, height, width)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, channels, height, width)
     return [x]
 

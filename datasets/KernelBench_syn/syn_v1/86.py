@@ -104,6 +104,7 @@ def get_inputs():
         spatial_proj: random tensor (P_H * P_W, K)
         channel_mod: random tensor (BATCH, C_OUT)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     X = torch.randn(BATCH, C_IN, H, W)
     spatial_proj = torch.randn(P_H * P_W, K)
     channel_mod = torch.randn(BATCH, C_OUT)

@@ -146,6 +146,7 @@ def get_inputs():
     - x: tensor of shape (batch_size, in_channels, depth, height, width)
     - target: integer class indices of shape (batch_size,)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, depth, height, width)
     target = torch.randint(low=0, high=num_classes, size=(batch_size,), dtype=torch.long)
     return [x, target]

@@ -129,6 +129,7 @@ def get_inputs() -> List[torch.Tensor]:
     - x3d: (batch_size, C3, D, H, W)
     - z2d: (batch_size, C2, H, W)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x3d = torch.randn(batch_size, C3, D, H, W)
     z2d = torch.randn(batch_size, C2, H, W)
     return [x3d, z2d]

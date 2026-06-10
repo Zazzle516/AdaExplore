@@ -156,6 +156,7 @@ def get_inputs():
         channel_proj: random projection matrix of shape (out_channels_per_depth, out_channels_per_depth)
                      (Here we keep final mixed channels same as out_channels_per_depth for simplicity.)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(BATCH, IN_CHANNELS, DEPTH, IN_HEIGHT, IN_WIDTH)
 
     out_channels_per_depth = DECONV_OUT_CHANNELS // DEPTH

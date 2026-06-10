@@ -39,6 +39,7 @@ kernel_size = 3
 length = 131072
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.rand(batch_size, in_channels, length)
     return [x]
 

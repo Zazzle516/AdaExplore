@@ -137,6 +137,7 @@ def get_inputs():
     - indices: 1D tensor of length batch_size * bag_size
     - offsets: 1D tensor of bag start offsets of length batch_size
     """
+    torch.seed()  # reseed: fresh random inputs per run
     # Random indices for each bag
     indices = torch.randint(0, num_embeddings, (batch_size * bag_size,), dtype=torch.long)
     offsets = torch.arange(0, batch_size * bag_size, bag_size, dtype=torch.long)

@@ -108,6 +108,7 @@ def get_inputs():
 
     The model's forward signature accepts (x, h0), so both are returned.
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, seq_len, input_size)
     h0 = torch.randn(batch_size, hidden_size)
     return [x, h0]

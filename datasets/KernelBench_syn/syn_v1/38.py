@@ -142,6 +142,7 @@ def get_inputs():
     - offsets: 1D LongTensor of length batch_size with starting offsets for each bag
     - conv_input: FloatTensor of shape (batch_size, conv_in_channels, base_width)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     # Create indices and offsets for EmbeddingBag: fixed-size bags for simplicity
     total_indices = batch_size * bag_size
     indices = torch.randint(low=0, high=num_embeddings, size=(total_indices,), dtype=torch.long)

@@ -94,6 +94,7 @@ def get_inputs():
     - x_img: random image tensor of shape (batch_size, in_channels, height, width)
     - x_ctx: random context tensor of shape (batch_size, context_dim)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x_img = torch.randn(batch_size, in_channels, height, width)
     x_ctx = torch.randn(batch_size, context_dim)
     return [x_img, x_ctx]

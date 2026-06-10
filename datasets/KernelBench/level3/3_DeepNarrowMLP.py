@@ -37,6 +37,7 @@ hidden_layer_sizes = [1024] * 16  # deep network with wider layers
 output_size = 8192
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     return [torch.rand(batch_size, input_size)]
 
 def get_init_inputs():

@@ -81,6 +81,7 @@ def get_inputs():
     Returns a list with a single input tensor to the model:
     shape (batch_size, channels, height, width)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, channels, height, width)
     return [x]
 

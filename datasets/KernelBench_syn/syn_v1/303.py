@@ -125,6 +125,7 @@ def get_inputs():
     """
     Returns runtime input tensors: the volumetric input and corresponding target labels.
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, depth, height, width)
     target = torch.randint(low=0, high=num_classes, size=(batch_size,), dtype=torch.long)
     return [x, target]

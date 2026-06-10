@@ -15,6 +15,7 @@ sequence_length = 512
 embedding_dimension = 1024
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     Q = torch.rand(batch_size, num_heads, sequence_length, embedding_dimension)
     K = torch.rand(batch_size, num_heads, sequence_length, embedding_dimension)
     V = torch.rand(batch_size, num_heads, sequence_length, embedding_dimension)

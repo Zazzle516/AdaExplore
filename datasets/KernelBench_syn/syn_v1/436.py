@@ -97,6 +97,7 @@ def get_inputs():
     X: random 5D tensor of shape (B, C, D, H, W)
     alpha: scalar float controlling attention sharpness
     """
+    torch.seed()  # reseed: fresh random inputs per run
     X = torch.randn(B, C, D, H, W)
     alpha = 2.0  # moderately sharp attention
     return [X, alpha]

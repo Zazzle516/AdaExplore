@@ -533,6 +533,7 @@ batch_size = 10
 image_size = 224
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     return [torch.rand(batch_size, 3, image_size, image_size)]
 
 def get_init_inputs():

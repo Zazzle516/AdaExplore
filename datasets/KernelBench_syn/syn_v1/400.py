@@ -126,6 +126,7 @@ def get_inputs():
     """
     Returns a sample input tensor matching the configuration above.
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, in_height, in_width)
     return [x]
 

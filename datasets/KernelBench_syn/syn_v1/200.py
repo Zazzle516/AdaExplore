@@ -98,6 +98,7 @@ def get_inputs():
     Returns the runtime inputs for the model:
     - A 4D tensor shaped (batch_size, channels, height, width)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, channels, height, width)
     return [x]
 

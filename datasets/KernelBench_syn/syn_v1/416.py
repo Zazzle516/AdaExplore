@@ -87,6 +87,7 @@ def get_inputs():
         W_time: (SEQ_LEN, SEQ_LEN)
         W_channel: (CHANNELS, CHANNELS)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     X = torch.randn(BATCH, CHANNELS, SEQ_LEN)
     W_time = torch.randn(SEQ_LEN, SEQ_LEN)
     W_channel = torch.randn(CHANNELS, CHANNELS)

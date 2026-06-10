@@ -121,6 +121,7 @@ def get_inputs():
             src: Tensor of shape (SEQ_LEN, BATCH, INPUT_DIM)
             memory: Tensor of shape (MEM_LEN, BATCH, MEM_DIM)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     src = torch.randn(SEQ_LEN, BATCH, INPUT_DIM)
     memory = torch.randn(MEM_LEN, BATCH, MEM_DIM)
     return [src, memory]

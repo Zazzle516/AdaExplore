@@ -96,6 +96,7 @@ def get_inputs():
     """
     Returns a list containing a single input tensor shaped (seq_len, batch_size, embed_dim).
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(seq_len, batch_size, embed_dim)
     return [x]
 

@@ -129,6 +129,7 @@ def get_inputs():
           - image: Tensor of shape (B, C, H, W)
           - memory: Tensor of shape (B, S, d_model) (will be converted internally)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     image = torch.randn(batch_size, in_channels, H, W)
     # Memory provided in shape (B, S, d_model) for convenience
     memory = torch.randn(batch_size, memory_seq_len, d_model)

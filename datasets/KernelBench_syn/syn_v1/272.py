@@ -112,6 +112,7 @@ dropout = 0.1
 
 def get_inputs():
     # Random volumetric input
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, depth, height, width)
     return [x]
 

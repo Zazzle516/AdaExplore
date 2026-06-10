@@ -113,6 +113,7 @@ def get_inputs():
     We create NUM_BAGS bags, each with AVG_BAG_LEN indices, concatenated into a single 1D indices tensor,
     and offsets that mark the start of each bag.
     """
+    torch.seed()  # reseed: fresh random inputs per run
     total_indices = NUM_BAGS * AVG_BAG_LEN
     # Random token indices in range [0, NUM_EMBEDDINGS)
     indices = torch.randint(low=0, high=NUM_EMBEDDINGS, size=(total_indices,), dtype=torch.long)

@@ -121,6 +121,7 @@ def get_inputs():
       - input image tensor x of shape (batch_size, in_channels, height, width)
       - target tensor of shape (batch_size,) with class indices in [0, n_classes)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, height, width)
     target = torch.randint(low=0, high=n_classes, size=(batch_size,))
     return [x, target]

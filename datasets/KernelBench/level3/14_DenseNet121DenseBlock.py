@@ -45,6 +45,7 @@ growth_rate = 32
 height, width = 224, 224
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     return [torch.rand(batch_size, num_input_features, height, width)]
 
 def get_init_inputs():

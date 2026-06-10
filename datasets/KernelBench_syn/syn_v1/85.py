@@ -132,6 +132,7 @@ def get_inputs():
             src has shape (BATCH, SRC_LEN, IN_DIM)
             tgt has shape (BATCH, TGT_LEN, IN_DIM)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     src = torch.randn(BATCH, SRC_LEN, IN_DIM)
     tgt = torch.randn(BATCH, TGT_LEN, IN_DIM)
     return [src, tgt]

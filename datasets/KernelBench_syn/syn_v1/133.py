@@ -103,6 +103,7 @@ def get_inputs() -> List[torch.Tensor]:
     """
     Returns a list of input tensors suitable for the Model forward pass.
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, depth, height, width)
     return [x]
 

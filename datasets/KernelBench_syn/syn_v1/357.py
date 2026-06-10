@@ -75,6 +75,7 @@ def get_inputs():
     """
     Create a 5D input tensor for the 3D model: (BATCH, C_IN, DEPTH, HEIGHT, WIDTH)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(BATCH, C_IN, DEPTH, HEIGHT, WIDTH)
     return [x]
 

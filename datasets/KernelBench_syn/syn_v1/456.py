@@ -90,6 +90,7 @@ def get_inputs():
     Generates a random input batch and a random boolean source mask.
     Mask True indicates a valid token; ~10% of positions are masked out.
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, seq_len, emb_dim)
     # Create a mask with approximately 10% masked positions
     src_mask = (torch.rand(batch_size, seq_len) > 0.1)

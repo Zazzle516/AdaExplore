@@ -45,6 +45,7 @@ output_padding = (1, 1, 1)
 groups = 4
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.rand(batch_size, in_channels, depth, height, width)
     return [x]
 

@@ -33,6 +33,7 @@ dim2 = 4095
 reduce_dim = 1
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.rand(batch_size, dim1, dim2)
     return [x]
 

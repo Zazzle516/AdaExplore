@@ -86,6 +86,7 @@ def get_inputs():
         List[torch.Tensor]: A single input tensor shaped (batch_size, channels, depth, height, width)
                             with random normal initialization.
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, channels, depth, height, width)
     return [x]
 

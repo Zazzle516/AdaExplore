@@ -90,6 +90,7 @@ def get_inputs() -> List[torch.Tensor]:
     """
     Creates a realistic 5D tensor input for the model: (B, C, D, H, W).
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, channels, depth, height, width)
     return [x]
 

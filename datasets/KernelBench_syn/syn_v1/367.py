@@ -115,6 +115,7 @@ def get_inputs() -> List[torch.Tensor]:
           - tgt has shape (BATCH_SIZE, TGT_SEQ_LEN, D_MODEL)
           - memory has shape (BATCH_SIZE, MEM_SEQ_LEN, D_MODEL)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     tgt = torch.randn(BATCH_SIZE, TGT_SEQ_LEN, D_MODEL)
     memory = torch.randn(BATCH_SIZE, MEM_SEQ_LEN, D_MODEL)
     return [tgt, memory]

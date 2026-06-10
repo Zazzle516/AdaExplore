@@ -89,6 +89,7 @@ def get_inputs() -> List[torch.Tensor]:
           - x: Tensor of shape (BATCH_SIZE, CHANNELS, DEPTH, HEIGHT, WIDTH)
           - channel_scale: 1D tensor of length CHANNELS * (DEPTH // POOL_KERNEL[0])
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(BATCH_SIZE, CHANNELS, DEPTH, HEIGHT, WIDTH)
     Dp = DEPTH // POOL_KERNEL[0]
     channel_scale = torch.randn(CHANNELS * Dp)

@@ -90,6 +90,7 @@ def get_inputs():
     Creates a random input tensor matching the configured batch and spatial sizes.
     Returns the list of inputs consumed by Model.forward.
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, height, width)
     return [x]
 

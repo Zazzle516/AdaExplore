@@ -114,6 +114,7 @@ def get_inputs():
       - vol: random 5D tensor (BATCH, CHANNELS, DEPTH, HEIGHT, WIDTH)
       - ctx: random context tensor (BATCH, CTX_DIM)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     vol = torch.randn(B, C, D, H, W)
     ctx = torch.randn(B, CTX)
     return [vol, ctx]

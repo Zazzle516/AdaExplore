@@ -89,6 +89,7 @@ def get_inputs():
       - x: random 5D tensor (B, C, D, H, W)
       - channel_proj: random channel mixing matrix (C, C) for square mixing
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, channels, depth, height, width)
     # channel mixing matrix: square (channels x channels) in this example
     channel_proj = torch.randn(channels, channels)

@@ -78,6 +78,7 @@ class Model(nn.Module):
 
 def get_inputs():
     # Create a random 5D tensor representing a batch of volumetric data (e.g., small video clips)
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, depth, height, width)
     return [x]
 

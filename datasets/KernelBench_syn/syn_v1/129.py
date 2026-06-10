@@ -116,6 +116,7 @@ def get_inputs() -> List[torch.Tensor]:
     Returns a list containing one input tensor consistent with the module-level configuration.
     Shape: (batch_size, channels, depth, height, width)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, channels, depth, height, width)
     return [x]
 

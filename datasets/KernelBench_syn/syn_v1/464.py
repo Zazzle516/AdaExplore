@@ -165,6 +165,7 @@ dropout = 0.1
 pool_output_size = 1  # will produce (B, out_channels, 1, 1)
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, height, width)
     return [x]
 

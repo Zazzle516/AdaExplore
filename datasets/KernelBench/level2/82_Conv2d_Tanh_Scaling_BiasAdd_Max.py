@@ -35,6 +35,7 @@ bias_shape = (out_channels, 1, 1)
 pool_kernel_size = 4
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     return [torch.rand(batch_size, in_channels, height, width)]
 
 def get_init_inputs():

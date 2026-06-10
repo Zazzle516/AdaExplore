@@ -96,6 +96,7 @@ def get_inputs():
       - x: (BATCH, IN_CHANNELS, H, W)
       - skip: (BATCH, SKIP_CHANNELS, H_skip, W_skip) with potentially different spatial dims
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(BATCH, IN_CHANNELS, H, W)
     # Provide skip with different spatial size to exercise interpolation logic
     skip = torch.randn(BATCH, SKIP_CHANNELS, max(1, H // 2), max(1, W // 3))

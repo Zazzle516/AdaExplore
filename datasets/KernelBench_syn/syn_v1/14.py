@@ -86,6 +86,7 @@ def get_inputs():
     Returns example input tensors compatible with Model.forward:
     - A random volumetric tensor of shape (BATCH, CHANNELS, DEPTH, HEIGHT, WIDTH)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(BATCH, CHANNELS, DEPTH, HEIGHT, WIDTH)
     return [x]
 

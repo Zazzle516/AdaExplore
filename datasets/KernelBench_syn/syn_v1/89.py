@@ -84,6 +84,7 @@ def get_inputs():
         - x: Tensor of shape (BATCH_SIZE, CHANNELS, DEPTH, HEIGHT, WIDTH)
         - cond: Tensor of shape (BATCH_SIZE, 1)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(BATCH_SIZE, CHANNELS, DEPTH, HEIGHT, WIDTH, dtype=torch.float32)
     # Use a small-range conditioning scalar per sample (can be negative/positive)
     cond = torch.randn(BATCH_SIZE, 1, dtype=torch.float32)

@@ -126,6 +126,7 @@ def get_inputs():
           - vol is a random tensor of shape (BATCH, IN_CHANNELS, DEPTH, HEIGHT, WIDTH)
           - seq is a random tensor of shape (BATCH, SEQ_LEN)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     vol = torch.randn(BATCH, IN_CHANNELS, DEPTH, HEIGHT, WIDTH)
     seq = torch.randn(BATCH, SEQ_LEN)
     return [vol, seq]

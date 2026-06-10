@@ -84,6 +84,7 @@ def get_inputs():
     Returns example input tensor matching the configuration above.
     Ensure height and width are divisible by downscale_factor and pool operations.
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, height, width)
     return [x]
 

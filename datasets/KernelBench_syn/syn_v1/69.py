@@ -129,6 +129,7 @@ def get_inputs() -> List[torch.Tensor]:
     - seq: 1D sequence tensor (batch, seq_in_channels, seq_len)
     - vol: 3D volumetric tensor (batch, channels_3d_in, D, H, W)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     seq = torch.randn(batch_size, seq_in_channels, seq_len)
     vol = torch.randn(batch_size, channels_3d_in, depth, height, width)
     return [seq, vol]

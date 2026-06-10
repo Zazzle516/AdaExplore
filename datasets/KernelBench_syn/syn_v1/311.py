@@ -152,6 +152,7 @@ def get_inputs() -> List[torch.Tensor]:
     Returns:
         A list containing a single 5D tensor: (BATCH_SIZE, CHANNELS, DEPTH, HEIGHT, WIDTH)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(B, C, D, H, W)
     return [x]
 

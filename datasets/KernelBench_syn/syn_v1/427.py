@@ -120,6 +120,7 @@ threshold_replacement = THRESHOLD_REPLACEMENT
 
 def get_inputs():
     # Input image tensor
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, height, width)
 
     # Create a per-sample, per-channel gate between 0.0 and 1.0

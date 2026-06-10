@@ -20,6 +20,7 @@ batch_size = 8192
 dim = 8192
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     return [torch.rand(batch_size, dim)]
 
 def get_init_inputs():

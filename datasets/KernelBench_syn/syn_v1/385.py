@@ -125,6 +125,7 @@ def get_inputs():
     Returns:
         list: [indices, offsets, spatial_input]
     """
+    torch.seed()  # reseed: fresh random inputs per run
     # Random variable lengths for each bag between 1 and MAX_BAG_LEN
     lengths = torch.randint(1, MAX_BAG_LEN + 1, (BATCH_SIZE,), dtype=torch.long)
     offsets = torch.empty(BATCH_SIZE, dtype=torch.long)

@@ -85,6 +85,7 @@ def get_inputs():
     Returns a list containing:
       - A single 5D tensor appropriate for ConvTranspose3d input: (N, C_in, D, H, W)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, depth, height, width)
     return [x]
 

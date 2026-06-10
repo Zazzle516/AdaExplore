@@ -118,6 +118,7 @@ def get_inputs() -> List[torch.Tensor]:
     - x: (batch, seq_len, input_dim)
     - h0: initial hidden state for GRU with shape (num_layers * num_directions, batch, hidden_size)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(BATCH, SEQ_LEN, INPUT_DIM)
     num_directions = 2 if BIDIRECTIONAL else 1
     h0 = torch.randn(NUM_LAYERS * num_directions, BATCH, HIDDEN_SIZE)

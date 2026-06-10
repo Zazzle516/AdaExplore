@@ -43,6 +43,7 @@ dilation    = 3
 return_indices = False
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.rand(batch_size, features, sequence_length)
     return [x]
 

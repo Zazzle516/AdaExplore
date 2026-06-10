@@ -30,6 +30,7 @@ subtract2_value = 0.2
 kernel_size_pool = 2
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     return [torch.rand(batch_size, in_channels, height, width)]
 
 def get_init_inputs():

@@ -113,6 +113,7 @@ pool_stride = 2
 
 def get_inputs():
     # Random input tensor simulating a batch of 1D sequences
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, seq_length, dtype=torch.float32)
     return [x]
 

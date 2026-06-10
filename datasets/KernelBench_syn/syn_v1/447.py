@@ -98,6 +98,7 @@ def get_inputs():
     Produces the input tensor matching the model expectations:
     A random 5D tensor of shape (batch_size, in_channels, depth, height, width)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, depth, height, width)
     return [x]
 

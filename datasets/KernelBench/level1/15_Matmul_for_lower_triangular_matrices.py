@@ -24,6 +24,7 @@ class Model(nn.Module):
 M = 4096
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     A = torch.rand(M, M)
     B = torch.rand(M, M)
     A = torch.tril(A)

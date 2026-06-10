@@ -43,6 +43,7 @@ output_size = 10
 dropout = 0.0
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     return [torch.rand(batch_size, sequence_length, input_size),torch.rand((num_layers, batch_size, hidden_size)),torch.rand((num_layers, batch_size, hidden_size))]
 
 def get_init_inputs():

@@ -96,6 +96,7 @@ d_state = 16
 block_len = 64
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     return [torch.rand(batch_size, seq_length, n_heads, d_head)]
 
 def get_init_inputs():

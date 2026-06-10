@@ -82,6 +82,7 @@ def get_inputs() -> List:
     Returns:
         list: [pooled_tensor, indices_tensor, original_size_tuple]
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, channels, depth, height, width)
     # Perform max_pool3d to obtain pooled representation and pooling indices
     pooled, indices = F.max_pool3d(x, kernel_size=kernel_size, stride=stride, padding=padding, return_indices=True)

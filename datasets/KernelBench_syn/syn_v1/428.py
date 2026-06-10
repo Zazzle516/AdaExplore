@@ -87,6 +87,7 @@ def get_inputs():
       - x: random image tensor (batch, in_channels, H, W)
       - gate: random gating tensor (batch, out_features)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, height, width)
     gate = torch.randn(batch_size, out_features)
     return [x, gate]

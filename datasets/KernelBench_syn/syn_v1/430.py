@@ -120,6 +120,7 @@ def get_inputs():
         x: random image tensor (batch_size, in_channels, height, width)
         proj: random projection matrix (proj_dim, out_dim)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, height, width)
     proj = torch.randn(proj_dim, out_dim)
     return [x, proj]

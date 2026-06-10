@@ -164,6 +164,7 @@ def get_inputs() -> List[torch.Tensor]:
     - x3d: (batch_size, in_channels_3d, depth, height, width)
     - x4d: (batch_size, in_channels_2d, height, width)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x3d = torch.randn(batch_size, in_channels_3d, depth, height, width, dtype=torch.float32)
     x4d = torch.randn(batch_size, in_channels_2d, height, width, dtype=torch.float32)
     return [x3d, x4d]

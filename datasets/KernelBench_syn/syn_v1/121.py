@@ -104,6 +104,7 @@ def get_inputs():
     Generates a single input tensor matching the expected shape:
     (batch_size, in_channels, time, height, width)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, time, height, width)
     return [x]
 

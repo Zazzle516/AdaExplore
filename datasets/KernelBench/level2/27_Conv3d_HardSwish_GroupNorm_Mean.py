@@ -30,6 +30,7 @@ depth, height, width = 16, 32, 32
 kernel_size = 4
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     return [torch.rand(batch_size, in_channels, depth, height, width)]
 
 def get_init_inputs():

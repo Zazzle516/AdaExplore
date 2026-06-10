@@ -25,6 +25,7 @@ M = 16384 * 4
 N = 4096 * 4
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     A = torch.rand(M, N)
     s = 3.14
     return [A, s]

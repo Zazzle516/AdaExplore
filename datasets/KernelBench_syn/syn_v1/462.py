@@ -110,6 +110,7 @@ def get_inputs():
       - vol: volumetric input (N, C, D, H, W)
       - tgt: transformer target sequence (T, N, d_model)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     vol = torch.randn(BATCH, C, D, H, W)
     # Transformer expects (T, N, E)
     tgt = torch.randn(TGT_LEN, BATCH, D_MODEL)

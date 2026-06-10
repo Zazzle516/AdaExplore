@@ -92,6 +92,7 @@ def get_inputs():
     """
     Returns typical input tensors for running the model's forward pass.
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, height, width)
     return [x]
 

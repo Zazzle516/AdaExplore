@@ -159,6 +159,7 @@ def get_inputs() -> List[torch.Tensor]:
 
     - Input volume of shape (batch_size, in_channels, D, H, W)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, D, H, W)
     return [x]
 

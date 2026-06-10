@@ -142,6 +142,7 @@ def get_inputs():
       - x: 5D tensor (batch_size, in_channels, D, H, W)
       - style: 2D tensor (batch_size, STYLE_DIM)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, depth, height, width)
     style = torch.randn(batch_size, STYLE_DIM)
     return [x, style]

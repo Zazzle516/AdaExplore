@@ -124,6 +124,7 @@ def get_inputs():
 
     The shape matches the module-level configuration variables.
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, height, width)
     return [x]
 

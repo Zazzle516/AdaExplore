@@ -117,6 +117,7 @@ def get_inputs() -> List[torch.Tensor]:
         - attn_mask: causal additive mask of shape (seq_len, seq_len) with -1e9 above diagonal
                      (so it can be broadcast to (1,1,seq_len,seq_len) and used for causal attention)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, seq_len, embed_dim)
     # causal mask: prevent attending to future positions (upper triangular) by adding large negative values
     causal_mask = torch.triu(torch.ones(seq_len, seq_len, dtype=torch.float32), diagonal=1) * -1e9

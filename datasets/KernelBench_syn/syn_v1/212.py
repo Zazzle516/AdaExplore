@@ -150,6 +150,7 @@ def get_inputs():
     Returns:
         List[torch.Tensor]: [x] where x has shape (batch_size, in_channels, seq_len)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, seq_len)
     return [x]
 

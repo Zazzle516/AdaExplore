@@ -24,6 +24,7 @@ hidden_size = 4096
 output_size = 1024
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     return [torch.rand(batch_size, input_size)]
 
 def get_init_inputs():

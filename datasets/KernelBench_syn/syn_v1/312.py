@@ -112,6 +112,7 @@ def get_inputs():
             - vol: Tensor of shape (batch_size, C_vol, D, H, W)
             - img: Tensor of shape (batch_size, C_img, H, W)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     vol = torch.randn(batch_size, C_vol, D, H, W)
     img = torch.randn(batch_size, C_img, H, W)
     return [vol, img]

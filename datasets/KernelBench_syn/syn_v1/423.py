@@ -101,6 +101,7 @@ class Model(nn.Module):
 
 def get_inputs():
     # Create input tensors with the configured shapes
+    torch.seed()  # reseed: fresh random inputs per run
     A = torch.randn(B, C1, D, H, W)
     B_tensor = torch.randn(B, C2, H, W)
     # External matrix M to map PROJ_OUT -> FINAL_OUT

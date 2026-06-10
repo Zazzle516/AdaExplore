@@ -27,6 +27,7 @@ subtract_value_1 = 0.5
 subtract_value_2 = 0.2
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     return [torch.rand(batch_size, in_channels, height, width)]
 
 def get_init_inputs():

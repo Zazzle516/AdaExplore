@@ -119,6 +119,7 @@ def get_inputs():
     Constructs realistic inputs for EmbeddingBag: a concatenated indices tensor and offsets per bag,
     plus an auxiliary dense feature tensor.
     """
+    torch.seed()  # reseed: fresh random inputs per run
     # Random variable-length bag sizes for each sample in the batch
     lengths = torch.randint(low=min_tokens_per_bag, high=max_tokens_per_bag + 1, size=(batch_size,))
     total_tokens = int(lengths.sum().item())

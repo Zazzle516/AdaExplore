@@ -40,6 +40,7 @@ stride = (1, 1)
 padding = (1, 3)
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.rand(batch_size, in_channels, height, width)
     return [x]
 

@@ -88,6 +88,7 @@ def get_inputs():
     Returns a list with the primary input tensor expected by Model.forward:
         - x: torch.Tensor of shape (N, C_IN, D, H, W)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(N, C_IN, D, H, W)
     return [x]
 

@@ -113,6 +113,7 @@ deconv_output_padding = 0
 
 def get_inputs():
     # Random input signal: (batch, channels, length)
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, sequence_length)
     return [x]
 

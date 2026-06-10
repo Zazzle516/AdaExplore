@@ -121,6 +121,7 @@ def get_inputs():
           x is a random tensor with shape (batch_size, channels, height, width)
           gate is a random tensor with shape (batch_size, channels)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, channels, height, width)
     gate = torch.randn(batch_size, channels)
     return [x, gate]

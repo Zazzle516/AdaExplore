@@ -105,6 +105,7 @@ def get_inputs():
     Creates representative inputs for the model:
         - x: random float tensor of shape (BATCH, SEQ_LEN, INPUT_DIM)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(BATCH, SEQ_LEN, INPUT_DIM)
     return [x]
 

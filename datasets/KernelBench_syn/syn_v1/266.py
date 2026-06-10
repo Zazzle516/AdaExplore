@@ -93,6 +93,7 @@ def get_inputs():
     - image: (batch_size, img_c, img_h, img_w)
     - volume: (batch_size, vol_c, vol_d, vol_h, vol_w)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     image = torch.randn(batch_size, img_c, img_h, img_w)
     volume = torch.randn(batch_size, vol_c, vol_d, vol_h, vol_w)
     return [image, volume]

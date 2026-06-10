@@ -137,6 +137,7 @@ def get_inputs():
     Returns a list with a single input tensor matching the expected input shape.
     The LazyConv3d modules will initialize on the first forward pass with this tensor.
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, depth, height, width)
     return [x]
 

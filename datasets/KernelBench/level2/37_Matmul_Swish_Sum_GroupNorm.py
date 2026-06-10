@@ -31,6 +31,7 @@ num_groups = 64
 bias_shape = (out_features,)
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     return [torch.rand(batch_size, in_features)]
 
 def get_init_inputs():

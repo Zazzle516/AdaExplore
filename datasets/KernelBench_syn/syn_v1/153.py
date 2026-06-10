@@ -120,6 +120,7 @@ def get_inputs():
     Returns a list of input tensors for the forward pass.
     The model expects a tensor of shape (batch_size, seq_len, input_size).
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, seq_len, input_size)
     return [x]
 

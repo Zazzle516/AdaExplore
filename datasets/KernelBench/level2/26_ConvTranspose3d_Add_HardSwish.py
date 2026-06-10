@@ -35,6 +35,7 @@ output_padding = 1
 bias_shape = (out_channels, 1, 1, 1, 1)
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     return [torch.rand(batch_size, in_channels, D, H, W), torch.rand(batch_size, out_channels, D*stride, H*stride, W*stride)]
 
 def get_init_inputs():

@@ -86,6 +86,7 @@ def get_inputs():
     x1: (batch_size, in1_features)
     x2: (batch_size, in2_features)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x1 = torch.randn(batch_size, in1_features)
     x2 = torch.randn(batch_size, in2_features)
     return [x1, x2]

@@ -115,6 +115,7 @@ def get_inputs():
     Returns a list containing a single input tensor for the model:
     - x: random image tensor of shape (BATCH, IN_C, H, W)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(BATCH, IN_C, H, W)
     return [x]
 

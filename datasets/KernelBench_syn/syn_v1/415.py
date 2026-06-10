@@ -151,6 +151,7 @@ def get_inputs() -> List[torch.Tensor]:
 
     The shapes align with the module-level configuration variables.
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(SEQ_LEN, BATCH, INPUT_DIM)
     num_directions = 2 if BIDIRECTIONAL else 1
     h0 = torch.randn(NUM_LAYERS * num_directions, BATCH, HIDDEN_SIZE)

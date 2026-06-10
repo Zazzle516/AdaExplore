@@ -33,6 +33,7 @@ dim1 = 256
 dim2 = 256
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.rand(batch_size, features, dim1, dim2)
     return [x]
 

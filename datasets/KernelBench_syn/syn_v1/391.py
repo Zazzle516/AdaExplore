@@ -86,6 +86,7 @@ def get_inputs():
     """
     Returns a list with a single input tensor shaped (batch_size, in_channels, height, width).
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, height, width, dtype=torch.float32)
     return [x]
 

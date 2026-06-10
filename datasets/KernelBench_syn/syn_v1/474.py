@@ -95,6 +95,7 @@ def get_inputs():
             x2d is shape (BATCH, C2D, H2D, W2D)
             v3d is shape (BATCH, C3D, D3D, H3D, W3D)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x2d = torch.randn(BATCH, C2D, H2D, W2D)
     v3d = torch.randn(BATCH, C3D, D3D, H3D, W3D)
     return [x2d, v3d]

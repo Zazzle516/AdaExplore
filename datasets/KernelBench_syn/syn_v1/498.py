@@ -81,6 +81,7 @@ def get_inputs():
             - conv_weight: (C_out, C_in, kernel_size, kernel_size)
             - proj: (C_out, C_out)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     X = torch.randn(batch_size, C_in, H, W)
     conv_weight = torch.randn(C_out, C_in, kernel_size, kernel_size)
     proj = torch.randn(C_out, C_out)

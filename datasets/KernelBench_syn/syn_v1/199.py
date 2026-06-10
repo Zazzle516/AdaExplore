@@ -168,6 +168,7 @@ def get_inputs():
     Returns:
         list: [x] where x has shape (SEQ_LEN, BATCH_SIZE, IN_CHANNELS, D_IN, H_IN, W_IN)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(SEQ_LEN, BATCH_SIZE, IN_CHANNELS, D_IN, H_IN, W_IN)
     return [x]
 

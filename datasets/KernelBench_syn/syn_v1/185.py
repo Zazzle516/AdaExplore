@@ -108,6 +108,7 @@ out_depth = 4    # must divide out_channels
 
 def get_inputs():
     # Create a random 5D tensor (N, C, D, H, W)
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, depth, height, width)
     return [x]
 

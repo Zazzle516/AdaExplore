@@ -126,6 +126,7 @@ def get_inputs():
       - x: a 5D tensor of shape (batch_size, in_channels, depth, height, width)
       - memory: a memory tensor for the Transformer decoder of shape (mem_seq_len, batch_size, d_model)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, depth, height, width)
     memory = torch.randn(mem_seq_len, batch_size, d_model)
     return [x, memory]

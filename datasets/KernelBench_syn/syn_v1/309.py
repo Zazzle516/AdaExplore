@@ -122,6 +122,7 @@ def get_inputs() -> List[torch.Tensor]:
     Returns a list with a single input tensor shaped (batch_size, in_channels, in_depth, in_height, in_width)
     filled with random values.
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, in_channels, in_depth, in_height, in_width)
     return [x]
 

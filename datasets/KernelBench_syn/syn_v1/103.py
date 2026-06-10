@@ -101,6 +101,7 @@ def get_inputs() -> List[torch.Tensor]:
     Returns a list containing a single input tensor with the configured batch size,
     number of channels, height and width.
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, channels, height, width)
     return [x]
 

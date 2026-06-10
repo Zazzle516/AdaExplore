@@ -174,6 +174,7 @@ def get_inputs():
 
     seq_len is derived from depth*height*width.
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, seq_len, embed_dim)
     return [x]
 

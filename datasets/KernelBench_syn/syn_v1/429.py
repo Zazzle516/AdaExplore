@@ -117,6 +117,7 @@ def get_inputs():
               X: Tensor of shape (BATCH, C, H, W)
               V: Tensor of shape (BATCH, AUX_DIM)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     X = torch.randn(BATCH, C, H, W)
     V = torch.randn(BATCH, AUX_DIM)
     return [X, V]

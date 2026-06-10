@@ -33,6 +33,7 @@ bn_momentum = 0.1
 scale_shape = (1,)
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     return [torch.rand(batch_size, in_features)]
 
 def get_init_inputs():

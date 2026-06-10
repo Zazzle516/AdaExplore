@@ -76,6 +76,7 @@ def get_inputs():
     - x: random tensor of shape (batch_size, channels, height, width)
     - bias: small scalar to bias activations before ReLU
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, channels, height, width)
     bias = 0.1
     return [x, bias]

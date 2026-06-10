@@ -103,6 +103,7 @@ def get_inputs() -> List[torch.Tensor]:
             x_seq has shape (batch_size, seq_channels, seq_length)
             x_vol has shape (batch_size, vol_channels, depth, height, width)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x_seq = torch.randn(batch_size, seq_channels, seq_length)
     x_vol = torch.randn(batch_size, vol_channels, depth, height, width)
     return [x_seq, x_vol]

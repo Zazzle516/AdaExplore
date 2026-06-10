@@ -105,6 +105,7 @@ def get_inputs():
     """
     Returns example input tensors for the model's forward pass.
     """
+    torch.seed()  # reseed: fresh random inputs per run
     # Typical float32 inputs for convolutional processing
     x = torch.randn(batch_size, in_channels, length, dtype=torch.float32)
     return [x]

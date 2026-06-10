@@ -114,6 +114,7 @@ def get_inputs():
     Returns a list of inputs for the model's forward method.
     The returned input matches the expected 5D shape (N, C, D, H, W).
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, channels, depth, height, width)
     return [x]
 

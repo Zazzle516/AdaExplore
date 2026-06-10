@@ -120,6 +120,7 @@ def get_inputs():
     Returns a list containing a single input tensor of shape (BATCH, C, D, H, W)
     with normally distributed values.
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(BATCH, C, D, H, W)
     return [x]
 

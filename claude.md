@@ -864,3 +864,232 @@ threading described in §MCTS wiring composes with this selection
 logic without modifying it — the evaluator's `small_guidance` /
 `large_guidance` flow alongside whatever kernel pool the existing
 selector produces.
+
+---
+
+# Plan — Add `<valid>` tag to evaluator to gate algebraic-shortcut wins
+
+## Context
+
+In `old_version/fixed_input/step_35_log.json` the evaluator correctly diagnosed an
+algebraic shortcut — the kernel replaced a `mean` of `ConvTranspose3d` with three
+`ConvTranspose2d` calls plus boundary corrections. Its `large_guidance` and
+`small_guidance` both spell out the violation, and `evaluator_direction` is
+`"large"`. But the kernel still:
+
+- compiled (`compiled: true`)
+- passed correctness (5/5 trials)
+- ran 9.67× faster than the baseline (`fast_p`)
+- got recorded as `global_best_node_id: 35` with `score: [1, 1, 9.67]`
+
+That is, **the evaluator said "no" but the harness still counted the result**.
+The score tuple `(compiled, correctness, speedup)` has no slot for "the LLM
+referee thinks this cheated," so the cheat survived all the way to
+`global_best_kernel_50.py`.
+
+Fix: have the evaluator emit a 4th tag `<valid>true|false</valid>`. When
+`valid=false`, collapse the node's score to `(1, 0, 0)` — same shape as a
+correctness failure. That single collapse propagates cleanly through every
+existing comparison: MCTS reward (via `reward` → `score` → speedup), global
+best tracking (`node.score > global_best.score`), elite pool sorts in
+`large_loop.py` (`calculate_score(metrics)`), small-loop best-kernel tracking,
+and the candidate pool selectors. No new code paths, just one choke point that
+hides cheating kernels from every downstream chooser.
+
+Decisions (per user):
+
+- **Invalid → score `(1, 0, 0)`.** Same handling as correctness-failed kernels.
+- **Default valid when tag missing.** An LLM that forgets the tag does not
+  accidentally invalidate a real win.
+- **Apply everywhere — MCTS and IR-mode loops.** Cheating is cheating
+  regardless of orchestrator.
+
+## Design
+
+### 1. Evaluator prompt — document the 4th tag
+
+`agentprompt/evaluator_prompt.py:70-102` (the `GOAL` string). Extend the
+contract to four tagged blocks. Add a short rubric for when to emit
+`<valid>false</valid>`:
+
+```
+<valid>false</valid>  if the kernel reaches its measured performance via an
+algebraic shortcut — i.e. one or more operators in the reference forward have
+been collapsed at init time, folded into a downstream reduction, or replaced
+with a substitute that does materially less arithmetic than the reference.
+The "_base" skill section describes this contract; emit `false` whenever it
+is violated, even if compile + correctness checks pass and the speedup looks
+real.
+
+<valid>true</valid>  in all other cases — including kernels that are slow,
+compile-failed, or numerically wrong. Validity is about *whether the kernel
+is doing the reference work*, not whether it is doing it well.
+```
+
+State that `<valid>true</valid>` is the default — emit one tag, missing or
+malformed defaults to `true` (downstream).
+
+### 2. Tag extractor — `agent/actions.py`
+
+Add a sibling to `_extract_direction` (currently lines 28-31):
+
+```python
+def _extract_validity(output: str) -> Optional[bool]:
+    """Last <valid>true|false</valid>. None on missing/malformed."""
+    matches = re.findall(r"<valid>\s*(true|false)\s*</valid>",
+                         output, re.IGNORECASE)
+    return matches[-1].lower() == "true" if matches else None
+```
+
+Update `run_evaluator` (lines 33-57) to return a 4-tuple:
+
+```python
+return small_guidance, large_guidance, direction, valid
+```
+
+### 3. Default-valid policy — single helper
+
+To honor "missing tag → treat as valid," resolve the optional bool to a
+concrete bool exactly once, at the score-collapse boundary. Add to
+`agent/utils.py` next to `calculate_score`:
+
+```python
+def calculate_score(metric, evaluator_valid: Optional[bool] = None):
+    """(compiled, correctness, speedup). evaluator_valid=False forces
+    (1, 0, 0) — same shape as a correctness failure — so cheating kernels
+    are sorted/selected like incorrect ones. None and True pass through."""
+    if metric is None or not metric.compiled:
+        return (0, 0, 0)
+    if not metric.correctness:
+        return (1, 0, 0)
+    if evaluator_valid is False:
+        return (1, 0, 0)
+    fast_p = metric.runtime_stats.get("fast_p", 0) if metric.runtime_stats else 0
+    return (1, 1, fast_p)
+```
+
+The new arg is optional, so every existing call site (the IR loops, plus the
+plain `calculate_score(metric)` form in `MCTSNode.score`) keeps working
+unchanged. Sites that need the gate pass `evaluator_valid` explicitly.
+
+### 4. MCTS — node field, score collapse, log serialization
+
+`agent/mcts.py`:
+
+- **Field** (`MCTSNode` dataclass, lines 43-72): add
+  `evaluator_valid: Optional[bool] = None` after `evaluator_direction`.
+- **Score property** (lines 76-83): pass the new field through:
+  ```python
+  self._score_cache = calculate_score(self.metrics, self.evaluator_valid)
+  ```
+  This is the choke point. Because `reward` (lines 87-103) is derived from
+  `self.score`, MCTS backprop sees `(1, 0, 0)` → `REWARD_COMPILED_BUT_INCORRECT`
+  for invalid nodes, and global-best tracking in `_create_node` (lines 289-292)
+  uses `node.score` so it inherits the collapse for free. UCB1 / candidate
+  pool selection / `_get_diverse_pool_for_large_step` (which filters on
+  `n.score[1]`) all see the collapsed tuple — invalid nodes are
+  indistinguishable from incorrect ones for every selector.
+- **`_create_node`** (lines 252-295): add `evaluator_valid: Optional[bool] = None`
+  parameter and forward it to the `MCTSNode(...)` constructor.
+- **`expand_large` / `expand_small`** (lines 462-526, 528-592): unpack the
+  4-tuple from `run_evaluator` and pass `evaluator_valid=valid` into the
+  `_create_node` call.
+- **`_save_step_log`** (lines 755-786): add
+  `"evaluator_valid": node.evaluator_valid,` to `log_dict` next to the
+  existing `"evaluator_direction"` line, so trajectory inspection shows when
+  a kernel was invalidated and what its raw score would have been.
+
+Note: `mcts_utils.py:178` (`max(... key=lambda n: n.score)`) keeps working —
+the score is collapsed at the property, not at the call site.
+
+### 5. IR-mode loops — large_loop and small_loop
+
+Both loops already destructure 3-tuples from `run_evaluator`. Update the
+unpacks and pass the validity flag into every `calculate_score` and
+best-kernel comparison in scope.
+
+`agent/large_loop.py`:
+
+- 3-tuple → 4-tuple at line ~144. Bind `valid` (alongside `direction`).
+- Step log (lines ~159-180): include `"evaluator_valid": valid` and
+  `"score": calculate_score(proposal_metrics, valid)`.
+- Elite pool sort (lines ~182-211, `sorted_data = sorted(...)`): the elite
+  pool is keyed on `calculate_score(x[1])`; thread the per-kernel validity
+  alongside the metrics so the sort key passes `evaluator_valid`. Concretely,
+  store a parallel `validity_pool: list[Optional[bool]]` next to
+  `kernel_pool` / `metrics_pool` / `proposal_ids`, and zip it into the
+  sort tuple.
+
+`agent/small_loop.py`:
+
+- All three `run_evaluator` calls (lines ~170, ~195, ~216): 3-tuple → 4-tuple.
+- Best-kernel tracking (lines ~226-230): the comparison
+  `score > local_best_score` already uses `calculate_score(tuned_metrics)`
+  — pass `valid` alongside (`calculate_score(tuned_metrics, valid)`). An
+  invalid tuned kernel collapses to `(1, 0, 0)` and cannot become local best.
+
+### 6. agent_entry.py / global best save
+
+No change. `global_best_kernel_*.py` is whatever lives at
+`self.global_best_node` after the run; that selection now consults the
+collapsed score automatically.
+
+## Files to modify
+
+| Path | Change |
+|---|---|
+| `agentprompt/evaluator_prompt.py` | Extend `GOAL` string to document `<valid>true\|false</valid>` and the default-true rule. |
+| `agent/actions.py` | Add `_extract_validity`. Change `run_evaluator` return to 4-tuple. |
+| `agent/utils.py` | Add optional `evaluator_valid` arg to `calculate_score`; collapse to `(1,0,0)` when `False`. |
+| `agent/mcts.py` | New `MCTSNode.evaluator_valid` field; thread through `_create_node`, `expand_large`, `expand_small`; pass to `calculate_score` in the `score` property; emit in `_save_step_log`. |
+| `agent/large_loop.py` | Unpack 4-tuple; track `validity_pool`; pass validity into `calculate_score` + step log. |
+| `agent/small_loop.py` | Unpack 4-tuple at all three `run_evaluator` sites; pass validity into best-kernel `calculate_score`. |
+
+No file deletions, no rename, no schema migration — old logs without the
+field remain readable, new logs gain one field.
+
+## What is intentionally NOT being done
+
+- **No new reward/score code path.** The collapse goes through the existing
+  `(1, 0, 0)` shape, so every selector that already handled correctness
+  failures handles invalid kernels identically.
+- **No retroactive re-evaluation of existing trajectories.** Old runs in
+  `outputs/` retain their old scores; only new runs gate on `<valid>`.
+- **No "soft" invalidation / penalty scalar.** Binary flag, mirroring the
+  binary direction tag. Easier for the LLM to emit reliably.
+- **No skill-level changes.** `_base.md`'s algebraic-shortcut ban is still
+  the contract the evaluator enforces; we're just giving the evaluator a
+  way to flag a violation that survived compile+correctness.
+- **No retry on missing tag.** Default to `valid=true` and move on.
+
+## Verification
+
+1. **Extractor unit test.** Feed `_extract_validity` four fixtures: well-formed
+   `true`, well-formed `false`, missing tag, two tags (last wins). Expect
+   `True`, `False`, `None`, last-match.
+2. **Score collapse.** Build a `KernelExecResult(compiled=True,
+   correctness=True, runtime_stats={"fast_p": 9.67})`. Confirm
+   `calculate_score(m)` → `(1, 1, 9.67)`, `calculate_score(m, True)` →
+   `(1, 1, 9.67)`, `calculate_score(m, None)` → `(1, 1, 9.67)`,
+   `calculate_score(m, False)` → `(1, 0, 0)`.
+3. **MCTSNode collapse end-to-end.** Construct an `MCTSNode` mirroring
+   step_35's metrics with `evaluator_valid=False`. Confirm `node.score ==
+   (1, 0, 0)` and `node.reward == REWARD_COMPILED_BUT_INCORRECT`.
+4. **Replay step_35.** Hand-feed step_35's `large_guidance` text plus
+   `<valid>false</valid>` into the new extractors and assert the parsed
+   tuple. (Sanity that the prompt change is observable by the parser.)
+5. **MCTS smoke run on tid=15** (`ConvTranspose3d_BatchNorm_Subtract`, the
+   trajectory family that produced the step_35 incident). Run a 40-step
+   trial. Inspect `step_*_log.json`:
+   - Every node has `evaluator_valid` populated (`true`, `false`, or `null`).
+   - At least one invalid kernel appears in the log with high raw `fast_p`
+     but score `[1, 0, 0]`, and `global_best_node_id` does NOT point to it.
+6. **IR-mode smoke (one IRS run).** Confirm the step log shows
+   `evaluator_valid` and the elite pool sort excludes any
+   `evaluator_valid=false` entry — i.e. an invalid kernel does not appear
+   ahead of a slower-but-valid kernel in `recent`/`elite` context for the
+   next iteration.
+7. **Backward read.** Open an old `step_*_log.json` from
+   `outputs/KB-l*_AdaExplore_50/` — confirm nothing in the new code path
+   chokes on a missing `evaluator_valid` field (the IR/MCTS code only
+   writes it; nothing reads it back from old logs).

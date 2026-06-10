@@ -30,6 +30,7 @@ def get_inputs():
     Returns:
         list: List containing two symmetric tensors A and B.
     """
+    torch.seed()  # reseed: fresh random inputs per run
     A = torch.rand(N, N)
     A = (A + A.T) / 2  # Ensure symmetry
     B = torch.rand(N, N)

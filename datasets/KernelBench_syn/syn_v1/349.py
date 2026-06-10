@@ -113,6 +113,7 @@ def get_inputs() -> List[torch.Tensor]:
     Generates a sample input tensor consistent with the configuration variables.
     Returns a list so it matches the example interface.
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, channels, seq_len)
     return [x]
 

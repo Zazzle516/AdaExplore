@@ -28,6 +28,7 @@ kernel_size = 5
 scale_factor = 2.0
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     return [torch.rand(batch_size, in_channels, depth, height, width)]
 
 def get_init_inputs():

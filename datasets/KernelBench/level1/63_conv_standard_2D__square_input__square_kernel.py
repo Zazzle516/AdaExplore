@@ -40,6 +40,7 @@ width = 1024
 height = 1024
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.rand(batch_size, in_channels, height, width)
     return [x]
 

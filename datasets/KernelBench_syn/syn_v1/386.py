@@ -83,6 +83,7 @@ def get_inputs():
     - x: random 5D tensor (BATCH, CHANNELS, DEPTH, HEIGHT, WIDTH)
     - channel_scale: random 1D per-channel scaling vector (CHANNELS,)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(BATCH, CHANNELS, DEPTH, HEIGHT, WIDTH)
     channel_scale = torch.randn(CHANNELS)
     return [x, channel_scale]

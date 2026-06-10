@@ -28,6 +28,7 @@ M = 4096
 N = 4096
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     A = torch.rand(N)
     B = torch.rand(N, M)
     return [A, B]

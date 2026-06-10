@@ -124,6 +124,7 @@ def get_inputs():
     Returns a list containing the input tensor for the model:
       - x: (batch_size, channels, seq_len, feat_dim)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, channels, seq_len, feat_dim)
     return [x]
 

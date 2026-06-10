@@ -99,6 +99,7 @@ def get_inputs():
       - x: Tensor of shape (BATCH, CHANNELS, HEIGHT, WIDTH)
       - style: Tensor of shape (BATCH, STYLE_DIM)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(BATCH, CHANNELS, HEIGHT, WIDTH)
     style = torch.randn(BATCH, STYLE_DIM)
     return [x, style]

@@ -105,6 +105,7 @@ def get_inputs():
     - indices_tensor: 1D torch.LongTensor with concatenated token indices
     - offsets_tensor: 1D torch.LongTensor with starting offsets for each sample
     """
+    torch.seed()  # reseed: fresh random inputs per run
     # Randomly choose bag lengths for each sample (at least 1 token per bag)
     lengths = torch.randint(low=1, high=max_bag_len + 1, size=(batch_size,), dtype=torch.long)
     total_tokens = int(lengths.sum().item())

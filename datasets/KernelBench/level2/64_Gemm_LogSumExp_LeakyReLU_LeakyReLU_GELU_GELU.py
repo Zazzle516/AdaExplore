@@ -30,6 +30,7 @@ in_features = 8192
 out_features = 8192
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     return [torch.rand(batch_size, in_features)]
 
 def get_init_inputs():

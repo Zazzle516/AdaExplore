@@ -87,6 +87,7 @@ def get_inputs():
             - X is a random input tensor of shape (BATCH, IN_CHANNELS, H, W)
             - P is an optional projection matrix of shape (PROJ_OUT_CHANNELS, IN_CHANNELS)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     X = torch.randn(BATCH, IN_CHANNELS, H, W)
     # Provide an external projection matrix to demonstrate override capability
     P = torch.randn(PROJ_OUT_CHANNELS, IN_CHANNELS) * (1.0 / (IN_CHANNELS ** 0.5))

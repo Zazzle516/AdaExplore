@@ -162,6 +162,7 @@ def get_inputs():
     Returns a list containing a single latent 3D tensor input:
     shape (batch_size, latent_channels, latent_depth, latent_height, latent_width)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, latent_channels, latent_depth, latent_height, latent_width)
     return [x]
 

@@ -97,6 +97,7 @@ def get_inputs():
     Returns a list of input tensors to be passed to Model.forward.
     Input shape: (BATCH, IN_CHANNELS, INPUT_LENGTH)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(BATCH, IN_CHANNELS, INPUT_LENGTH)
     return [x]
 

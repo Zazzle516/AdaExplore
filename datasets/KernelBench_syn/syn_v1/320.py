@@ -88,6 +88,7 @@ def get_inputs() -> List[torch.Tensor]:
     Generates a single input tensor suitable for the Model:
       - Shape: (batch_size, channels, height, width)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, channels, height, width)
     return [x]
 

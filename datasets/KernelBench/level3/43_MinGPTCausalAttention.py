@@ -58,6 +58,7 @@ attn_pdrop = 0.0
 resid_pdrop = 0.0
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     return [torch.rand(batch_size, seq_len, n_embd)]
 
 def get_init_inputs():

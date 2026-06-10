@@ -29,6 +29,7 @@ add_value = 0.5
 multiply_value = 2.0
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     return [torch.rand(batch_size, in_channels, height, width)]
 
 def get_init_inputs():

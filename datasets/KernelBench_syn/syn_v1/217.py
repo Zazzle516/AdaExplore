@@ -92,6 +92,7 @@ def get_inputs():
     Generates a random 5D tensor for testing: (BATCH, CHANNELS, DEPTH, HEIGHT, WIDTH).
     Uses normal distribution to simulate feature maps / volumetric data.
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(BATCH, CHANNELS, DEPTH, HEIGHT, WIDTH)
     return [x]
 

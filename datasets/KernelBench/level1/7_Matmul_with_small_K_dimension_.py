@@ -26,6 +26,7 @@ N = 16384 * 2
 K = 32 * 2
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     A = torch.rand(M, K)
     B = torch.rand(K, N)
     return [A, B]

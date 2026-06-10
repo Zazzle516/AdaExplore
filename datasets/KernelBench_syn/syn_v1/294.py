@@ -156,6 +156,7 @@ def get_inputs():
       - tgt: random target embeddings (tgt_len, batch, d_model)
     These shapes must match the constructor arguments provided via get_init_inputs().
     """
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, seq_len, rnn_input_size)
     # Transformer decoder expects target shape (tgt_len, batch, d_model)
     tgt = torch.randn(tgt_len, batch_size, d_model)

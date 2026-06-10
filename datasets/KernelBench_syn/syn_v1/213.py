@@ -86,6 +86,7 @@ def get_inputs():
       - W2: mid->out projection and gating matrix (C_MID, C_OUT)
       - W3: shortcut projection (C_IN, C_OUT)
     """
+    torch.seed()  # reseed: fresh random inputs per run
     X = torch.randn(BATCH, C_IN, DEPTH, HEIGHT, WIDTH)
     W1 = torch.randn(C_IN, C_MID)
     W2 = torch.randn(C_MID, C_OUT)

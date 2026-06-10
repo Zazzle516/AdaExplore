@@ -107,6 +107,7 @@ num_classes = 1000
 input_shape = (batch_size, 3, 224, 224)
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     return [torch.rand(input_shape)]
 
 def get_init_inputs():

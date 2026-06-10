@@ -118,6 +118,7 @@ width = 224
 num_classes = 1000
 
 def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
     return [torch.rand(batch_size, input_channels, height, width)]
 
 def get_init_inputs():

@@ -123,6 +123,7 @@ final_out_channels = 16
 
 def get_inputs():
     # Random image batch; H and W are chosen to be divisible by patch_size
+    torch.seed()  # reseed: fresh random inputs per run
     x = torch.randn(batch_size, channels, height, width)
     return [x]
 
