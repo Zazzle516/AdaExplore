@@ -18,7 +18,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from agent.actions import single_large_step, single_small_step, dummy_small_step, dummy_large_step
+from agent.actions import single_large_step, single_small_step, dummy_small_step, dummy_large_step, run_evaluator
 from agent.utils import load_test_source, REPO_TOP_PATH, calculate_score, copy_step_files, read_metrics, dummy_metrics
 from agent.inference_server import create_inference_server
 
@@ -60,6 +60,12 @@ class MCTSNode:
     created_by: str = "root"  # "large_step" or "small_step"
     context_node_ids: List[int] = field(default_factory=list)  # Context nodes used when creating this node     # Q: 这里说的 context 是什么
     prompt: str = ""  # Prompt used to generate this node
+
+    # Evaluator output produced after this node's kernel was executed. Drives
+    # the next iteration's guidance and the MCTS large-vs-small soft-bias.
+    small_guidance: str = ""
+    large_guidance: str = ""
+    evaluator_direction: Optional[str] = None
     
     # Cache for score (to avoid repeated calculation)
     _score_cache: tuple = field(default=None, repr=False)
@@ -250,12 +256,15 @@ class MCTSKernelOptimizer:
         parent: Optional[MCTSNode] = None,
         created_by: str = "root",
         context_node_ids: List[int] = None,
-        prompt: str = ""
+        prompt: str = "",
+        small_guidance: str = "",
+        large_guidance: str = "",
+        evaluator_direction: Optional[str] = None,
     ) -> MCTSNode:
         """Create a new node and add it to the tree."""
         if context_node_ids is None:
             context_node_ids = []
-        
+
         if getattr(self.args, 'dummy', False):
             metrics = dummy_metrics()
         node = MCTSNode(
@@ -267,6 +276,9 @@ class MCTSKernelOptimizer:
             created_by=created_by,
             context_node_ids=context_node_ids,
             prompt=prompt,
+            small_guidance=small_guidance,
+            large_guidance=large_guidance,
+            evaluator_direction=evaluator_direction,
         )
         self.node_counter += 1
         self.all_nodes.append(node)
@@ -460,21 +472,44 @@ class MCTSKernelOptimizer:
         context_node_ids = [n.node_id for n in selected_nodes]
 
         logger.debug(f"Large step expansion from node {node.node_id}, depth {node.depth}")
-        if getattr(self.args, 'dummy', False):
+        is_dummy = getattr(self.args, 'dummy', False)
+        if is_dummy:
             fn = dummy_large_step
+            proposal_kernel, proposal_metrics, logs = fn(
+                self.ref_arch_src,
+                self.inference_server,
+                selected_kernels,
+                selected_metrics,
+                self.args,
+            )
         else:
-            fn = single_large_step
-        proposal_kernel, proposal_metrics, logs = fn(
-            self.ref_arch_src,
-            self.inference_server,
-            selected_kernels,
-            selected_metrics,
-            self.args,
-        )
-        
+            # Thread the selected parent's evaluator design guidance into the
+            # proposer (optional context); the parent's evaluator output is what
+            # triggered the large-step decision.
+            proposal_kernel, proposal_metrics, logs = single_large_step(
+                self.ref_arch_src,
+                self.inference_server,
+                selected_kernels,
+                selected_metrics,
+                self.args,
+                large_guidance=node.large_guidance,
+            )
+
         # Extract prompt from logs
         prompt = logs.get("prompt", "")
-        
+
+        # Run the evaluator on the new kernel (skip in dummy mode) so the next
+        # iteration's guidance + MCTS soft-bias have a direction to read.
+        small_guidance, large_guidance, direction = "", "", None
+        if not is_dummy:
+            small_guidance, large_guidance, direction = run_evaluator(
+                self.ref_arch_src,
+                proposal_kernel,
+                proposal_metrics,
+                self.inference_server,
+                self.args,
+            )
+
         # Add as child node (same as small step)
         new_node = self._create_node(
             kernel=proposal_kernel,
@@ -482,9 +517,12 @@ class MCTSKernelOptimizer:
             parent=node,
             created_by="large_step",
             context_node_ids=context_node_ids,
-            prompt=prompt
+            prompt=prompt,
+            small_guidance=small_guidance,
+            large_guidance=large_guidance,
+            evaluator_direction=direction,
         )
-        
+
         return new_node
     
     def expand_small(self, node: MCTSNode) -> Optional[MCTSNode]:
@@ -503,30 +541,54 @@ class MCTSKernelOptimizer:
         context_node_ids = [n.node_id for n in context_nodes]
         
         logger.debug(f"Small step expansion from node {node.node_id}, depth {node.depth}")
-        if getattr(self.args, 'dummy', False):
+        is_dummy = getattr(self.args, 'dummy', False)
+        if is_dummy:
             fn = dummy_small_step
+            refined_kernel, refined_metrics, logs = fn(
+                self.ref_arch_src,
+                self.inference_server,
+                context_kernels,
+                context_metrics,
+                self.args,
+            )
         else:
-            fn = single_small_step
-        refined_kernel, refined_metrics, logs = fn(
-            self.ref_arch_src,
-            self.inference_server,
-            context_kernels,
-            context_metrics,
-            self.args,
-        )
-        
+            # Thread the selected parent's evaluator tuning guidance into the
+            # tuner; the parent's evaluator output triggered the small-step.
+            refined_kernel, refined_metrics, logs = single_small_step(
+                self.ref_arch_src,
+                self.inference_server,
+                context_kernels,
+                context_metrics,
+                self.args,
+                tuning_guidance=node.small_guidance,
+            )
+
         # Extract prompt from logs
         prompt = logs.get("prompt", "")
-        
+
+        # Run the evaluator on the new kernel (skip in dummy mode).
+        small_guidance, large_guidance, direction = "", "", None
+        if not is_dummy:
+            small_guidance, large_guidance, direction = run_evaluator(
+                self.ref_arch_src,
+                refined_kernel,
+                refined_metrics,
+                self.inference_server,
+                self.args,
+            )
+
         new_node = self._create_node(
             kernel=refined_kernel,
             metrics=refined_metrics,
             parent=node,
             created_by="small_step",
             context_node_ids=context_node_ids,
-            prompt=prompt
+            prompt=prompt,
+            small_guidance=small_guidance,
+            large_guidance=large_guidance,
+            evaluator_direction=direction,
         )
-        
+
         return new_node
     
     def simulate(self, node: MCTSNode, num_rollouts: int = 1) -> float:
@@ -617,7 +679,19 @@ class MCTSKernelOptimizer:
             use_large_step = True
         else:
             p_large = getattr(self.args, 'p_large', 0.25)
+            direction_bias = getattr(self.args, 'direction_bias', 2.5)
+            direction = getattr(selected_node, 'evaluator_direction', None)
+            # Soft-bias the large-vs-small decision with the evaluator's
+            # direction tag: scale p_large up for "large", down for "small".
+            if direction == "large":
+                p_large = min(0.95, p_large * direction_bias)
+            elif direction == "small":
+                p_large = max(0.05, p_large / direction_bias)
             num_small_step_children = sum(1 for child in selected_node.children if child.created_by == "small_step")
+            logger.debug(
+                f"Step {step_idx}: p_large={p_large:.4f} direction={direction} "
+                f"selected_node_id={selected_node.node_id}"
+            )
             use_large_step = (
                 num_small_step_children >= self.small_step_limit or
                 random.random() < p_large
@@ -701,6 +775,9 @@ class MCTSKernelOptimizer:
             "max_reward": node.max_reward,
             "avg_reward": node.avg_reward,
             "score": list(node.score),
+            "small_guidance": node.small_guidance,
+            "large_guidance": node.large_guidance,
+            "evaluator_direction": node.evaluator_direction,
             "total_nodes": len(self.all_nodes),
             "global_best_node_id": self.global_best_node.node_id if self.global_best_node else None,
             "global_best_score": list(self.global_best_node.score) if self.global_best_node else None,
@@ -919,6 +996,7 @@ if __name__ == "__main__":
     parser.add_argument("--exploration_weight", type=float, default=0.25)  # UCB1 exploration constant
     parser.add_argument("--expand_exploration_ratio", type=float, default=1.0)  # Scale factor for expand-action exploration
     parser.add_argument("--p_large", type=float, default=0.25)  # Probability of large step
+    parser.add_argument("--direction_bias", type=float, default=2.5)  # Multiplier applied to p_large from the evaluator direction tag
     parser.add_argument("--reward_alpha", type=float, default=1.0)  # α*max + (1-α)*avg in UCB1 (1.0=max, 0.0=avg)
     parser.add_argument("--small_step_limit", type=int, default=2)  # Max number of small steps per node
     parser.add_argument("--dummy", action="store_true", default=False)  # Whether to use dummy

@@ -305,6 +305,7 @@ if __name__ == "__main__":
     parser.add_argument("--reward_alpha", type=float, default=1.0)  # α*max + (1-α)*avg in UCB1 (1.0=max, 0.0=avg)
     parser.add_argument("--small_step_limit", type=int, default=2)  # Max number of small steps per node
     parser.add_argument("--p_large", type=float, default=0.25)  # Probability of large step (for MCTS)
+    parser.add_argument("--direction_bias", type=float, default=2.5)  # Multiplier applied to p_large from the evaluator direction tag (MCTS)
     parser.add_argument("--pool_size_extra_max", type=int, default=3)  # Max extra nodes from other components
     parser.add_argument("--softmax_temperature", type=float, default=1.0)  # Temperature for softmax sampling
     parser.add_argument("--geometric_p", type=float, default=0.5)  # Parameter for truncated geometric distribution (higher = fewer extra nodes)

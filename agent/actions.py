@@ -1,12 +1,14 @@
 import argparse
+import re
+from typing import Optional
 from agent.inference_server import query_inference_server
 from agentprompt.proposer_prompt import (
     generate_proposer_prompt,
     generate_pool_prompt_dual,
 )
 from src.utils import extract_first_code
-from src.eval import eval_kernel_against_ref, wrapped_eval_kernel_against_ref
-from agentprompt.reviser_prompt import generate_reviser_prompt
+from src.eval import eval_kernel_against_ref, wrapped_eval_kernel_against_ref, KernelExecResult
+from agentprompt.evaluator_prompt import generate_evaluator_prompt
 from agentprompt.tuner_prompt import generate_tuner_prompt
 from agent.utils import extract_edits, str_replace
 
@@ -14,39 +16,54 @@ def _use_performance_metric(args: argparse.Namespace) -> bool:
     test_source = str(getattr(args, "test_source", "KB")).upper()
     return test_source not in {"TBG"}
 
-def single_small_step(ref_arch_src: str, inference_server: str, previous_kernels: list, previous_metrics: list, args: argparse.Namespace):
-    # Reviser Agent (if disabled, no reviser agent will be used)
-    # Check if all previous kernels are wrong - if so, skip reviewer
-    all_previous_wrong = (
-        len(previous_metrics) > 0 and 
-        all(not metric.correctness for metric in previous_metrics)
-    )
-    
-    if (not args.disable_reviewer) and (not all_previous_wrong or getattr(args, 'force_reviser', False)):
-        # TODO: currently, only filter wrong attempts for tuner agent, not for reviser agent, to prevent repeating the same mistakes
-        reviser_prompt = generate_reviser_prompt(
-            task_params=args.task_params,
-            custom_triton_kernels=previous_kernels[-1] if len(previous_kernels) > 0 else None, 
-            run_info=previous_metrics[-1] if len(previous_metrics) > 0 else None,
-            experience_guidance_path=args.general_memory_path,
-            knowledge_1_threshold=args.knowledge_1_threshold,
-        )
-        reviser_output = query_inference_server(
-            server=inference_server,
-            model_name=args.model_name,
-            prompt=reviser_prompt,
-            max_completion_tokens=args.max_completion_tokens,
-        )
-    else:
-        reviser_prompt = "No tuning guidance provided."
-        reviser_output = "Please fix or improve the performance of the custom kernels based on the execution logs."
+def _extract_tag(output: str, tag: str) -> str:
+    """Return the last occurrence of <tag>...</tag> (DOTALL), stripped.
 
-    # Tuner Agent
+    Last-match: if the LLM drafts a tag then re-emits a corrected version, the
+    final occurrence is the binding one.
+    """
+    matches = re.findall(rf"<{tag}>\s*(.*?)\s*</{tag}>", output, re.DOTALL)
+    return matches[-1].strip() if matches else ""
+
+def _extract_direction(output: str) -> Optional[str]:
+    """Return the last <direction>large|small</direction>, or None if missing."""
+    matches = re.findall(r"<direction>\s*(large|small)\s*</direction>", output)
+    return matches[-1] if matches else None
+
+def run_evaluator(ref_arch_src: str, kernel: str, metrics: KernelExecResult, inference_server: str, args: argparse.Namespace):
+    """Run the evaluator on a freshly produced kernel.
+
+    Returns (small_guidance, large_guidance, direction). Either guidance may be
+    an empty string on parse failure; direction is None if the tag is missing or
+    malformed. Runs even when the kernel failed to compile — the prompt
+    assembler injects the traceback into a dedicated section.
+    """
+    evaluator_prompt = generate_evaluator_prompt(
+        task_params=args.task_params,
+        custom_triton_kernels=kernel,
+        run_info=metrics,
+        experience_guidance_path=args.general_memory_path,
+        knowledge_1_threshold=args.knowledge_1_threshold,
+    )
+    evaluator_output = query_inference_server(
+        server=inference_server,
+        model_name=args.model_name,
+        prompt=evaluator_prompt,
+        max_completion_tokens=args.max_completion_tokens,
+    )
+    small_guidance = _extract_tag(evaluator_output, "small_guidance")
+    large_guidance = _extract_tag(evaluator_output, "large_guidance")
+    direction = _extract_direction(evaluator_output)
+    return small_guidance, large_guidance, direction
+
+def single_small_step(ref_arch_src: str, inference_server: str, previous_kernels: list, previous_metrics: list, args: argparse.Namespace, tuning_guidance: str = ""):
+    # Pure executor: the evaluator (run by the orchestrator) supplies
+    # tuning_guidance; this function just applies the tuner edits.
     tuner_prompt = generate_tuner_prompt(
         task_params=args.task_params,
-        previous_kernels=previous_kernels, 
-        previous_metrics=previous_metrics, 
-        tuning_guidance=reviser_output,
+        previous_kernels=previous_kernels,
+        previous_metrics=previous_metrics,
+        tuning_guidance=tuning_guidance,
         experience_guidance_path=args.general_memory_path,
         knowledge_1_threshold=args.knowledge_1_threshold,
         filter_wrong_attempts=getattr(args, 'filter_wrong_attempts', False),
@@ -81,21 +98,14 @@ def single_small_step(ref_arch_src: str, inference_server: str, previous_kernels
         problem_id=getattr(args, 'problem_id', None),
         gpu_name=getattr(args, 'gpu_name', None),
     )
-    #print(f"Tuned Metrics: {tuned_metrics}")
-    #print(f"Tuned Metrics 2: {tuned_metrics_2}")
-    #assert tuned_metrics == tuned_metrics_2, f"Tuned Metrics: {tuned_metrics} != Tuned Metrics 2: {tuned_metrics_2}"
 
-    # Construct combined prompt for small step (reviser_prompt + separator + tuner_prompt)
-    prompt = reviser_prompt + "\n" + "-" * 100 + "\n" + tuner_prompt
-    
     logs = {
-        "reviser_prompt": reviser_prompt,
-        "reviser_output": reviser_output,
+        "tuning_guidance": tuning_guidance,
         "tuner_prompt": tuner_prompt,
         "tuner_output": tuner_output,
         "tuned_kernel": tuned_kernel,
         "tuned_metrics": tuned_metrics,
-        "prompt": prompt,
+        "prompt": tuner_prompt,
     }
     return tuned_kernel, tuned_metrics, logs
 
@@ -106,6 +116,7 @@ def single_large_step(
     metrics_pool: list,
     args: argparse.Namespace,
     *,
+    large_guidance: Optional[str] = None,
     context_ids: list[int] | None = None,
     elite_kernel_pool: list | None = None,
     elite_metrics_pool: list | None = None,
@@ -124,9 +135,10 @@ def single_large_step(
     proposer_prompt = generate_proposer_prompt(
         task=args.test_source,
         task_params=args.task_params,
-        experience_guidance_path=args.general_memory_path, 
+        experience_guidance_path=args.general_memory_path,
         pool_prompt=pool_prompt,
         knowledge_1_threshold=args.knowledge_1_threshold,
+        large_guidance=large_guidance,
     )
     proposer_output = query_inference_server(
         server=inference_server,

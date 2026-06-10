@@ -7,7 +7,7 @@ from agent.inference_server import create_inference_server, query_inference_serv
 from tqdm import tqdm
 from src.eval import KernelExecResult
 from agent.utils import extract_edits, str_replace, calculate_score, copy_step_files, load_test_source, REPO_TOP_PATH, EXAMPLE_ARCH_SRC, EXAMPLE_NEW_ARCH_SRC
-from agent.actions import single_large_step, single_small_step
+from agent.actions import single_large_step, single_small_step, run_evaluator
 from agent.mcts_utils import _parse_metrics_txt
 import torch
 
@@ -163,6 +163,15 @@ def run_small_loop(
         local_best_kernel = initial_kernel
         local_best_metric = initial_metrics
 
+    # Seed the tuning guidance by evaluating the last existing kernel (if any).
+    # The direction tag is parsed and logged but unused — IRS has a fixed ratio.
+    small_guidance = ""
+    if len(previous_kernels) > 0:
+        small_guidance, _large_guidance, direction = run_evaluator(
+            ref_arch_src, previous_kernels[-1], previous_metrics[-1], inference_server, args
+        )
+        logger.debug(f"Seed evaluator direction (ignored): {direction}")
+
     # start_step is the last completed step index, so we continue from start_step
     for i in tqdm(range(start_step, args.refine_steps), desc=f"Small Loop on problem {args.level}_{args.problem_id}", initial=start_step, total=args.refine_steps):
         logger.debug(f"Running kernel {i+1} of {args.refine_steps}")
@@ -182,10 +191,15 @@ def run_small_loop(
             with open(os.path.join(log_path, f"proposal_{large_loop_id}_{i+1}_metrics.txt"), "w") as f:
                 f.write(str(proposal_metrics))
             logger.debug(f"Proposal Metrics: {proposal_metrics}")
+            # Evaluate the fresh proposal so the next small step has guidance.
+            small_guidance, _large_guidance, direction = run_evaluator(
+                ref_arch_src, proposal_kernel, proposal_metrics, inference_server, args
+            )
+            logger.debug(f"Proposal evaluator direction (ignored): {direction}")
             continue
-        
+
         # small step
-        tuned_kernel, tuned_metrics, logs = single_small_step(ref_arch_src, inference_server, previous_kernels, previous_metrics, args)
+        tuned_kernel, tuned_metrics, logs = single_small_step(ref_arch_src, inference_server, previous_kernels, previous_metrics, args, tuning_guidance=small_guidance)
 
         if log_path is not None:
             with open(os.path.join(log_path, f"tune_{large_loop_id}_{i+1}_prompt.txt"), "w") as f:
@@ -197,6 +211,12 @@ def run_small_loop(
 
         previous_kernels.append(tuned_kernel)
         previous_metrics.append(tuned_metrics)
+
+        # Evaluate the new kernel to update guidance for the next iteration.
+        small_guidance, _large_guidance, direction = run_evaluator(
+            ref_arch_src, tuned_kernel, tuned_metrics, inference_server, args
+        )
+        logger.debug(f"Tune evaluator direction (ignored): {direction}")
 
         # keep the previous_kernels and previous_metrics list length at most max_memory_round
         if len(previous_kernels) > args.max_memory_round:

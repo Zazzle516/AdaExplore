@@ -1,7 +1,7 @@
 import re
 from agentprompt.prompt_modules import generate_experience_guidance_prompt
 from agentprompt.prompt_modules import generate_hardware_information_prompt
-from agentprompt.prompt_modules import generate_optimization_rules_prompt
+from agentprompt.skills import generate_skill_prompt
 from src.utils import read_file
 from src.eval import KernelExecResult
 import os
@@ -19,7 +19,7 @@ REPO_TOP_PATH = os.path.abspath(
 
 PROBLEM_STATEMENT = """## Problem Statement
 
-You revise the custom Triton kernels in the given architecture to get better performance. Follow the Optimization Rules below — focus on kernel-level fusion, tiling, and (when the torch convolution dominates runtime) replacing it with a custom Triton kernel; do not propose graph-level algebraic shortcuts that eliminate a heavy operator.
+You evaluate the most recent custom Triton kernel and its measured performance, then emit guidance for the next iteration. Follow the Optimization Skills below — guidance should focus on kernel-level tuning, fusion, and (when the torch convolution dominates runtime) replacing it with a custom Triton kernel; never propose graph-level algebraic shortcuts that eliminate a heavy operator.
 
 """
 
@@ -53,24 +53,63 @@ The tuning metrics contain the following information:
 * **Runtime**: the runtime of the kernel
 * **Fast_p**: compared with the standard PyTorch implementation, how much speedup the customized kernel achieves, calculated as *standard time / custom time*.
 
-### Goal
+"""
 
-Your goal is to help the agent improve the performance of the custom Triton kernels, and correct the correctness errors if any. Improvements may include low-level kernel optimizations (tiling, vectorization, occupancy), kernel-level fusion (combining adjacent operators into one Triton kernel), or — when the torch convolution dominates runtime (symptom: `fast_p < 0.8` while the epilogue is already fused) — replacing `nn.Conv*` / `nn.ConvTranspose*` with a custom Triton kernel. Do **not** propose graph-level algebraic shortcuts that elide a heavy operator (see the Optimization Rules above).
+COMPILE_FAILURE = """### Compile failure
 
-Output a concise guidance to the agent on how to improve the performance of the custom Triton kernels, remember:
-- The revise is iterative, so the guidance should be concise and only contain 1-3 most important improvements.
+The kernel failed to compile. Traceback / error:
+
+{compile_error}
+
+Your <large_guidance> should diagnose the structural cause; your
+<small_guidance> may suggest a minimal patch if one is obvious, or
+restate that a redesign is needed.
 
 """
 
-def generate_reviser_prompt(custom_triton_kernels: str=None, run_info: str=None, experience_guidance_path: str=None, task_params: dict=None, knowledge_1_threshold: int=3):
+GOAL = """### Goal
+
+You evaluate the most recent custom Triton kernel and its measured
+performance, then emit guidance for the next iteration. Produce exactly
+three tagged blocks, in this order:
+
+<small_guidance>
+1-3 concrete tuning bullets — block sizes, num_warps, num_stages, layout,
+autotune configs, fusion opportunities within the existing kernel
+structure. These will be consumed by the tuner if a refinement step is
+chosen.
+</small_guidance>
+
+<large_guidance>
+1-3 concrete design bullets — what a from-scratch rewrite should change
+about the kernel's strategy (im2col vs. direct, scatter-add vs. gather,
+fusion boundary, persistence). These will be consumed by the proposer if a
+redesign step is chosen.
+</large_guidance>
+
+<direction>large</direction>  if you believe the current kernel is
+structurally unable to reach the target and a from-scratch rewrite is more
+promising than continued tuning.
+
+<direction>small</direction>  if you believe continued tuning of the
+current kernel will close the gap.
+
+Emit exactly one <direction> tag. Both guidance blocks are always required
+even if one is short. On compile failure, default to <direction>large</direction>
+unless the traceback points at a trivially-fixable issue (e.g. a typo, a
+wrong constexpr, a missing import).
+
+"""
+
+def generate_evaluator_prompt(custom_triton_kernels: str=None, run_info=None, experience_guidance_path: str=None, task_params: dict=None, knowledge_1_threshold: int=3):
     # Extract required parameters from task prompt template
     required_keys = _extract_format_keys(TASK_INSTRUCTION)
-    
+
     # Build format dict: use task_params if provided, otherwise fall back to original parameters
     format_dict = {}
     if task_params is not None:
         format_dict.update(task_params)
-    
+
     # Fall back to original parameters for missing keys
     for key in required_keys:
         if key not in format_dict:
@@ -80,19 +119,33 @@ def generate_reviser_prompt(custom_triton_kernels: str=None, run_info: str=None,
                 format_dict[key] = run_info
             else:
                 raise ValueError(f"Missing required parameter: {key}")
-    
+
     prompt = PROBLEM_STATEMENT
-    prompt += generate_optimization_rules_prompt()
+    # Skill prompt loaded with step_type="both" so the evaluator sees both
+    # Design and Tuning content per detected family.
+    prompt += generate_skill_prompt(task_params.get("arc_src"), step_type="both")
     prompt += generate_experience_guidance_prompt(experience_guidance_path, threshold=knowledge_1_threshold)
     prompt += generate_hardware_information_prompt(task_params.get('gpu_name'), task_params.get('gpu_architecture'))
     prompt += TASK_INSTRUCTION.format(**format_dict)
+
+    # On compile failure, surface the traceback in a dedicated section before
+    # the goal so the evaluator can diagnose the structural cause.
+    if isinstance(run_info, KernelExecResult) and not run_info.compiled:
+        compile_error = (
+            run_info.metadata.get("compilation_error")
+            or run_info.metadata.get("runtime_error")
+            or "No traceback captured."
+        )
+        prompt += COMPILE_FAILURE.format(compile_error=compile_error)
+
+    prompt += GOAL
     return prompt
 
 if __name__ == "__main__":
     EXAMPLE_ARCH_SRC = read_file(os.path.join(REPO_TOP_PATH, "datasets/KernelBench/level2/1_Conv2D_ReLU_BiasAdd.py"))
     # The same for display purpose
     EXAMPLE_NEW_ARCH_SRC = read_file(os.path.join(REPO_TOP_PATH, "datasets/KernelBench/level2/1_Conv2D_ReLU_BiasAdd.py"))
-    prompt = generate_reviser_prompt(
+    prompt = generate_evaluator_prompt(
         task_params={
             "arc_src": EXAMPLE_ARCH_SRC,
             "gpu_name": "NVIDIA A100",

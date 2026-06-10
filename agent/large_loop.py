@@ -5,7 +5,7 @@ import json
 from agent.inference_server import create_inference_server, query_inference_server
 from tqdm import tqdm
 import argparse
-from agent.actions import single_large_step
+from agent.actions import single_large_step, run_evaluator
 from agent.small_loop import run_small_loop
 from agent.utils import calculate_score, copy_step_files, load_test_source, read_metrics, REPO_TOP_PATH
 import torch
@@ -66,6 +66,10 @@ def run_large_loop(ref_arch_src: str, inference_server: str, args: argparse.Name
         if k <= 0 or n <= 0:
             return []
         return list(range(max(0, n - k), n))
+
+    # Evaluator design guidance threaded from one proposal to the next. The
+    # direction tag is parsed and logged but unused (fixed step ratios).
+    large_guidance = ""
 
     for i in tqdm(range(resume_start, args.proposal_steps), desc=f"Large Loop on problem {args.level}_{args.problem_id}"):
         logger.debug(f"Running proposal {i+1} of {args.proposal_steps}")
@@ -128,11 +132,19 @@ def run_large_loop(ref_arch_src: str, inference_server: str, args: argparse.Name
             recent_kernels_to_pass,
             recent_metrics_to_pass,
             args,
+            large_guidance=large_guidance,
             context_ids=recent_context_ids,
             elite_kernel_pool=elite_kernels_to_pass,
             elite_metrics_pool=elite_metrics_to_pass,
             elite_context_ids=elite_context_ids,
         )
+
+        # Evaluate the fresh proposal to update design guidance for the next
+        # proposal. Direction tag parsed and logged but unused (fixed ratio).
+        _small_guidance, large_guidance, direction = run_evaluator(
+            ref_arch_src, proposal_kernel, proposal_metrics, inference_server, args
+        )
+        logger.debug(f"Proposal evaluator direction (ignored): {direction}")
         
         # log the proposal
         if log_path is not None:

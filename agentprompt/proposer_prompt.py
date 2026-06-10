@@ -1,7 +1,7 @@
 import re
 from agentprompt.prompt_modules import generate_experience_guidance_prompt
 from agentprompt.prompt_modules import generate_hardware_information_prompt
-from agentprompt.prompt_modules import generate_optimization_rules_prompt
+from agentprompt.skills import generate_skill_prompt
 from agentprompt.benchmarks.KB_prompt import KB_TRITON_PROMPT
 from agentprompt.benchmarks.FIT_prompt import FIT_TRITON_PROMPT
 from agentprompt.benchmarks.TBG_prompt import TBG_TRITON_PROMPT
@@ -39,7 +39,7 @@ PROBLEM_STATEMENT = """## Problem Statement
 
 You write custom kernels to replace the pytorch operators in the given architecture to get speedups.
 
-You have complete freedom to choose the set of operators you want to replace. You may make the decision to replace some operators with custom kernels and leave others unchanged. You may replace multiple operators with custom implementations, consider operator fusion opportunities (combining multiple operators into a single kernel, for example, combining matmul+relu), or algorithmic changes (such as online softmax). You are only limited by your imagination — within the constraints of the Optimization Rules below.
+You have complete freedom to choose the set of operators you want to replace. You may make the decision to replace some operators with custom kernels and leave others unchanged. You may replace multiple operators with custom implementations, consider operator fusion opportunities (combining multiple operators into a single kernel, for example, combining matmul+relu), or algorithmic changes (such as online softmax). You are only limited by your imagination — within the constraints of the Optimization Skills below.
 
 """
 
@@ -78,24 +78,39 @@ Objective:
 Now generate a kernel that can potentially outperform the best existing kernel and achieves the lowest possible runtime.
 """
 
-def generate_proposer_prompt(experience_guidance_path: str=None, pool_prompt: str=None, task: str="KB", task_params: dict=None, knowledge_1_threshold: int=3):
+OPTIONAL_CONTEXT = """## Optional context — diagnosis of the previous attempt
+
+The evaluator analyzed the previous kernel and suggested the following
+design directions. Use them if they fit; ignore them if a different
+approach is better.
+
+{large_guidance}
+
+"""
+
+def generate_proposer_prompt(experience_guidance_path: str=None, pool_prompt: str=None, task: str="KB", task_params: dict=None, knowledge_1_threshold: int=3, large_guidance: str=None):
     prompt = PROBLEM_STATEMENT
-    prompt += generate_optimization_rules_prompt()
+    prompt += generate_skill_prompt(task_params.get("arc_src"), step_type="large")
 
     if task_params.get("example_arch_src", None) is not None and task_params.get("example_new_arch_src", None) is not None and task == "KB":
         prompt += EXAMPLE_FORMATS.format(example_arch_src=task_params.get("example_arch_src"), example_new_arch_src=task_params.get("example_new_arch_src"))
 
     prompt += generate_experience_guidance_prompt(experience_guidance_path, threshold=knowledge_1_threshold)
-    
+
+    # Optional context — the evaluator's design diagnosis of the previous
+    # attempt. Framed as optional so the proposer stays greenfield.
+    if large_guidance:
+        prompt += OPTIONAL_CONTEXT.format(large_guidance=large_guidance)
+
     # Extract required parameters from task prompt template
     task_template = task_to_prompt[task]
     required_keys = _extract_format_keys(task_template)
-    
+
     # Build format dict: use task_params if provided, otherwise fall back to original parameters
     format_dict = {}
     if task_params is not None:
         format_dict.update(task_params)
-    
+
     for key in required_keys:
         if key not in format_dict:
             raise ValueError(f"Missing required parameter: {key}")

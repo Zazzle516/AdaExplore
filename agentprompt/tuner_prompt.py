@@ -22,7 +22,7 @@ from agent.utils import extract_edits, str_replace
 import re
 from agentprompt.prompt_modules import generate_experience_guidance_prompt
 from agentprompt.prompt_modules import generate_hardware_information_prompt
-from agentprompt.prompt_modules import generate_optimization_rules_prompt
+from agentprompt.skills import generate_skill_prompt
 
 def _extract_format_keys(template: str):
     """Extract format keys from a template string."""
@@ -30,7 +30,7 @@ def _extract_format_keys(template: str):
 
 PROBLEM_STATEMENT = """## Problem Statement
 
-You tune the custom Triton kernels in the given architecture to get better performance. The architecture is the reference architecture, and the custom kernels are the previous kernels you have generated. Follow the Optimization Rules below — focus on low-level kernel tuning and fusion, and do not introduce graph-level algebraic shortcuts that eliminate a heavy operator.
+You tune the custom Triton kernels in the given architecture to get better performance. The architecture is the reference architecture, and the custom kernels are the previous kernels you have generated. Follow the Optimization Skills below — focus on low-level kernel tuning and fusion, and do not introduce graph-level algebraic shortcuts that eliminate a heavy operator.
 
 """
 
@@ -67,7 +67,7 @@ The tuning metrics contain the following information:
 
 ### Goal
 
-- Perform small, localized updates to code in the last version of the custom kernels with the str_replace command to correct the correctness errors or improve the performance of the custom kernels. Keep the overall model interface unchanged. Apply the Optimization Rules above — do not introduce algebraic shortcuts that eliminate the reference's heavy operators.
+- Perform small, localized updates to code in the last version of the custom kernels with the str_replace command to correct the correctness errors or improve the performance of the custom kernels. Keep the overall model interface unchanged. Apply the Optimization Skills above — do not introduce algebraic shortcuts that eliminate the reference's heavy operators.
 When making edits:
    - Ensure the edit results in idiomatic, correct code
    - Do not leave the code in a broken state
@@ -129,9 +129,9 @@ Previously, you have generated the following custom kernels and got the followin
 {previous_kernels_and_metrics}
 </Previous Kernels and Metrics>
 
-#### **Guidance from Reviser Agent:**
+#### **Guidance from Evaluator Agent:**
 
-- A reviser agent has provided a guidance to you on how to correct or improve the performance of your lastgenerated custom kernels, please tune the custom kernels based on the guidance in the unified diff format. Reminder to keep the name of `ModelNew` unchanged.
+- An evaluator agent has provided a guidance to you on how to correct or improve the performance of your lastgenerated custom kernels, please tune the custom kernels based on the guidance in the unified diff format. Reminder to keep the name of `ModelNew` unchanged.
 
 <Tuning Guidance>
 {tuning_guidance}
@@ -193,7 +193,7 @@ def generate_tuner_prompt(
                 raise ValueError(f"Missing required parameter: {key}")
     
     prompt = PROBLEM_STATEMENT
-    prompt += generate_optimization_rules_prompt()
+    prompt += generate_skill_prompt(task_params.get("arc_src"), step_type="small")
     prompt += generate_experience_guidance_prompt(experience_guidance_path, threshold=knowledge_1_threshold)
     prompt += generate_hardware_information_prompt(task_params.get('gpu_name'), task_params.get('gpu_architecture'))
     prompt += TASK_INSTRUCTION.format(**format_dict)
