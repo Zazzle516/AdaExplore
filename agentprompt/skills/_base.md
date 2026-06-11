@@ -17,3 +17,11 @@ designing from scratch or tuning an existing kernel.
    CUDA C++ extension (`torch.utils.cpp_extension`). Do not assume any op is
    the immovable part of the graph — the heaviest op usually has the most
    headroom.
+
+3. **Triton Grammer.** Any Python-float reference parameter that becomes a
+   kernel input must be passed as `tl.constexpr` (preferred — it lets Triton
+   bake the value into PTX) or as a 0-d CUDA tensor. Never pass it as an
+   untyped positional arg — Triton's launcher specialization for raw Python
+   floats is fragile and can fail at the gcc launcher build stage
+   (`subprocess.CalledProcessError` building `__triton_launcher.*.so`) even
+   when the kernel itself is logically correct.

@@ -766,6 +766,18 @@ class MCTSKernelOptimizer:
             f.write(node.kernel)
         with open(os.path.join(self.log_path, f"step_{step_idx}_metrics.json"), "w") as f:
             json.dump(node.metrics.to_dict(), f, indent=4)
+
+        # When a Triton kernel fails to compile/instantiate/launch, dump the
+        # structured parser output to a sibling file for inspection. Gated only
+        # on the parsed key's presence — it is set on every Triton failure path
+        # (compile, load, and the gcc-launcher build that surfaces at correctness
+        # check, where compiled=True), so don't condition on `compiled`.
+        if (
+            node.metrics is not None
+            and "compilation_error_parsed" in node.metrics.metadata
+        ):
+            with open(os.path.join(self.log_path, f"step_{step_idx}_compile_error.json"), "w") as f:
+                json.dump(node.metrics.metadata["compilation_error_parsed"], f, indent=2)
         
         # Save the prompt alongside per-step artifacts for later analysis.
         if node.prompt:

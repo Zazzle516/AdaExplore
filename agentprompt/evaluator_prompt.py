@@ -1,4 +1,5 @@
 import re
+import json
 from agentprompt.prompt_modules import generate_experience_guidance_prompt
 from agentprompt.prompt_modules import generate_hardware_information_prompt
 from agentprompt.skills import generate_skill_prompt
@@ -143,15 +144,22 @@ def generate_evaluator_prompt(custom_triton_kernels: str=None, run_info=None, ex
     prompt += generate_hardware_information_prompt(task_params.get('gpu_name'), task_params.get('gpu_architecture'))
     prompt += TASK_INSTRUCTION.format(**format_dict)
 
-    # On compile failure, surface the traceback in a dedicated section before
-    # the goal so the evaluator can diagnose the structural cause.
-    if isinstance(run_info, KernelExecResult) and not run_info.compiled:
-        compile_error = (
-            run_info.metadata.get("compilation_error")
-            or run_info.metadata.get("runtime_error")
-            or "No traceback captured."
-        )
-        prompt += COMPILE_FAILURE.format(compile_error=compile_error)
+    # On compile or runtime failure, surface the traceback in a dedicated
+    # section before the goal so the evaluator can diagnose the structural
+    # cause. Fire on any failed run (compile failure, or compiled-but-incorrect
+    # with a captured error such as the gcc-launcher build error), preferring
+    # the structured parser output when present.
+    if isinstance(run_info, KernelExecResult) and not run_info.correctness:
+        parsed = run_info.metadata.get("compilation_error_parsed")
+        if parsed:
+            compile_error = json.dumps(parsed, indent=2, ensure_ascii=False)
+        else:
+            compile_error = (
+                run_info.metadata.get("compilation_error")
+                or run_info.metadata.get("runtime_error")
+            )
+        if compile_error:
+            prompt += COMPILE_FAILURE.format(compile_error=compile_error)
 
     prompt += GOAL
     return prompt

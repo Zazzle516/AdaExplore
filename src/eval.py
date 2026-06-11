@@ -455,6 +455,12 @@ def eval_kernel_against_ref(
             full_error = traceback.format_exc()
             metadata["compilation_error_name"] = get_error_name(e)
             metadata["compilation_error"] = full_error
+            if is_triton:
+                from src.triton_error_parser import parse_triton_compile_error
+                metadata["compilation_error_parsed"] = parse_triton_compile_error(
+                    full_error,
+                    error_class_name=metadata["compilation_error_name"],
+                )
             graceful_eval_cleanup(context, device, tempfile)
             return KernelExecResult(
                 compiled=False, metadata=metadata
@@ -479,6 +485,12 @@ def eval_kernel_against_ref(
         full_error = traceback.format_exc()
         metadata["runtime_error"] = full_error
         metadata["runtime_error_name"] = get_error_name(e)
+        if is_triton:
+            from src.triton_error_parser import parse_triton_compile_error
+            metadata["compilation_error_parsed"] = parse_triton_compile_error(
+                full_error,
+                error_class_name=metadata["runtime_error_name"],
+            )
         return KernelExecResult(
             compiled=True, correctness=False, metadata=metadata
         )  # skip further steps
@@ -505,6 +517,12 @@ def eval_kernel_against_ref(
         full_error = traceback.format_exc()
         metadata["runtime_error"] = full_error
         metadata["runtime_error_name"] = get_error_name(e)
+        if is_triton:
+            from src.triton_error_parser import parse_triton_compile_error
+            metadata["compilation_error_parsed"] = parse_triton_compile_error(
+                full_error,
+                error_class_name=metadata["runtime_error_name"],
+            )
         kernel_exec_result = KernelExecResult(
             compiled=True, correctness=False, metadata=metadata
         )
@@ -748,6 +766,7 @@ def run_and_check_correctness(
     dtype_str: str = "fp32",
     seed=42,
     device=None,
+    is_triton: bool = False,
 ) -> KernelExecResult:
     """
     run the model and check correctness,
