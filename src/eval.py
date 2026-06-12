@@ -511,6 +511,7 @@ def eval_kernel_against_ref(
             seed=seed_num,
             device=device,
             dtype_str=dtype_str,
+            is_triton=is_triton,
         )
     except Exception as e:
         # TODO: add metadata for runtime error e.g. error in launching kernel, illegal memory access, ...
@@ -862,6 +863,12 @@ def run_and_check_correctness(
                     "runtime_error", full_error, metadata, truncate=False
                 )
                 metadata["runtime_error_name"] = get_error_name(e)
+                if is_triton:
+                    from src.triton_error_parser import parse_triton_compile_error
+                    metadata["compilation_error_parsed"] = parse_triton_compile_error(
+                        full_error,
+                        error_class_name=metadata["runtime_error_name"],
+                    )
                 return KernelExecResult(
                     compiled=True, correctness=False, metadata=metadata
                 )
