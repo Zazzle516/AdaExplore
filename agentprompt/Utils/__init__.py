@@ -9,11 +9,17 @@ matching skill sections at the requested altitude.
 import re
 from pathlib import Path
 
-from agentprompt.skills.detect import detect_families
+from agentprompt.Utils.detect import detect_families
+from agentprompt.Utils.hardware import (
+    get_hardware_params,
+    substitute_placeholders,
+)
 
-__all__ = ["detect_families", "generate_skill_prompt"]
+__all__ = ["detect_families", "generate_skill_prompt", "get_hardware_params"]
 
-_SKILLS_DIR = Path(__file__).parent
+# Skill content lives in the sibling ``agentprompt/skills`` directory (.md
+# files); the loader code lives here in ``Utils``.
+_SKILLS_DIR = Path(__file__).parent.parent / "skills"
 _SECTIONS: dict[tuple[str, str], str] = {}
 
 # Filenames (stems) treated as headerless: no ## Design / ## Tuning split.
@@ -64,13 +70,18 @@ def _load_section(family: str, step_type: str) -> str:
 
 
 def generate_skill_prompt(arch_src: str | None,
-                          step_type: str = "both") -> str:
+                          step_type: str = "both",
+                          task_params: dict | None = None) -> str:
     """Assemble the skill prompt for a reference arch at one altitude.
 
     step_type in {"large", "small", "both"}.
     "large" -> _base + family ## Design (+ _default Design if unknown ops)
     "small" -> _base + family ## Tuning (+ _default Tuning if unknown ops)
     "both"  -> _base + both sections per family (used by the evaluator)
+
+    ``task_params`` (when provided) is read for ``gpu_name`` /
+    ``gpu_architecture`` / ``dtype_str`` and used to fill ``{key}``
+    hardware placeholders in the assembled skill text.
     """
     base = _load_section("_base", "full")
     families, has_unknown = (
@@ -81,38 +92,13 @@ def generate_skill_prompt(arch_src: str | None,
         blocks.append(_load_section(fam, step_type))
     if has_unknown:
         blocks.append(_load_section("_default", step_type))
-    return "\n\n".join(b for b in blocks if b)
+    text = "\n\n".join(b for b in blocks if b)
+    if task_params:
+        hw = get_hardware_params(
+            gpu_name=task_params.get("gpu_name"),
+            gpu_architecture=task_params.get("gpu_architecture"),
+            dtype_str=task_params.get("dtype_str"),
+        )
+        text = substitute_placeholders(text, hw)
+    return text
 
-
-if __name__ == "__main__":
-    # Section extractor smoke test (Verification §2): a fenced code block
-    # containing `## Design` must NOT be mistaken for a section marker.
-    fixture = (
-        "# conv skills\n\n"
-        "## Design (large step)\n\n"
-        "design body line\n"
-        "```\n"
-        "## Design inside a fence should be ignored\n"
-        "```\n\n"
-        "## Tuning (small step)\n\n"
-        "tuning body line\n"
-    )
-    parts = _parse_headered(fixture)
-    assert parts["Design"].startswith("design body line"), parts["Design"]
-    assert "inside a fence" in parts["Design"], parts["Design"]
-    assert parts["Tuning"] == "tuning body line", parts["Tuning"]
-    print("[OK] fenced ## Design not treated as a section marker")
-
-    # Real conv.md round-trips through the three step types.
-    large = _load_section("conv", "large")
-    small = _load_section("conv", "small")
-    both = _load_section("conv", "both")
-    assert large and "im2col" in large
-    assert small and "BLOCK_M" in small
-    assert both == (large + "\n\n" + small)
-    assert "BLOCK_M" not in large and "im2col" not in small
-    print("[OK] conv large/small/both sections load correctly")
-
-    print("\n----- generate_skill_prompt(step_type='large') -----")
-    print(generate_skill_prompt("import torch.nn as nn\nnn.Conv2d(3, 4, 3)",
-                                step_type="large"))

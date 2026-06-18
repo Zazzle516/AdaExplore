@@ -1,7 +1,7 @@
 import re
 from agentprompt.prompt_modules import generate_experience_guidance_prompt
 from agentprompt.prompt_modules import generate_hardware_information_prompt
-from agentprompt.skills import generate_skill_prompt
+from agentprompt.Utils import generate_skill_prompt
 from agentprompt.benchmarks.KB_prompt import KB_TRITON_PROMPT
 from agentprompt.benchmarks.FIT_prompt import FIT_TRITON_PROMPT
 from agentprompt.benchmarks.TBG_prompt import TBG_TRITON_PROMPT
@@ -103,7 +103,7 @@ file inside the <kernel> tags. Put no prose inside the tags.
 
 def generate_proposer_prompt(experience_guidance_path: str=None, pool_prompt: str=None, task: str="KB", task_params: dict=None, knowledge_1_threshold: int=3, large_guidance: str=None):
     prompt = PROBLEM_STATEMENT
-    prompt += generate_skill_prompt(task_params.get("arc_src"), step_type="large")
+    prompt += generate_skill_prompt(task_params.get("arc_src"), step_type="large", task_params=task_params)
 
     if task_params.get("example_arch_src", None) is not None and task_params.get("example_new_arch_src", None) is not None and task == "KB":
         prompt += EXAMPLE_FORMATS.format(example_arch_src=task_params.get("example_arch_src"), example_new_arch_src=task_params.get("example_new_arch_src"))

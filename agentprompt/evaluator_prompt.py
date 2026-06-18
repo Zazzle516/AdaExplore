@@ -2,21 +2,13 @@ import re
 import json
 from agentprompt.prompt_modules import generate_experience_guidance_prompt
 from agentprompt.prompt_modules import generate_hardware_information_prompt
-from agentprompt.skills import generate_skill_prompt
-from src.utils import read_file
+from agentprompt.Utils import generate_skill_prompt
+from agentprompt.Utils.detect import detect_shortcut_risk, strip_comments_and_docstrings
 from src.eval import KernelExecResult
-import os
 
 def _extract_format_keys(template: str):
     """Extract format keys from a template string."""
     return set(re.findall(r'\{(\w+)\}', template))
-
-REPO_TOP_PATH = os.path.abspath(
-    os.path.join(
-        os.path.dirname(__file__),
-        "..",
-    )
-)
 
 PROBLEM_STATEMENT = """## Problem Statement
 
@@ -117,6 +109,73 @@ constexpr, a missing import).
 
 """
 
+ADVERSARIAL_GOAL = """### Goal (adversarial review mode)
+
+The measured speedup (>=5x) is in a range commonly produced by algebraic
+shortcuts. **You are in adversarial review mode.** A kernel reaches this range
+honestly only by genuinely faster scheduling of the *same* arithmetic; far more
+often it reaches it by collapsing a heavy operator's work axis before the
+multiply-accumulate runs (the contract violation described in the "_base" skill
+section). Treat the kernel as guilty until the code proves otherwise.
+
+The validity contract: every heavy op (Conv*, ConvTranspose*, Linear, matmul)
+must materialize its full reference output shape at runtime, and the kernel must
+perform the same asymptotic multiply-add count as the reference. Pre-reducing
+weight or input along an axis that a downstream sum / mean / avg-pool later
+collapses -- then running a smaller GEMM / matvec -- violates the contract even
+though it is mathematically equivalent.
+
+Produce exactly four tagged blocks, in this order:
+
+<reasoning>
+Walk the kernel's main accumulation loop. State (a) which heavy-op output axis
+is materialized at full shape, and (b) which arithmetic loop performs the
+reference's full MAC count. If you cannot point to both in the actual code, say
+so explicitly -- that is grounds for <valid>false</valid>.
+</reasoning>
+
+<small_guidance>
+1-3 concrete tuning bullets -- block sizes, num_warps, num_stages, layout,
+autotune configs, fusion opportunities within the existing kernel structure.
+</small_guidance>
+
+<large_guidance>
+1-3 concrete design bullets -- what a from-scratch rewrite should change about
+the kernel's strategy. If the kernel is a shortcut, the large guidance must
+direct the proposer back to materializing the full heavy-op output.
+</large_guidance>
+
+<direction>large</direction> or <direction>small</direction> -- exactly one.
+
+<valid>true</valid> is emitted ONLY when your <reasoning> named both (a) the
+full-shape heavy-op output axis and (b) the full-MAC arithmetic loop. A kernel
+that fuses the heavy op and the downstream reduction into one pass is still
+valid -- the contract is violated only when the heavy op's work axis is
+collapsed *before* the heavy op runs. In every other case -- including when you
+are merely unsure -- emit <valid>false</valid>.
+
+Emit exactly one <direction> tag and exactly one <valid> tag. The <reasoning>
+block is required before <valid>.
+
+"""
+
+STRUCTURAL_ALERT = """## Structural alert
+
+The reference contains a {heavy_op} -> {reduction} chain.
+Expected intermediate output of {heavy_op}: {shape_descriptor}
+(then reduced to the kernel's reported output by {reduction}).
+
+Common shortcut surface: pre-reducing {heavy_op}'s weight or input
+along the axis that {reduction} later collapses, then running a smaller
+GEMM/matvec. Legitimate fusion of {heavy_op} and {reduction} inside one
+Triton kernel is allowed; the contract is violated only when the
+heavy-op work axis is collapsed before the multiply-accumulate runs.
+
+Verify the kernel's main accumulation loop iterates over the full
+{heavy_op} output grid.
+
+"""
+
 def generate_evaluator_prompt(custom_triton_kernels: str=None, run_info=None, experience_guidance_path: str=None, task_params: dict=None, knowledge_1_threshold: int=3):
     # Extract required parameters from task prompt template
     required_keys = _extract_format_keys(TASK_INSTRUCTION)
@@ -136,12 +195,41 @@ def generate_evaluator_prompt(custom_triton_kernels: str=None, run_info=None, ex
             else:
                 raise ValueError(f"Missing required parameter: {key}")
 
+    # Strip self-justifying comments / docstrings from the kernel before it is
+    # shown to the evaluator -- an adversarial reviewer must reason from the
+    # code, not from the kernel's own correctness claims.
+    if isinstance(format_dict.get('custom_triton_kernels'), str):
+        format_dict['custom_triton_kernels'] = strip_comments_and_docstrings(
+            format_dict['custom_triton_kernels'])
+
+    # Scale scrutiny with the measured speedup. fast_p is only populated on the
+    # successful perf branch (src/eval.py), so compile/correctness failures have
+    # empty runtime_stats and naturally bypass adversarial mode.
+    ratio = 0
+    correctness = False
+    if isinstance(run_info, KernelExecResult):
+        ratio = run_info.runtime_stats.get("fast_p", 0) or 0
+        correctness = run_info.correctness
+    adversarial = ratio >= 5.0
+
     prompt = PROBLEM_STATEMENT
     # Skill prompt loaded with step_type="both" so the evaluator sees both
     # Design and Tuning content per detected family.
-    prompt += generate_skill_prompt(task_params.get("arc_src"), step_type="both")
+    prompt += generate_skill_prompt(task_params.get("arc_src"), step_type="both", task_params=task_params)
     prompt += generate_experience_guidance_prompt(experience_guidance_path, threshold=knowledge_1_threshold)
     prompt += generate_hardware_information_prompt(task_params.get('gpu_name'), task_params.get('gpu_architecture'))
+
+    # Inject a Structural Alert (after hardware info, before the task) when the
+    # reference contains a heavy-op -> linear-reduction chain. Skipped on the
+    # failure path to keep that prompt focused.
+    if correctness:
+        for chain in detect_shortcut_risk(task_params.get("arc_src")):
+            prompt += STRUCTURAL_ALERT.format(
+                heavy_op=chain.heavy_op,
+                reduction=chain.reduction,
+                shape_descriptor=chain.shape_descriptor,
+            )
+
     prompt += TASK_INSTRUCTION.format(**format_dict)
 
     # On compile or runtime failure, surface the traceback in a dedicated
@@ -161,22 +249,5 @@ def generate_evaluator_prompt(custom_triton_kernels: str=None, run_info=None, ex
         if compile_error:
             prompt += COMPILE_FAILURE.format(compile_error=compile_error)
 
-    prompt += GOAL
+    prompt += ADVERSARIAL_GOAL if adversarial else GOAL
     return prompt
-
-if __name__ == "__main__":
-    EXAMPLE_ARCH_SRC = read_file(os.path.join(REPO_TOP_PATH, "datasets/KernelBench/level2/1_Conv2D_ReLU_BiasAdd.py"))
-    # The same for display purpose
-    EXAMPLE_NEW_ARCH_SRC = read_file(os.path.join(REPO_TOP_PATH, "datasets/KernelBench/level2/1_Conv2D_ReLU_BiasAdd.py"))
-    prompt = generate_evaluator_prompt(
-        task_params={
-            "arc_src": EXAMPLE_ARCH_SRC,
-            "gpu_name": "NVIDIA A100",
-            "gpu_architecture": "Ampere",
-            "dtype_str": "float16",
-        },
-        custom_triton_kernels=EXAMPLE_NEW_ARCH_SRC,
-        run_info=KernelExecResult(compiled=True, correctness=True, runtime=1.0, runtime_stats={"fast_p": 1.0}),
-        experience_guidance_path=None,
-    )
-    print(prompt)

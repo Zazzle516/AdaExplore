@@ -117,7 +117,7 @@ class ClaudeOpenAICompatClient:
     """
     def __init__(self):
         self._client = anthropic.Anthropic(
-            auth_token="sk-z4T81RDKlz8nrh7CLKl7jAUetChJGcZn3lkQatfy5azk86OV",
+            auth_token="sk-1CadrrVQ1YxmwlukSHT7m6sfK5InLl9kX33F4BkiAIkyJirt",
             base_url="https://lingzhi.agibot.com",
         )
         self.chat = SimpleNamespace(completions=_ClaudeChatCompletions(self._client))

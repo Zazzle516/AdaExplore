@@ -27,6 +27,47 @@ logger = logging.getLogger(__name__)
 
 from .format import KernelExecResult, REPO_TOP_PATH
 
+# 目前 level2-9 的测试有环境报错问题  无法测试出 Agent Kernel 的真实能力
+# 后续考虑围绕 AdaExplore 搭建一整个 workflow  然后这个报错单独拆分到 env 中
+# Q: 或许考虑单独为 env 设置一个 Agent 环节
+def _ensure_libcuda_linkable():
+    """Make `-lcuda` resolvable for Triton's gcc launcher build.
+
+    Triton compiles a small launcher .so on first kernel launch and links it
+    against `-lcuda`. This box has only the versioned runtime `libcuda.so.1`
+    (not a bare `libcuda.so`) on the standard linker paths, while the linkable
+    stub lives in the CUDA toolkit's `stubs/` dir — which Triton does not put on
+    its `-L` path. Without this, every fresh launcher build fails with
+    `/usr/bin/ld: cannot find -lcuda`, which surfaces to the agent as an
+    un-fixable "compile error" on an otherwise-correct kernel.
+
+    Prepending the stubs dir to LIBRARY_PATH (read by gcc/ld at link time) fixes
+    it. gcc subprocesses inherit os.environ, so setting it here — before any
+    kernel launch — covers both the in-process and subprocess eval paths.
+    """
+    import glob
+
+    # Known path on this machine; glob fallback so a CUDA version bump doesn't
+    # silently re-break linking.
+    candidates = ["/usr/local/cuda-12.8/targets/x86_64-linux/lib/stubs"]
+    candidates += sorted(glob.glob("/usr/local/cuda*/targets/*/lib/stubs"))
+
+    stub_dir = next(
+        (d for d in candidates if os.path.exists(os.path.join(d, "libcuda.so"))),
+        None,
+    )
+    if stub_dir is None:
+        logger.warning("libcuda.so stub dir not found; Triton launcher build may fail with `cannot find -lcuda`")
+        return
+
+    existing = os.environ.get("LIBRARY_PATH", "")
+    parts = existing.split(os.pathsep) if existing else []
+    if stub_dir not in parts:
+        os.environ["LIBRARY_PATH"] = os.pathsep.join([stub_dir, *parts])
+
+
+_ensure_libcuda_linkable()
+
 
 def get_error_name(e: Exception) -> str:
 

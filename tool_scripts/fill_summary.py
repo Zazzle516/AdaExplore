@@ -1,24 +1,33 @@
-"""Fill outputs/KB-l1_AdaExplore_50/Summary.xlsx with one row per test in test_list_1.txt.
+"""Fill outputs/KB-l{level}_AdaExplore_50/Summary.xlsx with one row per test in test_list_{level}.txt.
 
 Columns: Name | trt_baseline (ms) | Agent result | ratio | Fail | Implementation
+
+Usage: python tool_scripts/fill_summary.py [--level 1|2]   (default: 2)
 """
 
+import argparse
 import json
 import os
 import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LEVEL_DIR = os.path.join(ROOT, "datasets", "KernelBench", "level1")
 TRT_JSON = os.path.join(ROOT, "results", "timing", "RTX-4090-D", "baseline_time_trt.json")
-TEST_LIST = os.path.join(ROOT, "config", "test_list", "test_list_1.txt")
-OUT_DIR = os.path.join(ROOT, "outputs", "KB-l1_AdaExplore_50")
-XLSX = os.path.join(OUT_DIR, "Summary.xlsx")
 
 
-def build_pid_to_filename():
+def paths_for(level):
+    return {
+        "level_dir": os.path.join(ROOT, "datasets", "KernelBench", f"level{level}"),
+        "test_list": os.path.join(ROOT, "config", "test_list", f"test_list_{level}.txt"),
+        "out_dir": os.path.join(ROOT, "outputs", f"KB-l{level}_AdaExplore_50"),
+        "trt_key": f"level{level}",
+        "sheet_title": f"level{level}",
+    }
+
+
+def build_pid_to_filename(level_dir):
     mapping = {}
-    for fn in os.listdir(LEVEL_DIR):
+    for fn in os.listdir(level_dir):
         if not fn.endswith(".py"):
             continue
         m = re.match(r"^(\d+)_", fn)
@@ -110,16 +119,27 @@ def agent_fail_reason(metrics):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--level", type=int, default=2, choices=(1, 2), help="KernelBench level (default: 2)")
+    args = parser.parse_args()
+    level = args.level
+
     sys.path.insert(0, "/home/agiuser/.local/lib/python3.10/site-packages")
     import openpyxl
     from openpyxl.styles import Font, Alignment, PatternFill
 
-    pid2fn = build_pid_to_filename()
+    cfg = paths_for(level)
+    level_dir = cfg["level_dir"]
+    test_list = cfg["test_list"]
+    out_dir = cfg["out_dir"]
+    xlsx = os.path.join(out_dir, "Summary.xlsx")
+
+    pid2fn = build_pid_to_filename(level_dir)
     with open(TRT_JSON, "r") as f:
-        trt = json.load(f).get("level1", {})
+        trt = json.load(f).get(cfg["trt_key"], {})
 
     rows = []
-    with open(TEST_LIST, "r") as f:
+    with open(test_list, "r") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -127,8 +147,8 @@ def main():
             parts = line.split()
             if len(parts) != 2:
                 continue
-            level, pid = int(parts[0]), int(parts[1])
-            if level != 1:
+            row_level, pid = int(parts[0]), int(parts[1])
+            if row_level != level:
                 continue
             fn = pid2fn.get(pid)
             if fn is None:
@@ -140,7 +160,7 @@ def main():
             trt_ok = trt_entry is not None and trt_entry.get("status") == "ok" and trt_mean
             trt_fail = trt_fail_reason(trt_entry)
 
-            agent_dir = os.path.join(OUT_DIR, f"1_{pid}")
+            agent_dir = os.path.join(out_dir, f"{level}_{pid}")
             metrics_path = os.path.join(agent_dir, "global_best_metrics_50.json")
             kernel_path = os.path.join(agent_dir, "global_best_kernel_50.py")
             metrics = None
@@ -187,7 +207,7 @@ def main():
 
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = "level1"
+    ws.title = cfg["sheet_title"]
     headers = ["Name", "trt_baseline (ms)", "Agent result", "ratio", "Fail", "Implementation"]
     ws.append(headers)
     bold = Font(bold=True)
@@ -211,8 +231,9 @@ def main():
         ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
 
     ws.freeze_panes = "A2"
-    wb.save(XLSX)
-    print(f"Wrote {len(rows)} rows to {XLSX}")
+    os.makedirs(out_dir, exist_ok=True)
+    wb.save(xlsx)
+    print(f"Wrote {len(rows)} rows to {xlsx}")
 
 
 if __name__ == "__main__":
