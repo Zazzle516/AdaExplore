@@ -1,0 +1,29 @@
+{
+    "node_id": 13,
+    "parent_node_id": 10,
+    "context_node_ids": [
+        11
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness fails on 1/5 trials with max_diff ~1.8e-3 \u2014 likely an out-of-bounds load when `n_mask` is false but `x_offs` still computes huge addresses (id_pos*IH*IW*IC + ...). Even with `mask`, the address must be safe; clamp `od/oh/ow` to 0 (e.g. `od = tl.where(n_mask, od, 0)`) before computing `x_offs` to ensure all generated pointers stay in-bounds.\n- Also clamp `offs_oc` similarly when computing `w_offs` to avoid reading past the end of the weight buffer; OOB reads can return arbitrary values that contaminate the dot product before masking.\n- Once correct, narrow the autotune set: with OUT_SPATIAL=14*62*62=53816, OC=64, the best tile is likely BLOCK_N=128, BLOCK_OC=64, BLOCK_K=32 with num_warps=4; consider also BLOCK_K=72 (full K=8*3*3=72) so the K loop has a single iteration and indexing math is hoisted.",
+    "large_guidance": "- K_TOTAL = IC*KD*KH*KW = 8*27 = 72, which fits in one BLOCK_K. Switch to a single-pass kernel where the full K-dimension is consumed in one tile (BLOCK_K=72 padded to 128 with masking), eliminating the inner K loop entirely and letting all index decomposition be compile-time constexpr.\n- Tile over (N, OC, OD*OH*OW) with one program per (batch, oc-tile, spatial-tile). Pre-permute weight to (OC, KD, KH, KW, IC) at module init (store as buffer) and keep input channels-last; this removes per-forward `.contiguous()` overhead on the weight.\n- Fold conv bias + sum_tensor into a single per-OC bias-A vector at init (since both are per-OC and added before LeakyReLU/clamp differs \u2014 sum is added after LeakyReLU so cannot be folded; but bias can stay in the kernel). Keep epilogue (LeakyReLU \u2192 +sum \u2192 clamp \u2192 GELU) fully fused on the accumulator as already done.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 14,
+    "global_best_node_id": 11,
+    "global_best_score": [
+        1,
+        1,
+        0.5965300533333333
+    ]
+}

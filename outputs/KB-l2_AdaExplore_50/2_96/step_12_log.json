@@ -1,0 +1,29 @@
+{
+    "node_id": 12,
+    "parent_node_id": 11,
+    "context_node_ids": [
+        11
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.44328491483515986,
+    "max_reward": 0.44328491483515986,
+    "avg_reward": 0.44328491483515986,
+    "score": [
+        1,
+        1,
+        0.45710054739006833
+    ],
+    "small_guidance": "- The current forward does NOT actually call `fused_convt_pool_kernel`; it runs torch's `conv_transpose` + `maxpool` then a custom reduce. The conv_transpose dominates runtime \u2014 tuning the reduce kernel will not help. Replace the torch ConvTranspose3d with a real custom Triton kernel.\n- For the existing reduce kernel: total = D*H*W after maxpool is small (~8*16*16=2048); a single-block reduction with BLOCK=2048 and num_warps=4 would be enough, but this is not the bottleneck.\n- Make sure `scale` is applied in the conv kernel epilogue (weight is already pre-multiplied), and fuse maxpool + global-avg + clamp into that same kernel to eliminate intermediate tensors.",
+    "large_guidance": "- Rewrite as a fully fused ConvTranspose3d \u2192 \u00d7scale \u2192 MaxPool3d \u2192 GlobalAvgPool \u2192 clamp kernel. Use a scatter-add formulation for conv_transpose: one program per (N, OC tile, output-spatial tile) computing the input\u00d7weight outer product accumulated to a tiled region of the conv-transpose output. Then immediately reduce via max over the 2\u00d72\u00d72 pool window and accumulate into a per-(N,OC) sum register, finally divide by pooled volume and clamp. No intermediate conv_transpose tensor materialized.\n- Alternative gather formulation (simpler): one program per (N, OC), iterate pooled output cells (POD*POH*POW = 8*16*16=2048 cells), each computes max over 2\u00d72\u00d72 = 8 conv-transpose output points, each conv-transpose point is a sum over IC*KS^3 = 3*27 = 81 multiply-adds. Total work per program \u2248 2048*8*81 \u2248 1.3M FMA \u2014 fits easily; tile IC with BLOCK_IC=4 (next pow2 of 3) and vectorize the kd*kh*kw loop. Grid = N*OC = 2048 programs, plenty of parallelism on a 4090.\n- Fold `scale` into weight+bias at init (already done) and absorb bias add + clamp into the kernel epilogue. Precompute the integer divisibility check `(od+pad-kd) % stride == 0` masks outside the inner ic loop. Use `channels_last` style by laying out weight as (OC, IC, KD, KH, KW) contiguous so the IC*KS^3 inner reduction is coalesced.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 13,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.46894253048307527
+    ]
+}

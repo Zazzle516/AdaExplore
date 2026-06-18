@@ -1,0 +1,29 @@
+{
+    "node_id": 2,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4609787543069176,
+    "max_reward": 0.4609787543069176,
+    "avg_reward": 0.4609787543069176,
+    "score": [
+        1,
+        1,
+        0.60307472303207
+    ],
+    "small_guidance": "- The mean_bias_kernel iterates D=34 sequentially over a 1024-wide HW tile; try BLOCK_HW=256 with num_warps=2 or BLOCK_HW=2048 with num_warps=8, and add `num_stages=3` to overlap the D loop's loads.\n- In softmax_tanh_scale_kernel the loads are strided by HW (16384 floats); switch the layout so channels are contiguous (transpose to (B, HW, C) before the kernel, or process a small HW tile per program with 2D loads) to coalesce reads \u2014 current `num_warps=1` with strided gathers is the main bottleneck after the conv.\n- Use `tl.math.tanh` (available on Ampere) on the softmax result directly rather than the exp formulation; and consider fusing mean+bias+softmax+tanh+scale into one kernel since the post-conv tensor is only (B,C,1,H,W).",
+    "large_guidance": "- The ConvTranspose3d itself dominates: input is (16,16,32,128,128), stride=1, padding=1, kernel=3 \u2014 this is effectively a regular 3D conv with full output volume (16,64,32,128,128). Replace it with a custom Triton kernel implemented as an implicit-GEMM where each program computes a tile of (OC, output-spatial) for one N, looping over (IC, kd, kh, kw) as the GEMM-K. Fold the depth-mean reduction into the epilogue by accumulating across the D output axis inside the same program (divide by D before adding bias), so the (B,C,D,H,W) tensor is never materialized.\n- After the fused conv+mean+bias produces (B,C,1,H,W) in registers/SMEM tiles, write it out in channels-last layout (B,H,W,C) so the subsequent softmax-over-C reads contiguous vectors of length C=64 \u2014 one program per (B,h,w) with BLOCK_C=64, num_warps=2, fusing softmax+tanh+scale in the epilogue.\n- Alternatively, since stride=1 and padding=1 make ConvTranspose3d equivalent to Conv3d with flipped weights, pre-flip the weight once in __init__ and run a standard implicit-GEMM conv kernel \u2014 simpler indexing, same FLOP count, no algebraic shortcut.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 3,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.6048380994152046
+    ]
+}

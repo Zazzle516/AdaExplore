@@ -1,0 +1,30 @@
+{
+    "node_id": 17,
+    "parent_node_id": 14,
+    "context_node_ids": [
+        10,
+        14
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4353720536664354,
+    "max_reward": 0.4353720536664354,
+    "avg_reward": 0.4353720536664354,
+    "score": [
+        1,
+        1,
+        0.3918194427480916
+    ],
+    "small_guidance": "- The scatter kernel's atomic_add into a global accumulator is the bottleneck. Try BLOCK_S=64, BLOCK_OC=128, BLOCK_IC=16 with num_warps=8, num_stages=3, and wrap in `triton.autotune` over a small grid sweeping these axes plus (BLOCK_S=128, BLOCK_OC=64).\n- Fuse the bias+clamp+div epilogue directly into the scatter kernel's final atomic_add path is not safe (atomics race), but you can move the epilogue into a second gather kernel that reads NDHWC and writes NCDHW in one pass, eliminating the extra permute+contiguous copy at the end.\n- Precompute `in_base * IC` once outside the kd/kh/kw loops (already done) but also hoist `w_base` index math; consider loading the full IC dimension into registers (IC=64 fits) and using a single `tl.dot` per (kd,kh,kw) without the inner `ic_start` loop.",
+    "large_guidance": "- Switch from scatter-add (atomics) to a **gather-based** formulation: one program per output tile `(N, OC tile, OD*OH*OW tile)`. For each output voxel, iterate over (kd,kh,kw) and compute the corresponding input voxel `(id, ih, iw) = (od+pad-kd)/stride` with divisibility check; gather x and weight, do a GEMM over IC, and write the result directly with bias+clamp+div fused \u2014 no atomics, no zero-init pass.\n- Lay out the GEMM as K=IC (contiguous), M=output-spatial-tile, N=OC-tile. Use NDHWC for both x and out so the IC/OC axes are contiguous and loads coalesce. Avoid the intermediate fp32 NDHWC buffer and the final permute by writing NCDHW directly (or fuse the layout swap into the epilogue).\n- Because stride=2 with kernel=3, only ~1/8 of (kd,kh,kw) combinations contribute to each output voxel \u2014 exploit this by branching the kernel on `(od+pad) % stride` parity at compile time via `tl.static_range` masking; this removes wasted multiplies in the gather kernel.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 18,
+    "global_best_node_id": 6,
+    "global_best_score": [
+        1,
+        1,
+        0.46325222924187726
+    ]
+}

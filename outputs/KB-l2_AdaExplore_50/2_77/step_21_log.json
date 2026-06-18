@@ -1,0 +1,30 @@
+{
+    "node_id": 21,
+    "parent_node_id": 5,
+    "context_node_ids": [
+        7,
+        2
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4524148040128245,
+    "max_reward": 0.4524148040128245,
+    "avg_reward": 0.4524148040128245,
+    "score": [
+        1,
+        1,
+        0.532422133105802
+    ],
+    "small_guidance": "- Increase reduction throughput: the per-(N,C) sum kernel processes S=20*36*36=25920 elements per program with BLOCK=2048 and a serial loop; try BLOCK=4096/8192 with num_warps=16 and num_stages=3 to better hide memory latency, or split each (N,C) into multiple programs that atomic-add into the sum buffer.\n- Use a 2D grid (pid_n, pid_c) so consecutive programs hit consecutive channels with the same N (better L2 reuse), and pass `inv_S` so the affine fuses into the reduce kernel's final store (skip the second launch entirely for the eval path).\n- Drop fp64 reductions and keep float32 only; lower the affine kernel's BLOCK to 128 and num_warps=1 \u2014 NC=2048 is tiny and launch overhead dominates.",
+    "large_guidance": "- The ConvTranspose3d dominates runtime (the pool+BN tail is microseconds vs ~15 ms baseline). Replace it with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile) loads x and the (IC, OC, kD, kH, kW) weight slab, computes the outer product, and atomic-adds into the output grid at (d*1+kd, h*1+kh, w*1+kw) \u2014 stride=1, pad=0, output_pad=0 here so index math is trivial.\n- Alternatively (and likely faster on a 4090 for OC=128, kvol=125), implement it as a gather GEMM: one program per (N, OC tile, output-spatial tile) where each output voxel sums over (IC, kD, kH, kW) with bounds masking on the input read \u2014 this is a clean (OC) \u00d7 (IC*kD*kH*kW) \u00d7 (out_spatial) GEMM with BLOCK_M=64, BLOCK_N=64, BLOCK_K=32 autotuned.\n- Fuse the entire epilogue into the conv kernel: since the final op is global avg pool, each program can accumulate sum-over-spatial of `(y*scale)*a + c` directly into a per-(N,OC) accumulator with atomic-add, eliminating the materialized 16\u00d7128\u00d720\u00d736\u00d736 tensor entirely. BN stats in eval are constant; in train, do a two-pass (first pass writes y, second pass computes mean/var then fused affine+pool) but still skip the AdaptiveAvgPool launch.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 22,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        1.599996769230769
+    ]
+}

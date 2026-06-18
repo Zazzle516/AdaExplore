@@ -1,0 +1,32 @@
+{
+    "node_id": 50,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        13,
+        16,
+        21,
+        22
+    ],
+    "depth": 6,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.480990819462228,
+    "max_reward": 0.480990819462228,
+    "avg_reward": 0.480990819462228,
+    "score": [
+        1,
+        1,
+        0.7681742605633803
+    ],
+    "small_guidance": "- The addmm (16384x4096 @ 4096x4096) dominates runtime; tuning the BN/scale kernels won't close the gap. If staying with this structure, fuse scale+BN-stats into the GEMM epilogue: write a tiled `tl.dot` GEMM that produces `y = (x @ W.T + b) * scale` and atomically accumulates per-column sum/sumsq into buffers in the same pass, eliminating the separate stats read of y.\n- For the apply pass, switch to a 1D-flat elementwise kernel (BLOCK=4096, num_warps=8) over `M*N` since `a,b` can be broadcast via `offs % N`; this typically beats the 2D tiled apply for pure scale-shift bandwidth.\n- Autotune the GEMM with configs `(BM=128,BN=128,BK=32,warps=4,stages=3)`, `(128,256,32,8,3)`, `(64,128,32,4,4)` and add a `GROUP_M=8` swizzle for L2 reuse.",
+    "large_guidance": "- Replace `torch.addmm` with a custom Triton GEMM kernel that fuses the linear, the per-output-channel scale multiply, and the BN-stats reduction (sum, sumsq) in a single launch via tiled `tl.dot` with epilogue atomic adds into N-sized accumulators. This removes a full y read/write of 16384x4096 fp32 (~1 GB) between GEMM and stats.\n- Keep training/eval split: in eval, fuse the GEMM epilogue directly with `(y*scale - mean)*invstd*gamma + beta` using precomputed `a,b` (one launch total). In training, do a two-launch design: GEMM+stats (writes y), then compute a/b, then a single elementwise apply \u2014 but make sure `y` is only read once after the GEMM.\n- Consider `channels_last`-style storage isn't relevant here (2D), but ensure W is pre-transposed to `[K, N]` contiguous at init so the inner GEMM loads are contiguous on both A and B; tune `BLOCK_K=32` or `64` with `num_stages=3-4` to overlap K-loop loads.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 51,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.7791481785714286
+    ]
+}

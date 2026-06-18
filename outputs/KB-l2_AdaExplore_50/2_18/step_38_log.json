@@ -1,0 +1,30 @@
+{
+    "node_id": 38,
+    "parent_node_id": 35,
+    "context_node_ids": [
+        31,
+        35
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure stems from numerical accumulation: the two-stage reduction (per-N-tile partial rowsum, then sum across tiles) compounds fp32 rounding across 8192 features. Switch to a single-pass design where one program owns an entire row's K and N reduction, or accumulate partials in fp64 in the reduce_n_kernel before adding the bias.\n- Also verify the `linear.bias` is loaded only once per row \u2014 currently `tl.load(bias_sum_ptr)` reads a 0-d tensor which is fine, but make sure `bias_sum` is materialized as a 1-element contiguous tensor (`.reshape(1)` not `.reshape(())`) to avoid stride-0 pitfalls.\n- Try larger BLOCK_N (256) with fewer N tiles so fewer partials must be summed, reducing accumulation error and the second-kernel overhead.",
+    "large_guidance": "- Redesign as a single persistent kernel: one program per row (M dimension), iterating over all K and all N inside the program. Since the final scalar is `sum_n(sum_k(x[m,k]*w[n,k])) + sum(bias) = sum_k(x[m,k] * sum_n(w[n,k])) + sum(bias)` \u2014 but per the safety contract this would be an algebraic shortcut. Instead, keep the full GEMM: one program per (M tile), loop over N tiles internally, accumulating the row sum in registers. This eliminates the inter-kernel partial materialization and the second reduction kernel entirely.\n- Fuse bias add into the per-row accumulator before storing; the downstream max/mean/logsumexp chain on a (M,1) tensor is identity and can be dropped legitimately (singleton-dim reductions).\n- Use BLOCK_M=32 or 64 with full-K inner loop and an N-tile outer loop; tune num_stages=3-4 to overlap loads. This gives a single kernel launch and a single fp32 accumulator per row, fixing the numerical drift.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 39,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        0.8826896197781255
+    ]
+}

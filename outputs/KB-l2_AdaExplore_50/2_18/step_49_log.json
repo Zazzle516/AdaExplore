@@ -1,0 +1,30 @@
+{
+    "node_id": 49,
+    "parent_node_id": 12,
+    "context_node_ids": [
+        9,
+        12
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4166977842625508,
+    "max_reward": 0.4166977842625508,
+    "avg_reward": 0.4166977842625508,
+    "score": [
+        1,
+        1,
+        0.23775672016604346
+    ],
+    "small_guidance": "- The current kernel disables tf32 (`allow_tf32=False`) which costs ~2x on Ampere/Ada. Enable `allow_tf32=True` in `tl.dot` \u2014 the downstream logsumexp(mean(max(sum(...)))) is extremely tolerant of fp16-ish accumulator error and the correctness tolerance is 5e-2.\n- Since M=1024, N=K=8192, prefer larger M tiles to reduce the N-tile loop overhead: add configs like `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3` and `BLOCK_M=256, BLOCK_N=128, BLOCK_K=32`. With current `BLOCK_M=32` you launch 32 programs which underutilizes the 4090's 128 SMs only if BLOCK_M is large \u2014 but the inner N-loop is serial, so wider BLOCK_N and bigger BLOCK_K help amortize.\n- Drop the `tl.where(valid, acc, 0.0)` masking on the N tile by ensuring bias load uses `other=0.0` and the dot's masked loads already zero invalid lanes \u2014 then just `row_sum += tl.sum(acc, axis=1)` directly; eliminates an extra pass over the tile.",
+    "large_guidance": "- Restructure as a split-K / split-N GEMM-reduction: launch a 2D grid `(M_tiles, N_tiles)` doing the matmul+bias, then use `tl.atomic_add` into a `[M]` partial-sum buffer. This recovers parallelism across N (currently the per-row N loop is serial inside one program), which is the main bottleneck given N=8192. Alternatively, two-stage: kernel1 writes `[M, N_tiles]` partial sums, kernel2 reduces to `[M]`.\n- Fuse the entire post-linear pipeline (sum\u2192max\u2192mean\u2192logsumexp\u2192logsumexp over a singleton dim) into the epilogue. All these reductions over dim=1 of a `[B,1]` tensor are identities, so the final answer is simply `rowsum(x @ W^T + b)`. The kernel already computes that; just have it write directly to the `[B,1]` output tensor \u2014 no `.unsqueeze` needed and avoid the extra allocation.\n- Consider a persistent kernel: one program per SM, iterating over a queue of M-tiles, so the long inner K*N work overlaps better with HBM latency on the 4090 (128 SMs, M=1024 means up to 32 row-tiles of 32 \u2014 too few without split-N).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 50,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        0.8826896197781255
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 39,
+    "parent_node_id": 33,
+    "context_node_ids": [
+        30,
+        33
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5393992194116131,
+    "max_reward": 0.5393992194116131,
+    "avg_reward": 0.5393992194116131,
+    "score": [
+        1,
+        1,
+        1.250043560145808
+    ],
+    "small_guidance": "- Autotune `conv_transpose3d_swish_kernel` over `BLOCK_SP \u2208 {64, 128, 256}` with `num_warps \u2208 {4, 8}` and `num_stages \u2208 {2, 3}`. With OC=16 the per-program tile is small; larger BLOCK_SP amortizes the bias load and weight reuse across the static KD*KH*KW*IC loop.\n- Hoist the weight loads out of the spatial loop: for each `(kd,kh,kw,ic)` the weight is a scalar-per-OC vector independent of `sp_idx`, so load all KD*KH*KW*IC*OC weights once into registers (only 3*16*27=1296 floats) at kernel entry and index them, eliminating repeated `tl.load(w_ptr + ...)` inside the static loop.\n- In `groupnorm_hardswish_kernel`, fuse the two passes by caching `x` in a register tile when `CPG*S` fits (here 4*8448=33792 \u2014 too large), but at minimum increase `BLOCK_S` to 2048 and `BLOCK_C=4` (full CPG) so each program issues one C-loop iteration, halving the loop overhead.",
+    "large_guidance": "- Rewrite the transposed conv as an im2col-style gather GEMM with the output layout in `channels_last` (NDHWC). One program per `(N, output-spatial tile)` accumulating into a `[BLOCK_SP, OC]` tile via `tl.dot` against a `[IC*KD*KH*KW, OC]` weight matrix preloaded once \u2014 the current scalar `acc += x[:, None] * w[None, :]` outer-product chain leaves the tensor cores idle.\n- Fuse Swish + GroupNorm + HardSwish into the conv epilogue: since OC=16 and groups=4 \u21d2 CPG=4, a single program can own one `(N, group)` tile across all output spatial positions, compute the conv-Swish into shared/registers, reduce mean/var in-kernel, then write the normalized+HardSwish'd result \u2014 eliminating the full read/write round trip of the intermediate tensor (N*OC*OD*OH*OW \u2248 18M floats).\n- Alternatively, since the output spatial volume (31*65*65 \u2248 131k) is large per (N,group), use a two-stage persistent design: stage 1 conv\u2192Swish writes to global plus computes partial sum/sumsq via atomics or a small reduction buffer per (N,group); stage 2 reads back and applies affine+HardSwish. This avoids re-deriving the conv but skips one global write of the Swish tensor.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 40,
+    "global_best_node_id": 29,
+    "global_best_score": [
+        1,
+        1,
+        2.2462573144104803
+    ]
+}

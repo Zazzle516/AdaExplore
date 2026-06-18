@@ -1,0 +1,29 @@
+{
+    "node_id": 40,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4195932202020202,
+    "max_reward": 0.4195932202020202,
+    "avg_reward": 0.4195932202020202,
+    "score": [
+        1,
+        1,
+        0.2616440666666667
+    ],
+    "small_guidance": "- The epilogue is already trivially memory-bound and ~free; further tuning of `fused_epilogue_kernel` will not move the needle. If staying small, drop the `c_idx = (offs//S)%C` divmod by launching a 2D grid over `(N*C, S)` so the bias load is a single scalar broadcast per program, and try `BLOCK_SIZE=16384, num_warps=8, num_stages=4`.\n- The dominant cost is `nn.ConvTranspose3d` (cuDNN). Channels-last-3d on a ConvTranspose3d with these shapes often *regresses* on 4090 \u2014 benchmark both layouts and pick at init; also try `torch.backends.cudnn.benchmark=True`.\n- Fuse bias broadcast into the conv output write by allocating the conv output then immediately running the epilogue in-place (`out_ptr == x_ptr`) to halve DRAM traffic.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)`, computing the outer product `input[n, ic, d, h, w] * weight[ic, oc, kd, kh, kw]` and `atomic_add`ing into the output grid at `(n, oc, d*stride - pad + kd, h*stride - pad + kh, w*stride - pad + kw)`. Fold the conv bias, the `+bias`, the residual algebra `(2x+b)*x + x`, and the final write into a second pass kernel \u2014 the conv itself is the >95% cost and is the only path to `fast_p > 0.8`.\n- Alternatively, formulate transposed conv as a gather-GEMM: for each output voxel, gather the `IC*kD*kH*kW` contributing input voxels (with stride/padding/output_padding index math) and do a tiled GEMM against the reshaped weight `[OC, IC*kD*kH*kW]`. Use channels-last layout so OC and IC are the contiguous GEMM axes; tile `BLOCK_M=64 (OC)`, `BLOCK_N=64 (spatial)`, `BLOCK_K=32`. This avoids atomics and is usually faster than scatter on Ampere/Ada.\n- Fold the epilogue `(2*conv + bias)*conv + conv` directly into the GEMM epilogue (after accumulator + conv-bias add), eliminating the separate pass and the clone entirely \u2014 the reference's `original_x = x.clone()` is just a value snapshot, no extra materialization needed.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 41,
+    "global_best_node_id": 30,
+    "global_best_score": [
+        1,
+        1,
+        0.7022256262425447
+    ]
+}

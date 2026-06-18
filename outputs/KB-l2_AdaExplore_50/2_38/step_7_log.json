@@ -1,0 +1,29 @@
+{
+    "node_id": 7,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        2
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.43983604435261714,
+    "max_reward": 0.43983604435261714,
+    "avg_reward": 0.43983604435261714,
+    "score": [
+        1,
+        1,
+        0.4286473659090909
+    ],
+    "small_guidance": "- The conv_transpose kernel loops over IC scalar-by-scalar inside three static KD/KH/KW loops with one program per (n, od, oh, ow) \u2014 this is the bottleneck. Vectorize the IC dimension: load `tl.arange(0, BLOCK_IC)` of input values and an `[BLOCK_IC, BLOCK_OC]` weight tile, then use `tl.sum(x[:, None] * w, axis=0)` or `tl.dot` to accumulate across IC in one shot.\n- Tile the output spatial axis (e.g. `BLOCK_OW=8 or 16`) per program instead of one ow per program \u2014 this drastically reduces grid size (currently N*OD*OH*OW \u2248 32\u00b732\u00b764\u00b764 \u2248 4.2M programs) and amortizes weight loads across multiple ow positions sharing the same kd/kh/kw validity mask.\n- Add `triton.autotune` over BLOCK_OC \u2208 {32,64}, BLOCK_OW \u2208 {8,16,32}, BLOCK_IC \u2208 {16,32}, num_warps \u2208 {4,8}, num_stages \u2208 {2,3}.",
+    "large_guidance": "- The current grid (\u22484M programs) and scalar IC loop is the dominant cost. Rewrite ConvTranspose3d as a scatter-add GEMM: for each (n, id, ih, iw) tile of input, compute the outer product `input[n, :, id, ih, iw] (IC) \u00d7 weight (IC, OC, KD, KH, KW)` and atomically add into the output grid at strided (od, oh, ow) positions. This gives an `IC \u00d7 OC` GEMM per input voxel which maps cleanly to `tl.dot`.\n- Alternatively, keep the gather formulation but turn it into a real GEMM: one program per (n, oc_tile, ow_tile) computing `out[n, oc_tile, od, oh, ow_tile] += W_slice @ X_slice` where the K-dim is IC*valid-(kd,kh,kw) triples. Materialize per-output (od,oh,ow) valid kd/kh/kw masks once, then use `tl.dot` along IC.\n- Fuse clamp + softmax-row-max into the conv epilogue when feasible: have the conv kernel write to an intermediate, then a single persistent softmax kernel per (b,c) row with `BLOCK = next_pow2(S)` loading the whole row in one pass (S = 32\u00b764\u00b764 = 131072 is too large for one pass, so keep two-pass online softmax but ensure clamp is fused into both passes \u2014 already done).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 8,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.4286473659090909
+    ]
+}

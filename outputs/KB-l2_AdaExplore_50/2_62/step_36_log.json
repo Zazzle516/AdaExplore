@@ -1,0 +1,29 @@
+{
+    "node_id": 36,
+    "parent_node_id": 30,
+    "context_node_ids": [
+        30
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM is M=1024, N=8192, K=8192 \u2014 try larger tiles like BLOCK_M=128/BLOCK_N=256/BLOCK_K=64 and BLOCK_M=64/BLOCK_N=256/BLOCK_K=64 with num_warps=8, num_stages=4 to better overlap K loads; also remove `input_precision=\"ieee\"` (use the default tf32 path) which is a major slowdown on Ampere/Ada for fp32 GEMM and is well within the 5e-2 tolerance.\n- Drop the K-tail mask when K is divisible by BLOCK_K (here 8192 % 64/32 == 0) \u2014 load without mask and skip the `% M`/`% N` modulo wrap (M=1024, N=8192 are tile-aligned) so the inner loop is pure pointer arithmetic.\n- In the GN kernel CH_PER_GROUP=16 is tiny; raise GROUPS_PER_PROG to 16 or 32 (num_groups=512 divides cleanly) and bump num_warps to 2-4 with num_stages=2 so each program does more useful work and reduces launch count.",
+    "large_guidance": "- The dominant cost (~90%) is the 1024\u00d78192\u00d78192 fp32 GEMM. Rewrite it to use tf32 (`tl.dot` default `input_precision=\"tf32\"` or \"tf32x3\"); on RTX 4090 this is ~8\u00d7 faster than ieee fp32 and easily within 5e-2 tolerance. This alone should drop runtime dramatically.\n- Consider fusing bias+GN+LeakyReLU+double into the GEMM epilogue only if a single program covers a full row's worth of channels per group; otherwise keep them as a separate, lightweight kernel but write the GEMM output directly in a layout (e.g. row-major with N contiguous, already the case) that the GN kernel can vectorize with `tl.arange(0, CH_PER_GROUP*GROUPS_PER_PROG)` loads.\n- Alternative: split-K GEMM with atomic-free two-stage reduction since K=8192 is large and M=1024 is small \u2014 a persistent kernel with BLOCK_M=64, BLOCK_N=128, SPLIT_K=4 could expose more parallelism (only 1024/128 * 8192/256 = 256 tiles otherwise, under-utilizing the 128 SMs at large tiles).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 37,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 19,
+    "parent_node_id": 9,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The split-K + separate reduction kernel writes/reads a large fp32 partial buffer (up to 8\u00d7128\u00d716384 = ~67MB), which is bandwidth-bound. Drop SPLIT_K entirely (M=128, N=16384, K=16384 has plenty of N-parallelism: 128 tiles of N=128 already gives many CTAs given M=128 \u2192 1-2 M tiles). Fuse bias + min + sub directly into the GEMM epilogue and write final output.\n- Add larger-K tile configs (BLOCK_K=64 or 128) with num_stages=4 to better overlap loads for K=16384, and add a `GROUP_M` swizzle (group_m=8) for L2 reuse across N tiles. Try BLOCK_M=32 or 16 since M=128 is small (BLOCK_M=128 \u2192 only 1 row tile, killing parallelism); BLOCK_M=16/32 with BLOCK_N=128/256 gives 4-8\u00d7 more M-tile programs.\n- Pre-transpose weight once at init (store W as (K, N) contiguous) so the inner K loop loads B contiguously along N; this removes the strided B load in the hot loop.",
+    "large_guidance": "- Rewrite as a single fused GEMM-epilogue kernel: no partial buffer, no second kernel. One program per (BLOCK_M, BLOCK_N) output tile, K-loop accumulates in registers, then bias + min(acc, c) - c is applied before the single store to `out`. This removes the ~67MB partial round-trip that currently dominates.\n- For M=128, N=16384, K=16384, the problem is N-heavy and M-light. Use small BLOCK_M (16 or 32) and large BLOCK_N (128-256) so the grid has many CTAs (\u2248 4\u00d7128 = 512 to 8\u00d764 = 512 programs) saturating the 4090's 128 SMs. Use GROUP_M swizzle for L2 reuse on the shared A tile across N tiles.\n- Store the linear weight as (K, N) contiguous (transpose once in __init__) so B is loaded along its contiguous axis in the K-loop; combined with BLOCK_K=32-64 and num_stages=3-4, this maximizes tl.dot throughput. Keep the constant as a 0-d tensor or constexpr in the epilogue.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 20,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

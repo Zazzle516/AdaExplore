@@ -1,0 +1,29 @@
+{
+    "node_id": 41,
+    "parent_node_id": 40,
+    "context_node_ids": [
+        40
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4398121586482522,
+    "max_reward": 0.4398121586482522,
+    "avg_reward": 0.4398121586482522,
+    "score": [
+        1,
+        1,
+        0.42845030884808016
+    ],
+    "small_guidance": "- Add a `triton.autotune` sweep over `BLOCK_M \u2208 {32,64,128}`, `BLOCK_N \u2208 {64,128}`, `IC_BLOCK \u2208 {16,32,64}`, `num_warps \u2208 {4,8}`, `num_stages \u2208 {2,3,4}`. Current 64/64/32 with 4 warps is likely under-utilizing the GEMM; with IC=64, OC=128 a single tile per (OC,sp) should fit larger N.\n- Swap the kernel-spatial loop ordering: put the IC (GEMM-K) loop as the outermost reduction and the `(kd,kh,kw)` static loops inside, so the input `x` tile for a given (od,oh,ow) is loaded once across kernel taps; currently x is re-loaded 27\u00d7 per IC chunk.\n- Precompute `(od,oh,ow)` decomposition and `id_idx/ih_idx/iw_idx` once outside the kernel-tap loops by hoisting them; also drop the `% STRIDE` test by tiling output positions per-parity (separate grids for even/odd od mod stride) so masks become trivial.",
+    "large_guidance": "- Switch from gather-style to scatter-add: one program per `(N, IC tile, input-spatial tile)` computes `input \u00d7 weight` outer product and atomically (or via per-program private accumulator with deterministic write coordinates) scatters into output. ConvTranspose3d maps naturally to scatter \u2014 each input voxel contributes to exactly KD\u00b7KH\u00b7KW output voxels with no stride/divisibility masking, eliminating the ~7/8 wasted lanes in the current gather.\n- Alternatively, formulate as an explicit im2col-GEMM where the \"im2col\" is built implicitly: parallelize over `(N, OC_tile, OD*OH*OW tile)` but precompute valid (kd,kh,kw,ic) \u2192 input-offset table once per spatial tile (only ~(KD*KH*KW)/STRIDE^3 \u2248 27/8 valid taps), so the inner GEMM-K has length `IC * valid_taps` with no masking overhead. This gives a dense `tl.dot` over a ~IC*3-4 K-dimension.\n- Fuse the input NCDHW\u2192NDHWC permute into the kernel by indexing the original layout directly (stride-based pointer math), avoiding the explicit `x.permute(...).contiguous()` copy and the final output permute (write to NCDHW directly with per-channel strided stores).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 42,
+    "global_best_node_id": 39,
+    "global_best_score": [
+        1,
+        1,
+        0.6546983035714286
+    ]
+}

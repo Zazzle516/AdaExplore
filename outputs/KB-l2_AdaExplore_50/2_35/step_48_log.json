@@ -1,0 +1,29 @@
+{
+    "node_id": 48,
+    "parent_node_id": 18,
+    "context_node_ids": [
+        18
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Remove the nested `def _hs(v):` inside the kernel \u2014 Triton doesn't support nested function definitions. Inline the hardswish expression four times (or use a single `tl.where`-style expression) directly on each `acc*` tensor.\n- Also inline mish as `m * (1 - 2/(tl.exp(2*tl.log(1+tl.exp(m))) + 1))` directly; or simpler: `sp = tl.log(1+tl.exp(m)); out = m * (tl.exp(sp) - tl.exp(-sp))/(tl.exp(sp)+tl.exp(-sp))`. Keep autotune list unchanged once compile succeeds.\n- After fix, prune the autotune configs with `BLOCK_OC=128, BLOCK_SP=64` since per-program SMEM with 4 accumulators \u00d7 tile + weight/input tiles can blow up; verify the (32,32,16) and (64,32,16) configs compile first.",
+    "large_guidance": "- The current strategy materializes four separate pre-pool accumulators (`acc00..acc11`) per program, quadrupling register pressure and SMEM traffic for the same weight tile. A cleaner design: one program per `(N, OC tile, pooled-spatial tile)` that, for each pooled output, loops `ph, pw in static_range(POOL_K)` over the 2\u00d72 (or POOL_K\u00b2) pre-pool positions, accumulates a single conv GEMM into one tile, applies hardswish, and reduces into a running `max_acc` register tile \u2014 then mish at the end. This keeps one accumulator live at a time and generalizes to any `POOL_K`.\n- Switch the inner reduction to an im2col-style GEMM where K = IC\u00b7KH\u00b7KW is a single contiguous loop with `BLOCK_K` (e.g. 16/32), rather than nested `static_range(KH) \u00d7 static_range(KW) \u00d7 range(IC, BLOCK_IC)`. This gives Triton a clean `tl.dot` per K-tile and lets the autotuner pick `(BLOCK_M=BLOCK_OC, BLOCK_N=BLOCK_SP, BLOCK_K)` against the SMEM budget.\n- Consider channels-last layout for `x` so the IC axis is the contiguous (GEMM-K) axis; this removes the strided H*W gather currently dominating the load cost. Bias + subtract_value + hardswish fuse into the epilogue before the pool-max reduction; mish fuses after the final max.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 49,
+    "global_best_node_id": 42,
+    "global_best_score": [
+        1,
+        1,
+        1.9897529638009053
+    ]
+}

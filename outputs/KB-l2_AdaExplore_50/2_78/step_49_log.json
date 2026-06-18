@@ -1,0 +1,29 @@
+{
+    "node_id": 49,
+    "parent_node_id": 31,
+    "context_node_ids": [
+        36
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4619126852310156,
+    "max_reward": 0.4619126852310156,
+    "avg_reward": 0.4619126852310156,
+    "score": [
+        1,
+        1,
+        0.6107796531558781
+    ],
+    "small_guidance": "- The fused pool+sum kernel is tiny (~0.5% of runtime); ConvTranspose3d dominates at 17ms. Don't tune the pool kernel further \u2014 its BLOCK_C=64, num_warps=2 are already fine.\n- Remove the channels_last_3d conversion churn on the input and weight \u2014 for ConvTranspose3d on RTX 4090, cuDNN's NCDHW path is typically faster than the channels_last_3d path for these shapes, and the back-and-forth `.contiguous()` calls add overhead.\n- If staying with torch conv, ensure `torch.backends.cudnn.benchmark = True` triggers algorithm selection on first call (warm up once in `__init__` with a dummy tensor of the expected shape).",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)` computes the outer product `input[n, ic, d, h, w] * weight[ic, oc, kd, kh, kw]` and scatter-adds into the output grid at `(d*stride - pad + kd, h*stride - pad + kh, w*stride - pad + kw)` for all OC. Bias is added in the epilogue. This is the high-headroom move since conv_transpose dominates.\n- Alternative: fuse conv_transpose with the downstream pool+sum so the intermediate `(16, 64, 63, 63, 63)` output (~16M elements \u00d7 64 channels = ~1GB) is never materialized. Each output element of the final `(N,1,OD,OH,OW)` tensor depends on a 6\u00d76\u00d76 window of the transposed-conv output, which depends on a bounded window of input and the full OC \u00d7 kd\u00d7kh\u00d7kw weight slab. A single kernel per `(N, OD, OH, OW)` output can compute the conv_transpose values on-the-fly, max-pool them, and sum over OC \u2014 eliminating the giant intermediate.\n- Use NCDHW layout with the channel (OC) axis as the GEMM-N dimension and reduce-sum over OC inside the kernel rather than writing then re-reading. Keep weight in shared memory / registers across the 6\u00d76\u00d76 spatial window.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 50,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.9494847335423198
+    ]
+}

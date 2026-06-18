@@ -1,0 +1,29 @@
+{
+    "node_id": 45,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        2
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4349182793365757,
+    "max_reward": 0.4349182793365757,
+    "avg_reward": 0.4349182793365757,
+    "score": [
+        1,
+        1,
+        0.388075804526749
+    ],
+    "small_guidance": "- The current forward calls torch's `conv_transpose3d` (the custom conv kernel is dead code) \u2014 runtime is dominated by the conv. Tuning the softmax further won't help; instead fuse avg_pool\u2192conv_transpose\u2192clamp into a single Triton kernel and only tune softmax block sizes (try BLOCK=8192 with num_warps=16) as a secondary.\n- For the softmax kernel, S = OD*OH*OW = 32*64*64 = 131072 \u2014 try a two-pass layout with BLOCK=8192/num_warps=16/num_stages=3 to reduce loop iterations.\n- Add `tl.multiple_of` / `tl.max_contiguous` hints on the row pointer to improve vectorized loads.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom scatter-add Triton kernel: one program per (N, IC tile, input-spatial tile) computing the input\u00d7weight outer product and atomically scattering into the output grid with stride/padding/output_padding handled in index math. Fuse avg_pool by gathering the 2\u00d72\u00d72 input block at load time (single divide by 8), and fuse the trailing clamp into the epilogue before atomic_add (clamp can't fuse with scatter \u2014 instead do a second pass clamp, or switch to gather form below).\n- Alternative (preferable here): direct gather form \u2014 one program per (N, OC tile, output-voxel tile), loop kd/kh/kw and IC, gather the corresponding pooled input voxel (computing the avg_pool inline from the 2x2x2 raw block). This naturally fuses avg_pool + conv_transpose + clamp in one kernel with no atomics. The reference's stride=2, output_padding=1, padding=1 means each output voxel has only ~1-2 valid (kd,kh,kw) contributors per axis, making gather cheap.\n- Then fuse the spatial softmax over D*H*W=131072 with the scale multiply in a separate two-pass kernel (already done). Consider channels_last layout for the conv output to make the per-channel softmax row contiguous-friendly, but since softmax is over spatial it's already contiguous in NCDHW \u2014 keep NCDHW.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 46,
+    "global_best_node_id": 29,
+    "global_best_score": [
+        1,
+        1,
+        0.8572947318181818
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 22,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure comes from accumulating `tl.sum(acc, axis=1)` after masking \u2014 this is fine, but the bigger issue is the row-sum reduction `s = sum_n (x@W.T + b)[m,n]` produces values around `out_features * mean(...)`; check fp32 accumulation order. Try larger `BLOCK_N` (256/512) and ensure `BLOCK_K` divides 8192 cleanly; current configs look OK but verify the `mask_n` zeroing doesn't double-mask after bias adds.\n- Switch to a two-stage approach inside one kernel: precompute `w_colsum[k] = sum_n W[n,k]` and `b_sum = sum(b)` is an algebraic shortcut \u2014 DO NOT do that (safety contract). Instead keep the full GEMM but tune `BLOCK_M=64, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4`.\n- Add a `GROUP_M` swizzle even though grid is 1-D over M \u2014 not useful here; instead split N across programs and atomic-add into `out_ptr` to expose more parallelism (M=1024 is small).",
+    "large_guidance": "- Parallelize over both M and N tiles: grid = (cdiv(M,BLOCK_M), cdiv(N,BLOCK_N)), each program computes its tile's GEMM, reduces over its N-slice to a partial row sum, then `tl.atomic_add` into `out[m]`. With M=1024, N=K=8192, the current M-only grid launches only ~16-32 programs, badly underutilizing the 4090's 128 SMs.\n- After producing `s` of shape (M,), the trailing max/mean/logsumexp/logsumexp on a (M,1) tensor are all identities on the single element \u2014 emitting `s.unsqueeze(1)` directly is correct per the reference semantics (each op operates on a dim-of-size-1) and is not an algebraic shortcut since the heavy op (linear) still runs in full.\n- Consider splitK as well: with K=8192, a split-K of 2-4 with atomic accumulation can improve occupancy further. Keep weight transposed-loaded contiguously by laying out access as `W[n,k]` with `stride_wn` outer.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 23,
+    "global_best_node_id": 11,
+    "global_best_score": [
+        1,
+        1,
+        0.6167747552424558
+    ]
+}

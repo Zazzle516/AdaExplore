@@ -1,0 +1,29 @@
+{
+    "node_id": 13,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5628805906978176,
+    "max_reward": 0.5628805906978176,
+    "avg_reward": 0.5628805906978176,
+    "score": [
+        1,
+        1,
+        1.443764873256995
+    ],
+    "small_guidance": "- Add `triton.autotune` over BLOCK_M/BLOCK_N/BLOCK_K configs (e.g. 128/128/32, 128/256/32, 64/256/64, 128/128/64) with `num_warps` \u2208 {4,8} and `num_stages` \u2208 {3,4}; current 64/128/32 is undersized for K=8192 and leaves the GEMM bandwidth-bound.\n- Add a `GROUP_M` block swizzle (group size 8) so the `(pid_m, pid_n)` schedule reuses X tiles in L2 across N tiles of the same row group \u2014 large win for M=2048, N=8192.\n- Replace the `tl.atomic_add` over N-tiles with a deterministic 2-stage reduction: store per-tile partial sums into a `(grid_n, M)` buffer then launch a tiny reduction kernel; atomics on 2048 rows \u00d7 64 N-tiles serialize and dominate at this size. Also drop the masked `tl.where` before the reduction since masked-out lanes already loaded zero.",
+    "large_guidance": "- The dominant cost here is the 2048\u00d78192\u00d78192 GEMM (~275 GFLOP). A from-scratch design should treat this as a *pure* tiled GEMM with a tiny epilogue reduction: one program per (BLOCK_M, BLOCK_N) tile, accumulate (X @ W\u1d40 + bias \u2212 subtract), then `tl.sum(axis=1)` and write the partial row-sums to a `[grid_n, M]` workspace \u2014 no atomics, no per-row mask compaction.\n- Follow with a lightweight reduction+broadcast kernel: compute `mean = rowsum/N`, apply GELU (logsumexp over a single-element axis is identity, so skip it analytically \u2014 that is *not* a shortcut, it's mathematical identity on a degenerate axis), and fuse the residual add. This second kernel is memory-bound on the (B, in_features) original tensor; tile it as (BLOCK_M_R, BLOCK_F) with BLOCK_F=2048+ and num_warps=8.\n- Consider splitting K (split-K=2 or 4) since K=8192 is large and M\u00b7N tiling alone may underutilize SMs; do an atomic-add only along the K split dimension into the tile output, then reduce.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 14,
+    "global_best_node_id": 10,
+    "global_best_score": [
+        1,
+        1,
+        1.5925164056531704
+    ]
+}

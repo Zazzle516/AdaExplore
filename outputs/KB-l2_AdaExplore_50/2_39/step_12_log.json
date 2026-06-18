@@ -1,0 +1,27 @@
+{
+    "node_id": 12,
+    "parent_node_id": 11,
+    "context_node_ids": [],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The eval-path fusion uses `b_eff = (bias_gemm * scale - running_mean) * invstd * bn_weight + bn_bias`, but the correct fold is `((bias_gemm * scale) - running_mean) * invstd * bn_weight + bn_bias` only if bias is added before BN; since BN sees `(x@W^T + bias)*scale`, the fold should be `a_eff = scale*invstd*bn_weight`, `b_eff = (bias_gemm*scale - running_mean)*invstd*bn_weight + bn_bias`. That's what's there \u2014 but the GEMM kernel never adds `bias_gemm*scale` per output; it folds it into the additive constant correctly only because the additive term is independent of M. Verify the max-diff (~0.0025) is from missing `eps` precision or the train path being taken: the harness likely runs in train mode (BN updates running stats), so `gemm_scaled_eval_bn` isn't even used. Fix the train path's BN numerics: using `M/(M-1)` for unbiased var is fine, but the partial reduction's BLOCK_M=256 over M=16384 yields 64 tiles \u2014 accumulation order in fp32 may drift; switch psum/psumsq to fp64 accumulation in the finalize kernel or use a single-pass Welford to reduce error below 1e-3.\n- Bigger correctness suspect: the train-mode `gemm_only` writes `y = (x@W^T + bias)*scale` correctly via `a_eff=scale, b_eff=bias*scale`, that's fine. But `bn_finalize_apply_kernel` updates running_mean/var inside *every* `pid_n` program with `pid_m==0`, which is correct, yet it reads x in the same kernel after computing stats from the partial sums \u2014 make sure no race exists between the partial-reduce launch and finalize (separate launches, OK). Most likely the issue is `(M / (M - 1))` performed in fp32 with M=16384 \u2014 fine. Real bug: the eval-fold `b_eff` should be `(bias_gemm - running_mean/scale)*scale*invstd*bn_weight + bn_bias`? Re-derive: y=(x@W^T+bias)*scale; bn(y) = (y-mean)*invstd*w + b = y*(invstd*w) + (b - mean*invstd*w). So fold into GEMM: out = (x@W^T)*scale*invstd*w + bias*scale*invstd*w + b - mean*invstd*w. So a_eff=scale*invstd*w, b_eff=bias*scale*invstd*w + b - mean*invstd*w = (bias*scale - mean)*invstd*w + b. That matches code. Correctness gap of 3e-3 is consistent with train-mode path numerics; tighten via fp64 reduction or two-pass with Welford.\n- Autotune the BN partial kernel too: BLOCK_M=256, BLOCK_N=128 may be suboptimal; try BLOCK_M=512, BLOCK_N=64 with num_warps=4 to reduce tile count and accumulation drift.",
+    "large_guidance": "- Replace the two-kernel train BN with a single persistent column-wise reduction kernel: one program per N-tile owns all M rows, computes Welford mean/var in-register across the column in chunks, then streams a second pass to apply normalization, eliminating the intermediate psum/psumsq tensors and their fp32 accumulation drift.\n- For the GEMM path, transpose W once at init into a contiguous (K,N) buffer (cached as a buffer attribute) so the B loads in the hot loop are stride-1 along N rather than stride-K; this is a layout change with no algebraic shortcut.\n- Consider a fully-fused train pipeline: launch GEMM that writes y to global, plus atomically-accumulated per-column sum/sumsq into N-sized buffers in the epilogue, then a single small finalize+apply kernel \u2014 this halves global-memory traffic versus the current 3-pass design.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 13,
+    "global_best_node_id": 9,
+    "global_best_score": [
+        1,
+        1,
+        0.757505173611111
+    ]
+}

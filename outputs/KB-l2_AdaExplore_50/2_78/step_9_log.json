@@ -1,0 +1,27 @@
+{
+    "node_id": 9,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.40575985630708017,
+    "max_reward": 0.40575985630708017,
+    "avg_reward": 0.40575985630708017,
+    "score": [
+        1,
+        1,
+        0.14751881453341126
+    ],
+    "small_guidance": "- The fused pool+sum kernel is fine; the bottleneck is the torch ConvTranspose3d. Tuning BLOCK_C / num_warps on the pool kernel won't move runtime \u2014 focus must shift to the conv. If keeping pool, try one program per (n, od, oh) tile over ow with BLOCK_W=4 and BLOCK_C=64, num_warps=4, num_stages=2 to amortize index math.\n- Fold the conv bias into the pool kernel epilogue (it's a per-channel add before max), so the conv kernel can skip the bias write.\n- Use channels_last_3d on the conv output so the channel reduction in the pool+sum is contiguous.",
+    "large_guidance": "- Replace nn.ConvTranspose3d with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile), computing the input \u00d7 weight outer product and scatter-adding into the output grid with stride=2, padding=2. This is the dominant cost (~60ms+) and torch's cuDNN ConvTranspose3d is the bottleneck.\n- Better: fuse conv_transpose + maxpool(2) + maxpool(3) + sum-over-C into a single gather kernel. For each output element (n, od, oh, ow), the 6\u00d76\u00d76 post-conv window depends on a bounded input region; compute conv_transpose values on-the-fly per channel, take max over the 6\u00b3 window, and accumulate the channel sum \u2014 never materializing the full (N,64,64,64,64) conv output (which is ~1GB and dominates memory traffic).\n- Alternatively, since the final reduction is sum over output channels, precompute W_sum[ic, kd, kh, kw] = sum_oc W[ic, oc, kd, kh, kw] *only if the ordering allowed* \u2014 but max is non-linear over channels so this isn't valid here. Stick with the fused gather approach: one kernel that loops over IC and (kd,kh,kw), evaluates each of the 6\u00b3 post-conv outputs per channel, reduces max, then sums across OC.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 10,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.9494847335423198
+    ]
+}

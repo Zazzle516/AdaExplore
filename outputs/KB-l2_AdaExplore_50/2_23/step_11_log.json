@@ -1,0 +1,30 @@
+{
+    "node_id": 11,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        3,
+        4
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.47447970346212504,
+    "max_reward": 0.47447970346212504,
+    "avg_reward": 0.47447970346212504,
+    "score": [
+        1,
+        1,
+        0.7144575535625312
+    ],
+    "small_guidance": "- Add a `triton.autotune` over `BLOCK_OC \u2208 {8,16,24}` and `BLOCK_S \u2208 {64,128,256}` with `num_warps \u2208 {4,8}` and `num_stages \u2208 {2,3}` for `conv3d_kernel`; the current fixed (8,128,4w,2s) likely under-utilizes the SM given OC=24 and OS=22*30*30.\n- Fuse the `+ bias` and store directly in NHWC-ish layout (OC innermost) so the GN/mean pass coalesces across channels; or, better, fuse the GN reduction's first pass (sum, sumsq) into the conv epilogue by atomic-adding partial group stats while OC tile values are still in registers.\n- In `gn_mean_kernel`, drop the second pass entirely: the per-batch contribution to `mean(out)` simplifies to `(1/C\u00b7S) * \u03a3_c (w_c*rstd*(s_c - S*mean) + S*b_c)`, but `s_c` was already loaded in pass 1 \u2014 accumulate per-channel sums in a small register array (CPG=3) during pass 1 to halve the global-memory traffic.",
+    "large_guidance": "- Replace the gather-style direct conv with an im2col GEMM: one program per `(N, OC_tile, OS_tile)` doing a `tl.dot` over a K=IC*KD*KH*KW=81 reduction. With OC=24 (pad to 32) and small K, a single-tile-per-(N,OS_tile) kernel using `tl.dot` will be far faster than the current scalar FMA accumulation, and lets you push BLOCK_S to 256 with num_warps=8.\n- Fuse conv + GN-stats in one kernel: each program computes its OC\u00d7OS tile, writes it to `y`, and atomic-adds `sum` and `sumsq` per `(n, group)` to a small stats buffer. Then a tiny second kernel computes `mean = \u03a3_c w_c*rstd*(s_c - S*mean)/total + b_c*S/total` per (n) directly from the group stats and per-channel sums (also accumulated in pass 1). This removes the entire re-read of `y` in the GN pass.\n- Even more aggressively: since the final output is a scalar per-batch mean, never materialize `y` at all \u2014 have the conv kernel atomic-add per-channel sums and per-group sumsq into small `(N,C)` and `(N,G)` buffers during accumulation, then a small post-kernel computes the per-batch scalar from those stats and the GN affine. This makes the work O(N\u00b7OC\u00b7OS\u00b7K) once, with no second full-tensor pass.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 12,
+    "global_best_node_id": 10,
+    "global_best_score": [
+        1,
+        1,
+        0.898688746619536
+    ]
+}

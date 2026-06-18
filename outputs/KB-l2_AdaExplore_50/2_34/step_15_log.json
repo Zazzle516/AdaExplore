@@ -1,0 +1,29 @@
+{
+    "node_id": 15,
+    "parent_node_id": 9,
+    "context_node_ids": [
+        9
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4841796156156156,
+    "max_reward": 0.4841796156156156,
+    "avg_reward": 0.4841796156156156,
+    "score": [
+        1,
+        1,
+        0.7944818288288288
+    ],
+    "small_guidance": "- The LN/GELU/scale kernel runs over C=64 per row across N=batch*D'*H'*W' rows; BLOCK_C=64 with num_warps=1 is likely fine but try num_warps=2 and num_stages=3 to overlap loads. Also try a persistent kernel that processes multiple rows per program (e.g. 4-8 rows) to amortize launch overhead, since each row is tiny (64 fp32 = 256 B).\n- Add `@triton.autotune` over `(BLOCK_ROWS \u2208 {1,2,4,8}, num_warps \u2208 {1,2,4}, num_stages \u2208 {2,3,4})` keyed on `(N, C)`.\n- However, with only ~20% gap remaining and the conv_transpose almost certainly dominating runtime, further LN tuning has limited headroom.",
+    "large_guidance": "- The torch `ConvTranspose3d` is the dominant cost (fast_p=0.79 with the epilogue already fused). Replace it with a custom Triton scatter-add kernel: one program per `(N, OC tile, output-spatial tile)` computing the input\u00d7weight outer product and scattering into the output grid with stride=2, padding=1, kernel=4 index math; fuse bias add in the epilogue.\n- Better: implement the conv-transpose as a gather-style GEMM where each output voxel `(n, oc, d, h, w)` accumulates `\u03a3_{ic,kd,kh,kw} x[n, ic, (d+pad-kd)/stride, ...] * W[ic, oc, kd, kh, kw]` with validity masks for the stride-division; this gives a clean GEMM with K = IC*KD*KH*KW = 32*4*4*4 = 2048 and M = D'*H'*W' = 32*64*64 = 131072 per batch, N = OC = 64. Use BLOCK_M=64, BLOCK_N=64, BLOCK_K=32, num_warps=4, num_stages=2 (fits SMEM: (64*32+32*64)*4*2 = 32KB).\n- Fuse LayerNorm+GELU+scale into the conv-transpose kernel's epilogue by having each program compute a full row's worth of OC=64 channels for a set of spatial positions, then doing the per-position LN reduction across the OC tile (since C=OC=64 fits in one tile) before GELU and scaling, eliminating the separate epilogue kernel and the intermediate tensor write.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 16,
+    "global_best_node_id": 15,
+    "global_best_score": [
+        1,
+        1,
+        0.7944818288288288
+    ]
+}

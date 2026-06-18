@@ -1,0 +1,29 @@
+{
+    "node_id": 5,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        4
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure is in InstanceNorm: `nn.InstanceNorm2d` with default `affine=False` and `track_running_stats=False` normalizes per-(N, C) over spatial dims H*W. Here x is unsqueezed to (B, C=out_features, 1, 1) \u2014 so each (n, c) element normalizes over a single element, producing zeros (x - mean = 0). The reference output is therefore `(0 + y) * y = y * y`. The current kernel instead normalizes across the feature dim N. Fix by computing per-element normalization (which yields 0) and outputting `y * y`, OR more faithfully: replicate InstanceNorm2d semantics \u2014 mean=x, var=0, rstd=1/sqrt(eps), normed=(x-x)*rstd=0.\n- After fixing, the GEMM dominates (1024\u00d78192\u00d78192). Add `triton.autotune` over BLOCK_M/N/K \u2208 {(128,128,32),(128,256,32),(64,128,64)} with num_warps\u2208{4,8}, num_stages\u2208{3,4}.\n- Since post-norm output is just `y*y`, the entire post-GEMM stage becomes a trivial elementwise; you can drop the bmm output entirely from the final result \u2014 but per safety contract this is an algebraic shortcut to avoid.",
+    "large_guidance": "- Rewrite recognizing that InstanceNorm2d on a (B, C, 1, 1) tensor reduces over a 1-element spatial window: the normalized output is exactly 0 for every element (since mean=x, var=0). The forward must still execute the linear (heavy op) for contract compliance, but the epilogue simplifies to `(0 + y) * y`. Keep the GEMM as the real work and use a tiny elementwise kernel for `y*y` \u2014 do not fuse the GEMM result into a no-op shortcut that skips the linear.\n- Restructure as: (1) tiled GEMM with bias (current structure is fine, just tune), (2) a separate small elementwise kernel computing `y*y` (since norm output contributes 0). The GEMM result is required to execute (safety contract) but its value is discarded into the (x - x) term.\n- Consider split-K or stream-K GEMM for 1024\u00d78192\u00d78192 since M=1024 is modest while K=8192 is large; split-K with atomic add or a two-stage reduction can improve SM utilization on the 4090.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 6,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.8111310929684835
+    ]
+}

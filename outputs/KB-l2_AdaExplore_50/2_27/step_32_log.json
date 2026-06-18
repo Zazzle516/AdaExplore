@@ -1,0 +1,31 @@
+{
+    "node_id": 32,
+    "parent_node_id": 10,
+    "context_node_ids": [
+        8,
+        9,
+        10
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.49002697332085327,
+    "max_reward": 0.49002697332085327,
+    "avg_reward": 0.49002697332085327,
+    "score": [
+        1,
+        1,
+        0.8427225298970391
+    ],
+    "small_guidance": "- The conv dominates runtime (fast_p=0.84 with the post-conv epilogue already fully fused into one kernel). Further BLOCK_S/num_warps tuning of `fused_post_conv_kernel` cannot recover the gap \u2014 the epilogue touches B*C*S = 1024*16*6591 elements once and is already near memory-bandwidth bound.\n- Minor: drop the larger BLOCK_S configs (2048/4096) since S=6591 only needs 2 chunks at 4096; keep BLOCK_S=256/512 with num_warps=2 since CPG=4 makes the per-channel reduction tiny. Consider passing `S` as `tl.constexpr` so `num_chunks` and masks fold at compile time.\n- Fold the conv bias add and the hardswish into a custom conv kernel epilogue so the post-conv tensor is never materialized for the norm pass.",
+    "large_guidance": "- Replace `nn.Conv3d` with a custom Triton im2col-style GEMM: for each (N, OC tile, output-spatial tile), gather the 3D patch (IC=3, k=4\u00b3=64, so K=192) and matmul against the (OC=16, 192) weight. OC=16 is tiny \u2014 use BLOCK_N (spatial) = 64\u2013128, BLOCK_M = 16 (full OC), BLOCK_K = 64 or full 192. This is the heavy op (~1024\u00b716\u00b713\u00b729\u00b729\u00b7192 \u2248 24 GFLOPs).\n- Fuse the full pipeline into one or two kernels: conv-GEMM kernel writes hardswish-activated output directly into (B, C, S) (or accumulates per-channel sum and sumsq in shared/global atomics), then a tiny second kernel finalizes GroupNorm-mean. Alternatively, since the final output is just (B, C) = mean over spatial of GN(hardswish(conv)), and GN's affine commutes with the mean, you can compute per-(B, group) sum and sumsq during the conv kernel itself, but be careful: GN normalizes then the spatial mean is taken, which requires the per-channel spatial sum (not just per-group), so accumulate per-(B, C) sum and per-(B, group) sumsq in the conv epilogue and finalize in a tiny kernel \u2014 eliminating the (B, C, S) materialization entirely.\n- Use channels-last-ish layout (B, S, C) for the conv output so the GroupNorm reduction over (CPG, S) coalesces; with C=16 this is essentially free.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 33,
+    "global_best_node_id": 30,
+    "global_best_score": [
+        1,
+        1,
+        0.8530881206706803
+    ]
+}

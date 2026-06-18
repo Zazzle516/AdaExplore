@@ -1,0 +1,31 @@
+{
+    "node_id": 19,
+    "parent_node_id": 16,
+    "context_node_ids": [
+        3,
+        4,
+        16
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM (M=1024, N=8192, K=8192) dominates runtime; add more aggressive autotune configs targeting large-K: BLOCK_M=128/BLOCK_N=128/BLOCK_K=128 with num_warps=8, num_stages=4, and BLOCK_M=64/BLOCK_N=256/BLOCK_K=128 num_stages=3. Also try `num_stages=5` with BLOCK_K=64 to overlap more K-loop loads.\n- In `gn_min_bias_fused_kernel`, the bias-add loop writes N=8192 outputs per row across M=1024 rows = 8M scalar stores via a single program \u2014 split the bias-add into a separate 2D-grid kernel (programs over (N_tile, M)) so writes are parallelized across SMs instead of serialized per row. Keep the GN+min fused kernel writing only a length-M `row_min` vector.\n- Store the GEMM output in fp32 transposed layout (N, M) so the GN kernel's per-row gather over channels becomes a contiguous stride-1 load; current `row * N + ...` is fine but cache reuse across the 16 groups per warp can be improved by tiling the group axis (e.g. process NUM_GROUPS in chunks of 64 instead of all 512 at once to keep register pressure down \u2014 current [512,16] tile is 32K fp32 \u2248 huge register footprint).",
+    "large_guidance": "- Split the monolithic GN+min+bias kernel into two kernels: (1) a per-row GN+min reduction that writes a length-M vector `row_min[M]`, (2) a 2D-tiled bias-add kernel with grid `(cdiv(N, BN), cdiv(M, BM))` that does `out[c, m] = row_min[m] + bias[c]`. The current design forces one program to emit 8192 stores serially per row, which is the bottleneck after the GEMM.\n- For the GN kernel, use one program per (row, group) instead of one program per row carrying a [NUM_GROUPS, C_PER_G]=[512,16] tile. With C_PER_G=16, group-level reductions are tiny; per-program reduction across groups then performs a row-wide min via atomic-min into a row buffer, or use a two-stage approach (per-group partial mins to a [M, num_group_tiles] buffer, then a second kernel reduces across groups).\n- Consider a split-K GEMM (K=8192 is large) emitting partial accumulators reduced via a second kernel, or a persistent GEMM scheduler. On a 4090 the M=1024,N=8192 grid is only 1024\u00d78192/(BLOCK_M*BLOCK_N) tiles \u2014 with BLOCK_M=128,BLOCK_N=128 that's 512 tiles, well-suited to a persistent kernel mapping one tile per SM and looping.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 20,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

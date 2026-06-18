@@ -1,0 +1,27 @@
+{
+    "node_id": 10,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.442896022073165,
+    "max_reward": 0.442896022073165,
+    "avg_reward": 0.442896022073165,
+    "score": [
+        1,
+        1,
+        0.4538921821036107
+    ],
+    "small_guidance": "- The Conv3d dominates runtime (output is 128\u00d716\u00d714\u00d762\u00d762 \u2248 13.7M elements; groupnorm/min/clamp tail is tiny). Tuning the GN/tail kernel will not move fast_p \u2014 focus must shift to replacing the conv. Within the current code, only minor wins remain: increase BLOCK_S in groupnorm to 2048 with num_warps=8 (group_size = 2\u00d762\u00d762 = 7688, so 4 iters), and fuse min/clamp into the groupnorm epilogue to remove one full pass over the output tensor.\n- Since dropout_p is applied but min+clamp produces a constant `min_value=0.0` across all elements (mathematically), the entire post-conv tail collapses to `dropout(zeros)=zeros`. You still must execute conv+GN per the safety contract, but the GN output isn't actually consumed \u2014 however you cannot shortcut this. Keep GN running and fuse the trivial tail in one kernel.\n- Pass eps as `tl.constexpr` rather than runtime float to let Triton bake it.",
+    "large_guidance": "- Replace `nn.Conv3d` with a custom Triton im2col-style GEMM kernel: one program per (N, OC-tile, output-spatial-tile), implicit im2col (compute D/H/W input offsets in-kernel), no padding (kernel_size=3, no pad). Shapes: GEMM is (OC=16) \u00d7 (N\u00b7D'\u00b7H'\u00b7W'=128\u00b714\u00b762\u00b762) \u00d7 (IC\u00b7k\u00b3=81). With OC=16 small, use BLOCK_OC=16, BLOCK_SPATIAL=128, BLOCK_K=81 (full K in one tile since it's tiny), num_warps=4.\n- Fuse the GroupNorm + min + clamp + dropout-mask epilogue with the conv kernel only for the second pass; first pass still needs full output to compute group stats. Better: write conv output to a buffer, then a second kernel does GN (one program per (N, group)) with the min/clamp/dropout fused into its store.\n- Use NHWC/channels_last_3d layout for the conv output so GN's reduction over (CPG, D, H, W) keeps the channel-within-group axis adjacent and enables vectorized loads. With CPG=2 and groups=8, group reduction size = 2\u00b714\u00b762\u00b762 = 7688 \u2014 fits easily in a persistent kernel with BLOCK=8192 and num_warps=8.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 11,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.5528285277246654
+    ]
+}

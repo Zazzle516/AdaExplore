@@ -1,0 +1,29 @@
+{
+    "node_id": 15,
+    "parent_node_id": 8,
+    "context_node_ids": [
+        8
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4207638894815953,
+    "max_reward": 0.4207638894815953,
+    "avg_reward": 0.4207638894815953,
+    "score": [
+        1,
+        1,
+        0.27130208822316104
+    ],
+    "small_guidance": "- The kernel does the conv-transpose as a gather but the inner reduction over `IC=16` is tiny \u2014 collapse the `ic_start` loop entirely by setting `BLOCK_IC=16` (==IC) and removing the inner Python loop; this lets `tl.dot` see a full K=16 tile each pass with no overhead. Also try larger BLOCK_SPATIAL configs (256, 512) at num_warps=8 since OUT_SPATIAL = 32\u00b764\u00b764 = 131072 is huge.\n- Hoist the `valid` mask and `in_spatial` computation outside the IC loop (they don't depend on ic). Better: skip the entire (kd,kh,kw) iteration when SD/SH/SW>1 by iterating only over valid taps for each output coordinate \u2014 but since stride=2, ~7/8 of (kd,kh,kw,output) combinations are invalid, so the current code wastes most of its tl.dot work on zeroed inputs. Restructure so the kernel iterates over (kd,kh,kw) but checks `valid` before the IC reduction and skips via masking that zeros the input load (already done) \u2014 at minimum gate the `tl.dot` cost by reducing KD*KH*KW=27 loop iterations using the fact that for stride=2 only ~1/8 of taps contribute per output.\n- Add autotune configs with BLOCK_OC=32, BLOCK_SPATIAL=256, BLOCK_IC=16, num_warps=8, num_stages=3 and BLOCK_OC=64, BLOCK_SPATIAL=128, BLOCK_IC=16, num_warps=8, num_stages=3 \u2014 verify SMEM: (64\u00b716 + 16\u00b7128)\u00b74\u00b73 \u2248 36KB, safe.",
+    "large_guidance": "- Rewrite as an im2col-style GEMM with one program per (N, OC-tile, output-spatial-tile), but flatten the (kd,kh,kw) loop into the K dimension of the GEMM so K = IC*KD*KH*KW = 16*27 = 432; the GEMM tile then naturally amortizes the index math. The current 3-nested kd/kh/kw loop with a separate tl.dot per tap is leaving the tensor cores underfed \u2014 fuse all taps into one K-reduction.\n- For stride-2 ConvTranspose3d the gather form has 7/8 wasted taps per output position. Switch to **scatter-add**: one program per (N, IC-tile, input-spatial-tile) computes the input \u00d7 weight outer product and scatter-adds into the OD\u00d7OH\u00d7OW output grid. This eliminates the validity-mask waste entirely. Pair with a separate fused epilogue kernel that applies scale/shift and computes the per-(N,OC) spatial mean in one pass (block reduction), then a second kernel (or fused tail) subtracts the mean. The current two-pass (compute+atomic-sum then sub-mean) is fine but the conv stage is the bottleneck.\n- Use channels_last (NDHWC) layout for input/output so the IC and OC axes are contiguous; this makes the GEMM-K loads coalesced and avoids the strided ID*IH*IW gather stride currently in `x_off`. Materialize the transposed weight once at init in (KD,KH,KW,OC,IC) order to match.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 16,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.32290846370039283
+    ]
+}

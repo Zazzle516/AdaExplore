@@ -1,0 +1,29 @@
+{
+    "node_id": 45,
+    "parent_node_id": 29,
+    "context_node_ids": [
+        29
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5139824894069609,
+    "max_reward": 0.5139824894069609,
+    "avg_reward": 0.5139824894069609,
+    "score": [
+        1,
+        1,
+        1.0403555376074274
+    ],
+    "small_guidance": "- The kernel is now bottlenecked by the ConvTranspose3d (8.39ms with fast_p~1.04 means almost all time is in cuDNN conv-transpose). Tuning the post-fusion kernel further has minimal headroom; only minor wins like trying `num_warps=1` for the small-W (W=64\u2192BLOCK_W=64) reduction or larger BLOCK_HO=32 in the autotune list.\n- Consider precomputing `sum_w` once at module init only when not training (avoid `.item()` host sync in forward) \u2014 cache it on a buffer or as a python float captured when the parameter changes; though sync cost is small, it's still on the hot path.\n- Add `channels_last_3d` memory format hint to conv_transpose output if it helps cuDNN pick a faster algorithm.",
+    "large_guidance": "- The dominant cost is `nn.ConvTranspose3d`. Replace it with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)` computing the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and atomically scattering into the output grid with stride=2, padding=1, output_padding=1. Since stride==kernel_size mostly (3 vs 2), output positions can be partitioned by `(d_out%2, h_out%2, w_out%2)` phase to avoid atomics \u2014 each phase touches a disjoint output subset.\n- Alternatively, since stride=2 and kernel=3, implement conv-transpose as a gather GEMM: for each output position, sum over the (\u22642 per dim) input positions whose receptive field covers it. Tile as GEMM with M=OC, N=output-spatial-tile, K=IC*kd*kh*kw (with masked invalid taps), then fuse the bias+sum_weight+LayerNorm(over C)+AvgPool+GELU epilogue. Note: LayerNorm here is over the last dim (W=64) per the norm_shape=(out_channels,)... actually norm_shape=(64,) and the last dim is W=64, so current kernel normalizes over W which matches.\n- Fuse the entire pipeline into one kernel that produces the pooled+GELU output directly, eliminating the large intermediate `x` tensor of shape (32,64,16,32,32) \u2014 this saves a full read/write of ~33M elements between conv-transpose and post kernel.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 46,
+    "global_best_node_id": 42,
+    "global_best_score": [
+        1,
+        1,
+        1.0453392767097385
+    ]
+}

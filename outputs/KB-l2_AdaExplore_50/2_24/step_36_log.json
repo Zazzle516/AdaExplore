@@ -1,0 +1,27 @@
+{
+    "node_id": 36,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.41402265043944914,
+    "max_reward": 0.41402265043944914,
+    "avg_reward": 0.41402265043944914,
+    "score": [
+        1,
+        1,
+        0.215686866125455
+    ],
+    "small_guidance": "- Add `triton.autotune` over `BLOCK_HW \u2208 {32,64,128,256}`, `num_warps \u2208 {2,4,8}`, `num_stages \u2208 {2,3,4}` keyed on `(OH*OW, OC, IC)`; current 64/4/default is almost certainly suboptimal for the 900-element OH*OW=30*30 grid.\n- Hoist the `ic`/`kd`/`kh`/`kw` loop-invariant index math out of the inner loop and precompute `w` into registers once per `(oc, ic, kd, kh, kw)` since it's reused across all `od` iterations \u2014 currently weights are reloaded `OD` times per program. Better: swap loop order so `od` is the innermost loop, accumulating per-`od` partial sums into a `[OD]` register array, then take min over that vector at the end (single weight/window load reused across all `OD` outputs).\n- Fuse the softmax into the conv-min kernel epilogue by tiling programs as `(N, OH*OW tile)` instead of `(N, OC, OH*OW tile)` \u2014 compute all OC=24 channels in one program, then immediately do max/exp/sum/normalize in registers and store.",
+    "large_guidance": "- Restructure as im2col + GEMM: one program per `(N, OH*OW tile)` computing all OC outputs for all OD depths via a `[BLOCK_HW, OC]` tiled matmul against a `[OC, IC*KD*KH*KW]` weight matrix, with the GEMM-K loop walking `(ic, kd, kh, kw)`. Reduce-min over `od` and softmax over `oc` happen in-register before the single store. This collapses three kernels' worth of memory traffic into one.\n- Reorder loops so the depth axis `od` is the outermost output but the kernel taps `(kd, kh, kw, ic)` are the innermost reduction; share the loaded weight tile across all `od` by accumulating an `[OD, BLOCK_HW]` register tile per OC tile. With OD=22, OC=24, this fits in registers and eliminates the OD\u00d7 redundant weight loads in the current code.\n- Use `channels_last_3d` input layout so the IC axis is contiguous, letting the `ic` reduction become a contiguous vector load instead of a strided gather over the 24\u00b732\u00b732 spatial stride.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 37,
+    "global_best_node_id": 35,
+    "global_best_score": [
+        1,
+        1,
+        1.262189900929688
+    ]
+}

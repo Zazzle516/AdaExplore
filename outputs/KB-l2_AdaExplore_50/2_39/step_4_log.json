@@ -1,0 +1,27 @@
+{
+    "node_id": 4,
+    "parent_node_id": 3,
+    "context_node_ids": [],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure is likely because BN is applied in eval mode using running stats, but during benchmark the model may be in train mode where the reference computes batch stats. Compute batch mean/var via `col_stats_kernel` over `gemm_out` and use those (plus update running stats) instead of branching on `self.training`. Also ensure `Wt = W.t()` is made contiguous or the stride handling in the GEMM matches a transposed B layout properly.\n- Tighten BN-apply tile (e.g. BLOCK_M=128, BLOCK_N=128, num_warps=8) to reduce launch overhead for 16384\u00d74096, and fuse the batch-stat computation + normalization apply into a single two-pass kernel per channel (one program per column, persistent over M).\n- Add larger GEMM autotune configs (BLOCK_M=256/BLOCK_N=128, BLOCK_K=64, num_warps=8, num_stages=3) since M=N=16384/4096 is large and benefits from bigger tiles on the 4090.",
+    "large_guidance": "- Restructure into two kernels matching the reference semantics exactly: (1) tiled GEMM with bias+scale epilogue (existing), (2) a column-reduction kernel that computes per-channel mean and variance from `gemm_out`, then a third kernel that applies `(x-mean)*invstd*weight+bias`. Drive selection by `self.training` correctly \u2014 the BN reference at train time uses *batch* statistics, not running stats; the current eval-path shortcut is why outputs mismatch.\n- Consider a single-pass Welford reduction kernel per output channel (one program per N, persistent loop over M with BLOCK_M=1024-2048, num_warps=8) to compute mean/var in one launch, then a fused apply kernel. This avoids both relying on `self.bn(...)` in train and the incorrect running-stat use.\n- Keep weight as row-major (`W`, shape [N,K]) and load it as B with `stride_bk=1, stride_bn=K` directly in the GEMM rather than materializing `W.t()` \u2014 avoids an implicit contiguity assumption and a potential extra copy.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 5,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

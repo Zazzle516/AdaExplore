@@ -1,0 +1,29 @@
+{
+    "node_id": 23,
+    "parent_node_id": 11,
+    "context_node_ids": [
+        10
+    ],
+    "depth": 5,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The kernel is incorrect because each parity launch writes to the entire output via `tl.store` with `out_mask = oc_mask & sp_mask`, overwriting valid outputs from other parities. Fix by either (a) accumulating across parities (zero-init out, then atomically add or use a single kernel that loops all parities into one acc), or (b) gating the store with a per-element parity mask so each output element is written by exactly one parity launch.\n- The simplest correctness fix: fold the parity loop *inside* the kernel \u2014 keep one launch, and inside compute `valid = ((ih_num % STRIDE) == 0) & ((iw_num % STRIDE) == 0) & in-bounds`, accumulate into one `acc`, then store once. This also removes redundant bias/clamp/scale work done S\u00b2 times.\n- Once correct, retune: try `BLOCK_OC=128, BLOCK_SP=64, BLOCK_IC=64, num_warps=8, num_stages=3`; OC=64 means `BLOCK_OC=64` is the natural ceiling \u2014 drop the 128 OC configs.",
+    "large_guidance": "- Rewrite as a single im2col-style gather kernel with one program per `(N, OC tile, OH*OW tile)`. Reduce over `IC * KH * KW` as the GEMM-K axis; compute input `(ih, iw)` from `(oh, ow, kh, kw)` with the stride-divisibility check producing a K-axis mask rather than launching S\u00b2 separate kernels.\n- Fuse bias add + clamp(0,1) + \u00d7scale + clamp(0,1) + \u00f7scale into the epilogue of the single kernel (note: the double clamp/scale collapses to `clamp(x+bias, 0, 1/scale)` algebraically only if you keep the heavy conv \u2014 but safer to just keep the four ops literal in the epilogue since they are cheap).\n- Use channels-last (NHWC) for both input and output so the IC dimension is contiguous along GEMM-K and stores along OC coalesce; pre-permute weight to `(KH, KW, IC, OC)` layout at init so the inner `tl.dot` loads are contiguous.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 24,
+    "global_best_node_id": 10,
+    "global_best_score": [
+        1,
+        1,
+        0.46421224137931033
+    ]
+}

@@ -1,0 +1,27 @@
+{
+    "node_id": 1,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness fails: the GEMM kernel uses `offs_am % M` / `offs_bn % N` which wraps OOB rows/cols and produces wrong accumulations near tile edges. Mask the A/B loads with real row/col bounds (e.g. `offs_am[:, None] < M` and `offs_bn[None, :] < N`) combined with the K mask, instead of modulo-wrapping the indices.\n- Verify the B-matrix stride mapping for `weight` (PyTorch `nn.Linear` weight is `(N, K)` row-major, so accessing as B[k,n]=weight[n,k] needs `stride_bk=1`, `stride_bn=K`); double-check the call site matches and the K-loop mask `offs_k < K - k*BLOCK_K` applies on both A and B simultaneously.\n- After correctness is restored, add larger autotune tiles (e.g. `BLOCK_M=128,BLOCK_N=256,BLOCK_K=64`, `num_warps=8`, `num_stages=3-4`) since M=N=K=8192 is large and compute-bound.",
+    "large_guidance": "- Keep the two-kernel structure (tiled GEMM + fused GN/Swish/Mul/Swish) \u2014 it's the right factoring for this shape. The redesign should focus on a robust masked GEMM with proper bounds (no modulo wrap), bias+epilogue fusion, and an L2 swizzle.\n- For the fused norm kernel, CPG = 8192/256 = 32, which is tiny. Pack multiple groups per program (e.g. 8 groups \u00d7 32 channels = 256 lanes) to amortize launch overhead and improve occupancy; do per-group reductions via `tl.reshape` + `tl.sum(axis=1)`.\n- Consider storing the GEMM output in fp16/bf16 only if accuracy permits; otherwise keep fp32 but ensure the GN kernel reads contiguously and writes contiguously (it already does). Optionally fuse the bias add into the GN kernel and skip the bias epilogue in GEMM, but the current split is fine.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 2,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

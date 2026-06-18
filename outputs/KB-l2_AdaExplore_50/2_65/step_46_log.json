@@ -1,0 +1,29 @@
+{
+    "node_id": 46,
+    "parent_node_id": 28,
+    "context_node_ids": [
+        28
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.44965448929448937,
+    "max_reward": 0.44965448929448937,
+    "avg_reward": 0.44965448929448937,
+    "score": [
+        1,
+        1,
+        0.5096495366795368
+    ],
+    "small_guidance": "- The inner `tl.dot(xv, wv)` is on shapes [BLOCK_P, IC_C] x [IC_C, BLOCK_OC] with IC_C=8 \u2014 far below tensor-core efficiency. Pad IC dimension or rearrange so the K dim of the dot accumulates across (kh,kw,ic) jointly (e.g., load a [BLOCK_P, KH*KW*IC] tile and a [KH*KW*IC, BLOCK_OC] weight tile, do one big dot per pool position), eliminating the redundant bias init and trans per kh/kw.\n- Try larger BLOCK_P (256, 512) with BLOCK_OC=32 since OC=64 only needs 1-2 OC tiles; also add configs with num_stages=4. The pool window (4x4=16) makes each pool position do 16x the conv work \u2014 consider folding pool into the OH/OW iteration: have one program compute conv for a BLOCK_P tile of pooled outputs by looping over POOL*POOL conv positions and accumulating into one register tile.\n- Avoid the atomic_add on `out_ptr+pid_n` by giving each (pid_oc, pid_p) program a separate partial output and doing a final reduction kernel, or use a 2D grid (collapse OC tile into the reduction) so only one program per N writes.",
+    "large_guidance": "- Restructure as im2col-GEMM: one program per (N, BLOCK_OC tile, BLOCK_PH*BLOCK_PW pooled-tile). Inside, loop POOL*POOL conv positions; for each, gather a [BLOCK_P, IC*KH*KW] input patch and multiply by a preformatted [IC*KH*KW, BLOCK_OC] weight tile via a single tl.dot with K=IC*KH*KW (=72, padded to 128). Accumulate into pooled_acc directly, then sigmoid + sum-reduce in the epilogue.\n- Persist the OC tile fully (OC=64 fits in one BLOCK_OC=64 tile) so num_oc_programs=1; grid becomes (N, num_p_tiles). Then sum across BLOCK_OC and BLOCK_P inside the kernel and atomic_add once per program \u2014 drastically fewer atomics. Better: make the program persistent over all p-tiles for a given N so the final per-N sum is computed locally without atomics.\n- Use NHWC layout (already done) but pre-pack weight as [KH*KW*IC_padded, OC] contiguous so weight loads are a single coalesced tile load per K-chunk. Pad IC*KH*KW to a multiple of 16 with zeros to make tl.dot use tensor cores efficiently.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 47,
+    "global_best_node_id": 12,
+    "global_best_score": [
+        1,
+        1,
+        1.3213136136136139
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 35,
+    "parent_node_id": 24,
+    "context_node_ids": [
+        24
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing: in training, `pre` is computed via the fused kernel that already applies `s_pre*acc + t_pre` (i.e. scale and bias already folded), but BN stats should be computed on `(gemm+bias)*scale`, which equals `pre` \u2014 that part is fine. However the kernel call passes `gbias` as `bias_ptr` but the kernel doesn't actually use `bias_ptr` (it only uses `s` and `t`); `t_pre = gbias * scale` correctly folds bias. Double-check the eval path: ensure `s_eff = scale * bn_w * inv_std` and `t_eff = (gbias * scale) * bn_w * inv_std + (bn_b - running_mean * bn_w * inv_std)`. The current `t_eff = gbias * s_eff + t_bn` is correct. The numerical mismatch (~2e-3 max, ~3.5e-4 avg) suggests TF32 accumulation in `tl.dot` \u2014 try `allow_tf32=False` or cast inputs to fp32 explicitly and accumulate in fp32 to tighten tolerance.\n- Add autotune configs with `BLOCK_K=64, 128` since K=8192 is large; more `num_stages=4-5` helps overlap; try `BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, num_warps=4, num_stages=4`.\n- Mask the K loop tail properly (currently `mask_m`/`mask_n` only \u2014 for K not divisible by BLOCK_K you'd read OOB; here 8192 is divisible so OK, but add `k_mask = offs_k[None,:] + k*BLOCK_K < K` for safety).",
+    "large_guidance": "- Keep the two-pass training design but fuse the BN apply pass with stats: pass 1 = GEMM+scale writing `pre` + atomically/columnwise reduce sum and sum-of-squares per N-tile into global buffers; pass 2 = a small elementwise kernel that reads `pre`, finalizes mean/var, and writes the normalized output. This avoids a separate full re-read of `pre` for stats.\n- For eval, the entire forward collapses to one fused GEMM with epilogue `acc*s_eff + t_eff` \u2014 the current design already does this; focus optimization there. Consider split-K only if M=1024,N=8192,K=8192 leaves SMs idle (it won't; 4090 has 128 SMs and there are 64 M/N tiles at 128x128, so split-K is unnecessary).\n- Switch to fp32 accumulation with TF32 disabled in `tl.dot` if the loose 5e-2 tolerance is being violated by something else; current avg diff 3.5e-4 is well under 5e-2 so the correctness failure may be a shape/stride bug \u2014 verify `W.stride(1), W.stride(0)` is the correct way to view W^T (W is (N,K) row-major, so to compute A@W^T we want B=W with stride_bk=W.stride(1)=1, stride_bn=W.stride(0)=K \u2014 this looks right).",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 36,
+    "global_best_node_id": 24,
+    "global_best_score": [
+        1,
+        1,
+        0.5932781570713239
+    ]
+}

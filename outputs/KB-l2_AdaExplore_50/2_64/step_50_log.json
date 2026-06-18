@@ -1,0 +1,29 @@
+{
+    "node_id": 50,
+    "parent_node_id": 47,
+    "context_node_ids": [
+        47
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.7784991231517517,
+    "max_reward": 0.7784991231517517,
+    "avg_reward": 0.7784991231517517,
+    "score": [
+        1,
+        1,
+        3.222617766001952
+    ],
+    "small_guidance": "- The GEMM dominates runtime (8192\u00d78192\u00d71024 in bf16). Try writing a custom Triton GEMM with `tl.dot` using bf16 inputs / fp32 accumulator, tiles `BLOCK_M=128, BLOCK_N=128, BLOCK_K=32`, `GROUP_M=8`, `num_warps=4`, `num_stages=3`, and fuse bias add in the epilogue \u2014 cuBLAS bf16 at this size leaves headroom on RTX 4090.\n- For the LSE kernel, since reduction dim N=8192 fits a single block, try `BLOCK_N=8192` with `num_warps=16` and `num_stages=2`; also try splitting into two-stage (e.g. BLOCK=4096 per warp partition) to better parallelize the per-row reduction across SMs (one row per program currently leaves only 1024 programs which is fine, but consider grid M with splits).\n- Avoid materializing the full bf16 GEMM output: fuse the row-wise max+sum reduction into the GEMM epilogue using a split-K / two-pass scheme so the (1024, 8192) bf16 tensor is never written to HBM.",
+    "large_guidance": "- Replace the cuBLAS `F.linear` + separate LSE kernel with a single fused \"GEMM \u2192 row-wise LogSumExp\" Triton kernel: tile over M (rows), loop K in BLOCK_K chunks but accumulate **all N columns** for the tile (since N=8192 is moderate, tile N=128 with online logsumexp combining `(m_i, l_i)` running max/sum across N-tiles). The fused kernel emits one scalar per row, then applies LeakyReLU/GELU in the epilogue. This eliminates the 1024\u00d78192 bf16 write+read between GEMM and reduction.\n- Alternatively, use a two-kernel split-K design: kernel-1 computes the GEMM tile + partial (max, sumexp) per (M_tile, N_split) into a small scratch (M, num_splits, 2); kernel-2 combines partials per row and applies activations. Scratch fits in L2 and avoids reading back a full 32 MB bf16 matrix.\n- Keep weights cached in bf16 (already done) but pre-transpose to `(in_features, out_features)` contiguous layout matching the GEMM K-major load pattern; pre-promote bias to fp32 and add it inside the fused kernel's column accumulator before exp, so the bf16 bias path's small precision loss is avoided.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 51,
+    "global_best_node_id": 40,
+    "global_best_score": [
+        1,
+        1,
+        3.2794665909810385
+    ]
+}

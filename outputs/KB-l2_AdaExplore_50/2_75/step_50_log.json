@@ -1,0 +1,29 @@
+{
+    "node_id": 50,
+    "parent_node_id": 19,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 5,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The atomic_min-based GroupNorm+min is the bottleneck: replace `tl.atomic_min` with one program per row that handles all groups in a single launch (loop over groups in registers, track running min), eliminating cross-program atomics and the `min_buf` pre-fill. With num_groups=512 and C_per_g=16, load the whole row (8192 floats) into a 2D tile [num_groups, 16] in one program, compute mean/var per group via `tl.sum(axis=1)`, normalize, and reduce min across the whole tile.\n- For the GEMM, add a `GROUP_M=8` block-swizzle for L2 reuse, and add configs `BLOCK_M=128,BLOCK_N=256,BLOCK_K=64,num_warps=8,num_stages=3` and `BLOCK_M=256,BLOCK_N=128,BLOCK_K=64`. K=8192 is large so prefer larger BLOCK_K.\n- Fuse bias-add into the GN+min kernel's epilogue: write directly to `out[1, c, m, 1]` shape by storing `min_val + bias[c]` for all C using a strided store, removing the third launch entirely.",
+    "large_guidance": "- Restructure as two kernels only: (1) tuned GEMM with bias epilogue; (2) a single persistent fused GN+min+bias-add kernel with one program per row. The row kernel loads the full 8192-element row once, reshapes to [512, 16] in registers, does per-group normalization with `tl.sum`, takes a single scalar min across all 8192 normalized values, then loops/tiles over the bias channel dim writing `min + bias[c]` to the (1, C, M, 1) output. This eliminates atomics and the separate bias kernel.\n- Output layout note: the final tensor (1, C, M, 1) places M on the inner stride; writes from the row-kernel are naturally strided by M. Allocate as `(M, C)` then `.view(1, C, M, 1)` via a transposed-stride view, or write to a `(C, M)` buffer and view \u2014 picking a layout where the per-row kernel does contiguous stores of shape [C] is preferable.\n- For the GEMM at M=N=K=8192, consider a split-K or persistent SM-mapped GEMM with `tl.dot(..., out_dtype=tl.float32)` and tensor-core-friendly tiles (128x256x64, 8 warps, 3 stages) plus GROUP_M swizzle; this is where most of the 1.67 ms actually lives.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 51,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 29,
+    "parent_node_id": 28,
+    "context_node_ids": [
+        25,
+        28
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.48669090999547715,
+    "max_reward": 0.48669090999547715,
+    "avg_reward": 0.48669090999547715,
+    "score": [
+        1,
+        1,
+        0.8152000074626864
+    ],
+    "small_guidance": "- The kernel currently writes NDHWC then does a permute+contiguous to NCDHW; that copy is a significant tail cost. Change the store to write directly into NCDHW layout (compute `out_offset = ((pid_b*OC + n_idx)*OS) + spatial_idx` per (m,n)) so the post-kernel `permute().contiguous()` can be removed.\n- Add larger autotune tiles now that BLOCK_N is fixed at 32 (OC=32): try `BLOCK_M=128/256, BLOCK_K=72/144` (full K_TOT=216, so a single-pass `BLOCK_K=216`-padded variant at `num_stages=2` fits SMEM easily: 256\u00b7256\u00b74\u00b72 \u2248 0.5MB no \u2014 keep `BLOCK_K\u226472`). Specifically add `(BLOCK_M=128,BLOCK_K=72,num_warps=4,stages=3)` and `(BLOCK_M=256,BLOCK_K=72,num_warps=8,stages=2)`.\n- Hoist `conv.bias`, `_weight_flat`, and `self.bias` `.contiguous().cuda()` out of `forward` into `__init__` (cache as buffers); the per-call `.contiguous().cuda()` adds latency on every step.",
+    "large_guidance": "- Restructure as a single fused kernel that writes directly to NCDHW: tile over `(N, OC, OD*OH*OW)` with one program per `(N, OC_tile, OS_tile)` and store `out[n, oc, d, h, w]` directly \u2014 eliminates the trailing permute+contiguous copy entirely (currently a full NCDHW-sized memcopy after the GEMM).\n- Switch the GEMM-K reduction order so the inner loop walks `(kd, kh, kw)` per input channel with precomputed input row pointers, and keep IC on the outer loop; this improves L2 reuse of `x` across spatial tiles since the same input plane is reused for many output rows. Combined with channels-last input layout (permute x to NDHWC once at module init or at forward entry, cached), input loads coalesce on IC.\n- Consider a persistent / split-K-free design: K_TOT=216 is small, so unroll the entire K loop (constexpr) and use `BLOCK_K=K_TOT` padded to 224 \u2014 the whole accumulation becomes a single `tl.dot`, removing loop overhead and letting the compiler schedule one big MMA per (M,N) tile.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 30,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        1.9646906654676257
+    ]
+}

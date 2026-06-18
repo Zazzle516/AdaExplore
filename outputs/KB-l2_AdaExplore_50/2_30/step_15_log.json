@@ -1,0 +1,29 @@
+{
+    "node_id": 15,
+    "parent_node_id": 7,
+    "context_node_ids": [
+        7
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (avg diff ~2e-4, max ~1.7e-3) suggests the GEMM is using TF32 (`allow_tf32=True`) on K=8192 which accumulates error beyond the loose tolerance. Try `allow_tf32=False` or accumulate in fp32 with input cast \u2014 at minimum disable TF32 for one config to verify.\n- The K-loop mask `offs_k[None, :] < K - k*BLOCK_K` only masks K, but for the final K tile when K is not multiple of BLOCK_K, partial tiles still load garbage at the row/col edges via the `offs_am % M`/`offs_bn % N` wrap \u2014 fine for math but verify. More importantly, since K=8192 is divisible by 32/64, the K mask is unnecessary overhead \u2014 add a `EVEN_K: tl.constexpr` branch.\n- Add larger autotune configs for M=N=1024, K=8192: e.g. `BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, num_warps=4, num_stages=4` and `BLOCK_M=64, BLOCK_N=64, BLOCK_K=128`, and prune configs that exceed shared memory.",
+    "large_guidance": "- Consider a split-K GEMM for the (1024, 8192) \u00d7 (8192, 8192) shape \u2014 K=8192 is large relative to M=1024 (M tiles are limited), so split-K with atomic adds or a 2-stage reduction can boost SM occupancy. Pair with bias+activation epilogue in a second small kernel only if needed.\n- Fuse the GroupNorm into the GEMM epilogue via a persistent/2-stage approach: with C=8192 and 16 groups, each group has 512 channels. One option is to compute GEMM into a temporary, then have GroupNorm read a full row's group (512 elements) contiguously \u2014 current design is already close, but consider keeping the post-GEMM tensor in shared/registers via a fused kernel that tiles over (M_row, group).\n- For numerical accuracy: ensure the GroupNorm reduction sums in fp32 (already done) and consider using Welford's online algorithm for variance to reduce catastrophic cancellation when mean is large; current two-pass with `(x-mean)^2` is fine but verify against torch's fp32 reference.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 16,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 20,
+    "parent_node_id": 19,
+    "context_node_ids": [
+        19
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.02286592041164292
+    ],
+    "small_guidance": "- The inner triple loop (ih, iw, ic_start) iterates ih*iw*IC/BLOCK_IC times per (kh,kw); reorder so the (ih, iw) loop is the outermost inside the kernel and accumulate into a register tile of shape [BLOCK_OC] per program \u2014 but more importantly, tile the spatial reduction with a BLOCK_HW dimension via tl.arange so each iteration uses tl.dot on a [BLOCK_HW, BLOCK_IC] x [BLOCK_IC, BLOCK_OC] GEMM rather than a [BLOCK_IC]x[BLOCK_IC,BLOCK_OC] matvec. Currently the kernel issues ~64*64*4*9 = ~150K scalar-vector ops per program with no tensor-core utilization.\n- Add larger autotune configs leveraging tl.dot: e.g. BLOCK_OC=128, BLOCK_IC=32, BLOCK_HW=64/128, num_warps=8, num_stages=3, and drop the smaller IC=32 / OC=64 configs which can't fill the SMs at N=16.\n- Pre-pack weight to layout [KH*KW, IC, OC] contiguous so the per-(kh,kw) tile is a single contiguous load instead of strided across the 3rd dim.",
+    "large_guidance": "- Rewrite as a direct-conv GEMM: one program per (N, OC tile). Inside, loop over (kh, kw) and over a tiled spatial range [BLOCK_HW] of valid (ih, iw) input positions, doing tl.dot of x[N, BLOCK_HW, BLOCK_IC] @ w[BLOCK_IC, BLOCK_OC] to accumulate the partial sum that mean will average. Sum across the BLOCK_HW axis after the dot (since mean reduces spatial anyway), so the final accumulator stays [BLOCK_OC]. This recovers tensor-core throughput which the current scalar-vector formulation misses entirely.\n- Alternative: split the work across more programs by adding a third grid axis over IC tiles or KH*KW tiles, with atomic_add into a small [N, OC] accumulator. With N=16, OC=128, only 32 programs launch currently \u2014 far below the 128 SMs of the 4090. A 3D grid over (N, OC_tile, KHKW*ICtile) would hit ~512+ programs.\n- Use channels-last input as already done, but also pre-transpose weight at __init__ to [KH, KW, IC, OC] (or flattened) so each (kh,kw) iteration loads a contiguous [IC, OC] slab; cache it in shared memory across the spatial loop using num_stages pipelining.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 21,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.5153493426108915
+    ]
+}

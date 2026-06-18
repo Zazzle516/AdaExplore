@@ -1,0 +1,29 @@
+{
+    "node_id": 31,
+    "parent_node_id": 9,
+    "context_node_ids": [
+        9
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.49671046435257515,
+    "max_reward": 0.49671046435257515,
+    "avg_reward": 0.49671046435257515,
+    "score": [
+        1,
+        1,
+        0.8978613309087448
+    ],
+    "small_guidance": "- The conv kernel uses one program per (N, OC) and a serial loop over S=14*30*30=12600 spatial elements; this leaves the grid at only 128*16=2048 programs and each program does ~12600*3*27 work serially. Tile the spatial dim into the grid: launch (N, OC, ceil(S/BLOCK_S)) for the conv pass, then do a separate small reduction kernel over the spatial tiles to produce mean/invstd per (N,OC). This dramatically increases parallelism.\n- Add larger BLOCK_S configs (2048) and try num_warps=16; also try BLOCK_S=128 with num_warps=4 since each program currently processes a single contiguous chunk. Sweep num_stages=4 for the inner-loop pipelining of the IC*KD*KH*KW=81 loads.\n- In `fused_norm_clamp_max_kernel`, the channel loop is static over C=16; try BLOCK_S=2048/4096 to reduce launch grid (S=12600 \u2192 only ~3-7 blocks per N), and prefetch all 16 (mean,invstd,m) values into registers once before the spatial loop instead of inside `tl.static_range` (which Triton may already do, but verify).",
+    "large_guidance": "- Restructure as three kernels: (1) conv3d producing (N,OC,S) tiled over spatial \u2014 one program per (N, OC, S-tile) doing an im2col-style direct conv with BLOCK_S\u2248256 spatial outputs; write conv*multiplier into the buffer AND atomically/partial-accumulate per-tile sum and sumsq into a (N,OC,num_tiles) scratch. (2) tiny reduction kernel over num_tiles \u2192 mean/invstd. (3) the existing fused norm+clamp+mul+max-over-C kernel. This exposes ~16x more parallelism than the current (N,OC)=2048-program conv kernel, which is the main bottleneck.\n- Alternative: implement conv as im2col-GEMM. Unfold input to (N, IC*KD*KH*KW=81, S=12600) implicitly inside a GEMM kernel with BLOCK_M=OC tile (16), BLOCK_N=spatial tile (64-128), BLOCK_K=81; one program per (N, N-tile). Fuse the *multiplier into the GEMM epilogue and emit partial sums for stats. This matches the \"Conv3d \u2192 tiled GEMM\" skill directly.\n- Consider fusing the entire pipeline into a two-pass persistent kernel per N: pass 1 computes conv+mult and accumulates per-channel sum/sumsq in shared memory across all S; pass 2 re-reads conv buffer, normalizes, clamps, multiplies, and reduces over C to produce the final (N,S) max. This eliminates one full conv_out write/read round-trip if the conv buffer can stay in L2.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 32,
+    "global_best_node_id": 28,
+    "global_best_score": [
+        1,
+        1,
+        1.6580138687333263
+    ]
+}

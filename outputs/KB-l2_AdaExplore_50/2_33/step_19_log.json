@@ -1,0 +1,27 @@
+{
+    "node_id": 19,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure is likely from the running stats update path: during training you're applying BN with the *batch* mean/var but also using `var` (biased) in the apply path \u2014 that's correct, but ensure the `bn.running_mean`/`running_var` buffers are on CUDA and that `M` is treated as float in `unbiased = var * (M / max(M-1,1))`. Also verify `bn_stats_kernel` uses fp32 accumulation across all rows \u2014 with M=1024 and BLOCK_M=1024 it should be one pass, fine.\n- Add more autotune configs around `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64` with `num_stages=4, num_warps=8` for the 1024x8192x8192 GEMM, and add a `GROUP_M=8` block-swizzle to improve L2 reuse.\n- Consider fusing the BN apply directly into the GEMM epilogue when `self.training=False` (eval mode): precompute `scale_eff = scale * gamma / sqrt(var+eps)` and `shift_eff = beta - mean*gamma/sqrt(var+eps)` once per forward, then GEMM epilogue does `acc*scale_eff + shift_eff` \u2014 one kernel total.",
+    "large_guidance": "- Restructure as a two-stage pipeline: (1) a tiled GEMM kernel with `GROUP_M` swizzle that writes the post-scale activations and simultaneously accumulates per-column partial sums of `x` and `x*x` into a workspace using `tl.atomic_add` (one row of partials per program, indexed by `pid_n`); (2) a small finalize kernel reduces partials to mean/var and updates running stats; (3) a fused BN-apply kernel reads activations and writes output. This avoids the separate full-tensor stats pass over the 1024x8192 intermediate.\n- Alternatively, since M=1024 fits comfortably, use a persistent GEMM where each program covers a full column tile (all M rows for BLOCK_N columns), computes the GEMM output into registers/shared memory, then performs the BN reduction in-kernel and writes normalized output \u2014 single kernel, no intermediate materialization of pre-BN activations.\n- Add a `GROUP_M` swizzle (group_size_m=8) to the GEMM and bump `BLOCK_K` to 64 with `num_stages=4` to better overlap K-loop loads on Ada (4090).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 20,
+    "global_best_node_id": 12,
+    "global_best_score": [
+        1,
+        1,
+        0.5658960882834168
+    ]
+}

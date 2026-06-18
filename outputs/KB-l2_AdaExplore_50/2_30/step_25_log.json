@@ -1,0 +1,29 @@
+{
+    "node_id": 25,
+    "parent_node_id": 24,
+    "context_node_ids": [
+        24
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure is small (max diff ~0.0027, avg ~0.00038) which suggests the GroupNorm uses a single-pass per-group reduction over CPG=512 channels with BLOCK=512 \u2014 this is fine, but the issue is likely that `tl.where(mask, x - mean, 0.0)` with `mask` being trivially true (CPG==BLOCK) is fine; check that `gamma`/`beta` loads use proper masks. More importantly, set `allow_tf32=False` in `tl.dot` (use fp32) \u2014 the ~5e-4 avg error is consistent with TF32 GEMM rounding on K=8192, and the reference `nn.Linear` runs in fp32. That alone should fix correctness.\n- After fixing TF32, expand the GEMM autotune list with `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4` and `BLOCK_M=256, BLOCK_N=128, BLOCK_K=64` configs \u2014 M=N=K=8192 favors large tiles with deeper pipelining.\n- The GroupNorm BLOCK=512 fits in one warp-group; bump `num_warps=8` for CPG=512 to widen the reduction, and consider `num_stages=2` explicit; also load gamma/beta once outside any loop (already done).",
+    "large_guidance": "- Fuse the GroupNorm's first reduction pass with the GEMM epilogue: have each `(BLOCK_M, BLOCK_N)` GEMM tile, where BLOCK_N is sized to a multiple of CPG (=512), write partial sum and sum-of-squares per group into a small `(M, G)` workspace via `tl.atomic_add`, then a second tiny kernel computes mean/rstd and a third applies normalize+hardtanh. This avoids the full re-read of the 1024\u00d78192 activation matrix.\n- Alternatively, since CPG=512 and BLOCK_N can naturally be 512, make the GEMM emit one full group per program in N (pid_n indexes group directly). Then in the epilogue, do the group reduction across the BLOCK_N=512 lane within the same program, compute mean/rstd, apply gamma/beta + hardtanh, and store \u2014 fully fusing GEMM+GN+HardTanh into one kernel and eliminating the second pass entirely. This requires BLOCK_M to span the whole row (or accumulating M-tiles separately with no cross-row dependency, which is fine because GN normalizes per (sample, group)).\n- Use TF32 only if you also add a correction pass, otherwise force fp32 `tl.dot` to satisfy the 5e-2 atol comfortably and avoid the current correctness regression.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 26,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

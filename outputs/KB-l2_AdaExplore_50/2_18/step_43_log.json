@@ -1,0 +1,29 @@
+{
+    "node_id": 43,
+    "parent_node_id": 5,
+    "context_node_ids": [
+        23
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.46080849301320814,
+    "max_reward": 0.46080849301320814,
+    "avg_reward": 0.46080849301320814,
+    "score": [
+        1,
+        1,
+        0.6016700673589671
+    ],
+    "small_guidance": "- The current kernel uses `tl.atomic_add` across N tiles into a single row scalar, serializing writes. Increase `BLOCK_N` to span the full N=8192 (or use a single program per row of M) so the row-sum is a pure in-register reduction with no atomics. Try `BLOCK_M=32/64, BLOCK_N=128, BLOCK_K=64` with `num_warps=8, num_stages=4` and `allow_tf32=True` (the downstream is trivial, accuracy budget is large at 5e-2).\n- Add `triton.autotune` over configs `{BLOCK_M\u2208[32,64,128], BLOCK_N\u2208[64,128,256], BLOCK_K\u2208[32,64], num_warps\u2208[4,8], num_stages\u2208[2,3,4]}` keyed on `(M,N,K)`.\n- Drop the `tl.where(n_mask...)` masking on `acc` (N=8192 is divisible by BLOCK_N=128, so the mask is dead weight) and fuse the final `log(mean(max(sum)))` epilogue into the same kernel to avoid the trailing `view`.",
+    "large_guidance": "- Redesign as a \"split-K row-sum GEMV\": since the only thing consumed downstream is `sum_n (x @ W^T + b)[m]`, the work per row is `sum_k x[m,k] * (sum_n W[n,k]) + sum_n b[n]`. **However, per the safety contract this is exactly the forbidden algebraic shortcut** \u2014 do NOT precompute `w_col = W.sum(0)` at init. Instead, perform the full `tl.dot(x, W^T)` tiled GEMM and reduce N inside the kernel: one program per M-tile that loops over all N tiles in registers (persistent over N), eliminating cross-tile atomics entirely.\n- Use enable_tf32 in `tl.dot` (the 5e-2 tolerance permits it) and pick `BLOCK_M=128, BLOCK_K=64`, looping N internally in `BLOCK_N=128` chunks while accumulating a `[BLOCK_M]` row-sum vector. This turns the kernel into a streaming GEMM with a fused reduction, removing the atomic bottleneck.\n- Fuse bias-add and the entire degenerate tail (max/mean/logsumexp/logsumexp on size-1 dims are identities on the scalar) into the epilogue so the kernel directly writes the `(M,1)` final tensor.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 44,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        0.8826896197781255
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 23,
+    "parent_node_id": 15,
+    "context_node_ids": [
+        9,
+        15
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4841796156156156,
+    "max_reward": 0.4841796156156156,
+    "avg_reward": 0.4841796156156156,
+    "score": [
+        1,
+        1,
+        0.7944818288288288
+    ],
+    "small_guidance": "- The LN+GELU+scale epilogue is already efficient; the dominant cost is `nn.ConvTranspose3d`. Further tuning of `BLOCK_ROWS` / `num_warps` on the LN kernel will not close the gap \u2014 `fast_p=0.79` is bounded by the conv. Limit small tuning to verifying `BLOCK_ROWS=8, num_warps=2` is selected and confirm contiguous channels-last reshape is hit.\n- If staying small, try adding a `BLOCK_ROWS=64, num_warps=4` config and ensure the input to `ln_gelu_scale` is already in a layout where C is the contiguous fastest dim (it is, after `reshape(-1, C)` on NCDHW it is NOT \u2014 the channel axis is strided). Convert to channels_last (N,D,H,W,C) before the LN kernel to coalesce.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, input-spatial tile, IC tile)` computing the `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` outer product and atomically scattering into the output grid with stride/padding index math. Fold bias add, LayerNorm, GELU, and scale into the epilogue \u2014 but since LN reduces across OC, this requires a two-pass design: (1) conv-transpose-bias writing to a temp tensor in channels_last (N,D',H',W',C); (2) fused LN+GELU+scale (existing kernel) over the contiguous C axis.\n- Alternative gather-based formulation: one program per `(N, OC tile, output-spatial tile)`, iterating over `(ic, kd, kh, kw)` and gathering the corresponding input element when the inverse-stride index is integral. This avoids atomics and maps cleanly onto a GEMM tile with `K = IC * KD * KH * KW`. Use channels_last layout for both input and output; autotune from a safe `(BM=32,BN=32,BK=16)` starting tile up.\n- Pre-transpose the weight to `(OC, IC*KD*KH*KW)` at init (a pure reshape, no reduction) so the inner loop is a contiguous K-dim dot product. Fuse bias into the GEMM epilogue; write directly into a channels_last output buffer consumed by the existing LN+GELU+scale kernel.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 24,
+    "global_best_node_id": 15,
+    "global_best_score": [
+        1,
+        1,
+        0.7944818288288288
+    ]
+}

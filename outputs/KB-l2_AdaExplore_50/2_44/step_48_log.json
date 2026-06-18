@@ -1,0 +1,29 @@
+{
+    "node_id": 48,
+    "parent_node_id": 41,
+    "context_node_ids": [
+        41
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.45896145582511777,
+    "max_reward": 0.45896145582511777,
+    "avg_reward": 0.45896145582511777,
+    "score": [
+        1,
+        1,
+        0.5864320105572215
+    ],
+    "small_guidance": "- The current kernel scatters from input pixels (gather-by-input) which causes many redundant boundary checks; switch the inner loop to iterate over `IC` only and let each `(kh,kw)` be `tl.static_range`, but precompute `oh_valid`/`ow_valid` per-row once (move out of the `ic` loop) \u2014 currently they're recomputed every `ic` iteration.\n- Add larger autotune tiles and fewer warps for the small-HW case: e.g. `BLOCK_HW=4096`/`8192` with `num_warps=8/16`, since `IH*IW=128*128=16384` and the outer HW chunking loop currently dominates; also try `num_stages=4`.\n- Hoist the `w_val` load out of the spatial loop: load the full `(KH*KW)` weight tile per `(ic, oc)` once into registers (only 9 floats) instead of issuing 9 scalar `tl.load`s per HW block iteration.",
+    "large_guidance": "- Redesign as a one-pass reduction without materializing the conv-transpose output: for each `(n, oc)`, sum over `(ic, ih, iw, kh, kw)` of `x[n,ic,ih,iw] * w[ic,oc,kh,kw] * valid(ih,iw,kh,kw)` then divide by `OH*OW`. The validity mask depends only on `(ih, kh)` and `(iw, kw)` independently, so the sum factors per kernel position into `\u03a3_ih cnt_h(ih,kh) * (\u03a3_iw cnt_w...)` \u2014 but that is exactly the kind of axis-collapse the contract forbids. Instead, keep the full `(N, OC, ih, iw)` accumulation but parallelize across `(N, OC, HW-tile)` with a final atomic_add or two-stage reduce, so we get more SMs busy (currently grid=`16*128=2048` programs each doing 64*16384 scalar work \u2014 fine, but each program is serialized over IC).\n- Switch to a GEMM-style formulation: reshape the problem as `Y[n, oc, oh, ow] = \u03a3_{ic,kh,kw} W[ic,oc,kh,kw] * X_scatter[n,ic,oh,ow,kh,kw]` and fuse the mean inside the K-reduction, using `tl.dot` on `(BLOCK_OC, BLOCK_K)` tiles where K = IC. This lets us use tensor cores instead of the current scalar FMA loop, which is the main reason fast_p is stuck at 0.58.\n- Alternative: split-K across IC with `tl.atomic_add` into the `(N, OC)` output and use grid `(N, OC, IC_tiles)`, giving more parallelism (currently only 2048-way) so the 4090's 128 SMs are better fed.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 49,
+    "global_best_node_id": 43,
+    "global_best_score": [
+        1,
+        1,
+        2.1258160382699276
+    ]
+}

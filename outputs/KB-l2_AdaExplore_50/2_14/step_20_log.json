@@ -1,0 +1,30 @@
+{
+    "node_id": 20,
+    "parent_node_id": 18,
+    "context_node_ids": [
+        13,
+        18
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Remove the largest configs (BLOCK_M=128/BLOCK_N=128/BLOCK_K=64 num_stages=3, BLOCK_M=64/BLOCK_N=256/BLOCK_K=64 num_stages=3, BLOCK_M=64/BLOCK_N=128/BLOCK_K=128 num_stages=3) \u2014 at fp32 these exceed the 4090's 101 KB shared-memory budget. Keep tiles like 64\u00d7128\u00d732, 32\u00d7128\u00d764, 64\u00d764\u00d764 with num_stages=2-3.\n- Drop num_stages to 2 for any BLOCK_K\u2265128 tile, and cap BLOCK_M*BLOCK_K + BLOCK_K*BLOCK_N (\u00d74 bytes \u00d7 stages) under ~96 KB.\n- Since the output is just a per-row scalar, you can skip `tl.where(n_mask,...)` by masking inside the dot via zero-padded loads (already done) and use a simpler in-tile reduction.",
+    "large_guidance": "- The output is a single scalar per row (M=1024). A full GEMM materialized in registers/SMEM is wasteful \u2014 restructure as a row-reduction kernel: one program per row tile (BLOCK_M rows), iterating over K, where the work is `sum_n( (x @ W.T) ) = x @ (W.T @ 1) = x @ w_colsum`. BUT: per safety contract, do NOT precompute `w_colsum` at init. Instead, compute `w_row_partial = sum over n of W[n, k]` inside the kernel at runtime each forward (a streaming reduction over the weight), then do a single dot of x against that K-vector \u2014 keeping all operators executing per forward.\n- Alternative legal redesign: split-K GEMM with the row-sum fused into the epilogue. One program per (row-tile, K-tile) computes a partial `x_tile @ W_tile.T` (BLOCK_M \u00d7 BLOCK_N), immediately reduces across N inside the program, and atomic-adds a (BLOCK_M,) partial into the output. This avoids holding a large accumulator and keeps shared memory small (tiles 64\u00d764\u00d732 or 32\u00d7128\u00d732).\n- Persist x in shared memory once per row tile (M=1024 small) and stream W from HBM; with BLOCK_M=128 only 8 row-tile programs are needed, leaving plenty of N/K parallelism via the second grid dim and atomic-add reduction.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 21,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        0.10046266372480192
+    ]
+}

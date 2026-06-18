@@ -1,0 +1,30 @@
+{
+    "node_id": 21,
+    "parent_node_id": 17,
+    "context_node_ids": [
+        9,
+        17
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5295331643996934,
+    "max_reward": 0.5295331643996934,
+    "avg_reward": 0.5295331643996934,
+    "score": [
+        1,
+        1,
+        1.1686486062974706
+    ],
+    "small_guidance": "- The fused pool+LSE+ReLU kernel is already tiny relative to Conv3d; sweep `BLOCK_W \u2208 {32,64,128,256}` with `num_warps \u2208 {2,4,8}` via `triton.autotune` to squeeze the tail, but don't expect big gains there.\n- Conv3d dominates the 5.73 ms runtime. Try enabling `torch.backends.cudnn.benchmark = True` plus a warmup call inside `__init__` (run conv on a dummy input matching the runtime shape) so cuDNN's heuristic picks the best channels_last_3d algorithm before timing begins.\n- Consider folding the conv bias add into a custom Triton conv epilogue later, but first verify cuDNN's chosen algo for (4,32,32,128,128)\u2192(4,64,...) channels_last_3d is the implicit-precomp-gemm path.",
+    "large_guidance": "- Replace `nn.Conv3d` with a custom Triton implicit-GEMM kernel: one program per (N, OC_tile, output-spatial tile), gather im2col implicitly over (IC*kd*kh*kw), accumulate in fp32, and fuse the 2\u00d72\u00d72 maxpool + LSE-over-channels + ReLU directly in the epilogue. This collapses 3 kernel launches (conv, pool, lse+relu) and avoids materializing the (4,64,32,128,128) conv output (\u2248134M elements, ~512MB).\n- Tile so each program produces a 2\u00d72\u00d72 pooled output cell for a tile of OC channels: compute 8 conv outputs per (oc, n, pooled-pos), reduce them with max in registers, then do the LSE reduction across OC by writing partial (max, sumexp) state to a small workspace (or use a two-stage launch: stage1 writes pooled per-channel result tiles, stage2 does LSE+ReLU). With OC=64 fully in registers per program, a single-stage fused kernel is feasible.\n- Use channels_last_3d layout so the IC dimension is contiguous for the GEMM-K loads; pad IC*kd*kh*kw=864 to a multiple of BLOCK_K=32, start with BLOCK_M(OC)=64, BLOCK_N(spatial)=32, num_warps=4, num_stages=2, then autotune.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 22,
+    "global_best_node_id": 21,
+    "global_best_score": [
+        1,
+        1,
+        1.1686486062974706
+    ]
+}

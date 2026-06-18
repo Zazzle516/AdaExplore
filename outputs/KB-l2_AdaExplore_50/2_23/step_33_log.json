@@ -1,0 +1,29 @@
+{
+    "node_id": 33,
+    "parent_node_id": 30,
+    "context_node_ids": [
+        30
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.44865136021797186,
+    "max_reward": 0.44865136021797186,
+    "avg_reward": 0.44865136021797186,
+    "score": [
+        1,
+        1,
+        0.5013737217982674
+    ],
+    "small_guidance": "- The conv kernel has a serial `for ic in range(0, IC)` inside `static_range(KD*KH*KW)`, with `BLOCK_OC=32, BLOCK_S=128` doing rank-1 outer products. Try larger `BLOCK_S` (256) and increase `num_warps=8`, `num_stages=3`; also restructure so the K loop is a single flat loop over `IC*KD*KH*KW` to let the compiler pipeline loads better.\n- Add a `triton.autotune` over `(BLOCK_OC \u2208 {16,32,64}, BLOCK_S \u2208 {64,128,256}, num_warps \u2208 {4,8}, num_stages \u2208 {2,3,4})` keyed on `(OC, OD*OH*OW)`.\n- In the group_norm_mean kernel, replace `atomic_add` per group with a per-(n,g) partial then a small reduction kernel, or accumulate all G groups in one program per n to avoid atomic contention; also drop the second pass by caching loaded values in registers when `group_size <= BLOCK`.",
+    "large_guidance": "- Rewrite conv3d as an im2col-style GEMM: one program per `(N, OC tile, output-spatial tile)`, K = `IC*KD*KH*KW` blocked with `BLOCK_K=32/64`, using `tl.dot` for an `[BLOCK_OC, BLOCK_K] x [BLOCK_K, BLOCK_S]` matmul. The current rank-1 outer-product accumulation forfeits tensor-core throughput, which is the main reason for 2.85ms vs 1.43ms baseline.\n- Fuse the conv epilogue with the GroupNorm statistics: have the conv kernel write its tile and also atomically accumulate per-(n, group) sum and sum-of-squares so a single follow-up kernel computes mean/rstd and the final scalar mean \u2014 eliminating the two-pass GN read.\n- Final reduction: one program per `n` that loads the conv output for that batch row, applies the precomputed (mean, rstd, gamma, beta) per channel, and reduces to a scalar \u2014 no atomics on the output. Lay out conv output as channels_last (N, OD, OH, OW, OC) so GN's per-channel affine and the spatial reduction both coalesce.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 34,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        1.1431320857000498
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 34,
+    "parent_node_id": 33,
+    "context_node_ids": [
+        30,
+        33
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5950871611299061,
+    "max_reward": 0.5950871611299061,
+    "avg_reward": 0.5950871611299061,
+    "score": [
+        1,
+        1,
+        1.7094690793217253
+    ],
+    "small_guidance": "- Bias the autotuner toward larger N tiles for this shape (M=1024, K=N=8192). Add configs like `BLOCK_M=128, BLOCK_N=256, BLOCK_K=32, num_warps=8, num_stages=3` and `BLOCK_M=64, BLOCK_N=256, BLOCK_K=32, num_warps=4, num_stages=4`; the K-loop is the bottleneck so wider N tiles amortize K-loads.\n- Reduce `NUM_SPLITS` to 4 (N_SPLIT=2048). Current 8 splits force 8\u00d7 redundant streaming of `x` (the 1024\u00d78192 activations) across programs; with M=1024 and BLOCK_M=128 you already get 8 row-tiles, so 4 splits \u00d7 8 rows = 32 programs which still saturates the 4090's 128 SMs reasonably while halving x-traffic.\n- Pre-transpose the weight once in `__init__` (store `Wt` as a buffer) instead of re-checking `_version` each forward; also cache the bias on CUDA to remove per-call `.detach().contiguous().cuda()` overhead.",
+    "large_guidance": "- Use a split-K (not split-N) strategy: one program per `(M-tile, K-split)` computing a partial GEMM, then a second kernel that finishes the row-wise LSE over the full N dimension. Since LSE reduces along N, keeping all N in a single program per row tile lets you do the streaming online-softmax directly on the accumulator without a partial-max/partial-sum materialization round-trip. Alternatively, make each program own a full row-tile across all N (loop over N inside the kernel) so the reduction is in-register.\n- Persistent kernel: launch exactly `num_SMs` programs, each iterating over a queue of (m_tile) work items, doing the full N-sweep with online softmax in registers and writing one scalar per row. This removes the partial buffers and the second kernel entirely; the 4090 has plenty of regs for BLOCK_M=64 \u00d7 accumulator-row-state.\n- Consider loading `x` once into shared memory per M-tile and streaming W tiles through; with K=8192 the x-tile (128\u00d78192\u00d74B = 4MB) won't fit, but a double-buffered K-chunk reuse pattern with `tl.dot` on `BLOCK_K=64` and pre-transposed W should hit >80% of cuBLAS. The current kernel re-reads x for every n-tile, which is the dominant inefficiency.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 35,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        1.9190169019482592
+    ]
+}

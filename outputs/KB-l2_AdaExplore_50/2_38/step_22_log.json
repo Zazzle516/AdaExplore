@@ -1,0 +1,29 @@
+{
+    "node_id": 22,
+    "parent_node_id": 2,
+    "context_node_ids": [
+        2
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.43983604435261714,
+    "max_reward": 0.43983604435261714,
+    "avg_reward": 0.43983604435261714,
+    "score": [
+        1,
+        1,
+        0.4286473659090909
+    ],
+    "small_guidance": "- The softmax+scale kernel is already light; the dominant cost is `ConvTranspose3d`. Small tuning of the softmax kernel (BLOCK/num_warps sweep, fusing clamp into a single pass) will only shave a tiny fraction. If staying small, autotune `BLOCK \u2208 {2048,4096,8192}` \u00d7 `num_warps \u2208 {8,16,32}` for the S=32*64*64=131072-after-conv case and drop the second-pass reload by storing intermediate `exp(v-m)` to global once.\n- Fold the avg_pool (pool_kernel=2, simple 8-tap mean) into a tiny pre-kernel or directly into the conv-transpose input gather to save one launch and one full read/write of the pooled tensor.\n- Ensure scale broadcast and clamp are fused into the conv-transpose epilogue once that kernel exists, so the softmax kernel only needs to read the conv output once.",
+    "large_guidance": "- The runtime is dominated by `nn.ConvTranspose3d` (in_channels=32, out_channels=64, kernel=3, stride=2, output spatial = 32\u00d764\u00d764 after pool\u2192conv_transpose). Replace it with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)` computes `input \u00d7 weight` outer product and atomically scatters into the output grid honoring stride/padding/output_padding. Fuse bias-add and clamp into the same store epilogue. This is the high-headroom move; tail tuning of softmax cannot close the 2.3\u00d7 gap.\n- Alternatively, implement conv-transpose as a gather-style direct kernel: one program per `(N, OC tile, output-spatial tile)`, where each output voxel iterates over the (kd,kh,kw) taps that map to a valid input voxel given stride/padding (the \"input index = (out + pad - k) / stride with divisibility check\" formulation). This avoids atomics and is usually faster on Ada when OC is the contiguous tile axis; use channels_last_3d layout for coalesced loads of weight and input.\n- Fuse the entire pipeline: `avg_pool3d \u2192 conv_transpose3d (+clamp) \u2192 softmax \u2192 *scale` into at most two kernels \u2014 (1) a fused pool+convT+clamp kernel writing the (B,C,D,H,W) tensor, (2) the existing per-row softmax+scale. Pool+convT fusion is natural since avg_pool's 2\u00d7 downsample just rescales the input gather strides by 2 in the convT index math.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 23,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.43060465981735163
+    ]
+}

@@ -1,0 +1,31 @@
+{
+    "node_id": 29,
+    "parent_node_id": 12,
+    "context_node_ids": [
+        2,
+        5,
+        12
+    ],
+    "depth": 5,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5029678464899782,
+    "max_reward": 0.5029678464899782,
+    "avg_reward": 0.5029678464899782,
+    "score": [
+        1,
+        1,
+        0.9494847335423198
+    ],
+    "small_guidance": "- The fused pool+sum kernel is already tiny (~1% of runtime); the ConvTranspose3d dominates. Tuning BLOCK_C/num_warps further won't move fast_p meaningfully. If staying small, try `num_warps=1` and prefetch via `tl.multiple_of`/`tl.max_contiguous` hints on the channel pointer to squeeze a few %.\n- Avoid the extra `x.contiguous()` after the conv (channels_last_3d \u2192 contiguous copy is wasted bandwidth); have the fused kernel consume channels_last_3d directly by passing the real strides.\n- Fold the conv bias add into the conv itself (already done by cuDNN) but ensure weight is in channels_last_3d at init only once \u2014 current code does that, good.",
+    "large_guidance": "- The ConvTranspose3d is the bottleneck (output is 16\u00d764\u00d763\u00d763\u00d763 \u2248 256M elements). Replace it with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile), compute the input\u00d7weight outer product and scatter-add into the output grid with stride=2, padding=2, kernel=5. Fuse bias add into the epilogue.\n- Better: fuse the entire pipeline. Observe that maxpool1(k=2) \u2218 maxpool2(k=3) = maxpool(k=6, stride=6) over the conv-transpose output. Since we then sum over channels, write a single kernel: one program per (N, od, oh, ow) output cell that, for each of the 64 output channels, computes the 6\u00d76\u00d76=216 conv-transpose output values it needs (each is a sum over a small set of input contributions given stride=2), takes the max, then sums across channels. This avoids ever materializing the 256M-element conv-transpose output.\n- For the fused variant, precompute at init the (input_index, weight_index) contribution list per conv-transpose output position \u2014 with stride=2, kernel=5, padding=2 each output position has at most \u23085/2\u2309\u00b3=27 contributing (ic, kd, kh, kw) terms. Store as a small constant table and use `tl.static_range` inside the kernel.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 30,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.9494847335423198
+    ]
+}

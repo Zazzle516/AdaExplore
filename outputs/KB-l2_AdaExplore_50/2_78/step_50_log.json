@@ -1,0 +1,30 @@
+{
+    "node_id": 50,
+    "parent_node_id": 5,
+    "context_node_ids": [
+        2,
+        5
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5029678464899782,
+    "max_reward": 0.5029678464899782,
+    "avg_reward": 0.5029678464899782,
+    "score": [
+        1,
+        1,
+        0.9494847335423198
+    ],
+    "small_guidance": "- Wrap `fused_pool_sum_kernel` in `triton.autotune` over `TILE_W \u2208 {2,4,8}`, `BLOCK_C \u2208 {64}` (C=64 exactly), `num_warps \u2208 {2,4,8}`, `num_stages \u2208 {2,3}` keyed on `(OD,OH,OW,C)`; current fixed `TILE_W=4, num_warps=4` is likely suboptimal for the tiny `OW=2` post-pool grid.\n- Note `OW=OH=OD=2` after the two pools (input 32\u2192ConvT 63\u2192pool1 31\u2192 would be 10 for pool2... verify), so the grid is tiny (`N*OD*OH*nW_tiles` \u2248 16*2*2*1=64 programs). The kernel is grid-starved \u2014 increase work per program by collapsing the channel reduction into a single `tl.sum` with `BLOCK_C=64` (no mask needed since C=64 is pow2) and drop the `c_mask` `tl.where`.\n- The conv_transpose almost certainly dominates the 11ms runtime; the pool+sum kernel is a tiny fraction. Tuning it further will not move `fast_p`.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)` computing the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and scattering into the output grid at `(d*stride+kd-pad, ...)`. With `stride=2, kernel=5, pad=2`, output is 63\u00b3 \u2014 heavy and the true bottleneck.\n- Better: fuse the entire pipeline by recognizing that combined pool stride is 6 and output spatial is tiny (likely 10\u00b3 or smaller). Implement a single kernel that, per output element `(n, od, oh, ow)`, iterates the 6\u00d76\u00d76 ConvT output window, computes each ConvT value on the fly via gather over input/weight (sum over IC and valid kernel taps), takes max-of-max, then sums over OC. This avoids materializing the 16\u00d764\u00d763\u00b3 ConvT output entirely.\n- If full fusion is too complex, at minimum fuse `conv_transpose + bias + maxpool1` into one kernel (im2col-style GEMM with pooling epilogue), since the ConvT output is written once and immediately reduced 8\u00d7 by pool1.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 51,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.9494847335423198
+    ]
+}

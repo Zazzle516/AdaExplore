@@ -1,0 +1,29 @@
+{
+    "node_id": 17,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing (max_diff ~0.0024, avg ~0.00035) \u2014 likely due to BN running stats path. Default eval test path uses `bn.running_mean/var`, but BN expects running_var updated from biased var with `(M/(M-1))` correction; ensure correct fp32 dtype and that `model.eval()` path uses stored running stats matching reference. Verify the reference Model is in same mode (train vs eval) \u2014 if eval, just use running stats and skip stats kernel.\n- In `bn_stats_kernel`, the load `x_ptr + idx * N + pid` assumes row-major contiguous with stride N \u2014 confirm `y` is contiguous (it is from `torch.empty`), but the BLOCK_M=1024 with M=1024 means single iteration; ensure mask handling is correct and dividing by M (not number of valid elements) is right.\n- Add autotune to `bn_apply_kernel` and increase BLOCK_N to 256 with num_warps=8 for better throughput on the 1024x8192 elementwise pass.",
+    "large_guidance": "- Fuse BN stats reduction directly with the GEMM epilogue is hard since stats need full M-column. Instead, restructure as: (1) tiled GEMM writing y = (xW^T+b)*scale, (2) one column-reduction kernel per channel computing mean & var using a 2D grid (program per channel, block over M with cross-block reduction via atomics or single-program-per-channel with persistent loop), (3) fused apply kernel that computes `scale_c = gamma/sqrt(var+eps)`, `shift_c = beta - mean*scale_c` and applies elementwise. Precompute scale/shift in a tiny kernel of size N to avoid recomputing per tile.\n- For eval mode (likely the benchmark mode), fold scale * gamma/sqrt(running_var+eps) into a single per-channel multiplier and bake the bias-shift in the GEMM epilogue \u2014 single kernel for entire forward. This is contract-safe because every op still runs (running stats are constants at eval, exactly as in reference).\n- Consider splitK or tensor-core friendly GEMM with BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, num_stages=4, num_warps=8 for the 1024x8192x8192 shape; M=1024 is small so prioritize larger BLOCK_M tiles (128) and many N tiles.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 18,
+    "global_best_node_id": 12,
+    "global_best_score": [
+        1,
+        1,
+        0.5658960882834168
+    ]
+}

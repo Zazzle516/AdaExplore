@@ -1,0 +1,29 @@
+{
+    "node_id": 6,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        4
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.40230923682476943,
+    "max_reward": 0.40230923682476943,
+    "avg_reward": 0.40230923682476943,
+    "score": [
+        1,
+        1,
+        0.11905120380434783
+    ],
+    "small_guidance": "- The current kernel forces `BLOCK_M = next_pow2(OC) = 64` and loops the K dimension with `tl.static_range`, but tiles the spatial dim only. With OH*OW = 126*126 = 15876 per (N), and N=128, you have ~128 programs \u00d7 ~62 spatial tiles at BLOCK_N=256. Try adding configs with `BLOCK_M=32` and tile OC as well (split program over OC tiles) \u2014 currently every program redoes all 64 OC rows even when register pressure could be relieved by halving M and doubling spatial throughput.\n- Add larger `BLOCK_K` configs (32, 48) to the autotune. With K_FLAT = 8\u00b73\u00b73 = 72, BLOCK_K=16 means ~5 static iterations with masked tail; BLOCK_K=72 (or 96 padded) processes the entire reduction in one `tl.dot`, eliminating the loop and the per-iter mask compute.\n- Switch x to `channels_last` (NHWC) layout before the kernel so the IC axis (the GEMM-K) is contiguous in memory; the current NCHW gather along `ic_k * IH*IW` strides badly across the K loop. Pair with autotune configs at `num_warps=8, num_stages=3`.",
+    "large_guidance": "- Redesign as an implicit-GEMM conv in NHWC: pack input as (N, IH, IW, IC) and weight as (OC, KH, KW, IC) (or (KH\u00b7KW\u00b7IC, OC)), then tile over (N\u00b7OH\u00b7OW) as the M dimension and OC as the N dimension. K = KH\u00b7KW\u00b7IC = 72 fits in a single tile, so the kernel becomes one `tl.dot` per program with no K loop \u2014 drastically reducing index math overhead. This is the standard high-performance conv shape for small kernels.\n- One program per `(M_tile of N\u00b7OH\u00b7OW, OC_tile)` with `BLOCK_M=128, BLOCK_N=64, BLOCK_K=72` (padded to 128). Total programs \u2248 (128\u00b7126\u00b7126/128) \u00d7 (64/64) \u2248 15876 \u2014 far more parallelism than the current (128, ~62) = 7936 grid. Fuse the BN+scale epilogue (already folded into per-OC scale/bias) directly before the store.\n- Avoid the OC zero-padding hack (OC=64 is already pow2 here, but in general): make BLOCK_N a tunable that masks the OC tail rather than allocating padded weight tensors at every forward call \u2014 that allocation alone is measurable overhead at this kernel's runtime scale.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 7,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.11905120380434783
+    ]
+}

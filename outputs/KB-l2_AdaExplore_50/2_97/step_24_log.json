@@ -1,0 +1,29 @@
+{
+    "node_id": 24,
+    "parent_node_id": 13,
+    "context_node_ids": [
+        10
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure shows `avg_difference: nan` on output[0] \u2014 likely the eval-mode path's `bias_extra` uses `.item()` which is fine, but check that `shift` includes `b_lin * scale + shift_base + bias_extra` correctly; verify NaN isn't from `rsqrt(running_var + eps)` when running_var is fresh (zero). In eval, `bn.running_var` initializes to 1, so OK \u2014 the NaN is more likely from training-path stats: `col_sum`/`col_sumsq` accumulated via `atomic_add` may double-count if grid tiles overlap, but they shouldn't. More plausibly, the BN epilogue reads sum/sumsq before stage 1 fully completes if launched on different streams \u2014 they share default stream so fine. The real bug: `tl.load(bias_extra_ptr)` loads a single fp32 but `bias_extra` is shape (1,); ensure scalar broadcast works. Add explicit `tl.load(bias_extra_ptr + 0)`.\n- The `nan` in avg_difference for trial 0 suggests first call hits an uninitialized path. Replace the `_get_Wt` cache logic (which has a buggy `data_ptr() == 0` check on a None tensor) with always recomputing `W.t().contiguous()` in eval too, or cache it properly via `__init__`-time hook.\n- Tighten autotune key to just `['M','N','K']` already done; consider adding configs with `BLOCK_K=64, num_stages=4` for the K=8192 case which should overlap loads better.",
+    "large_guidance": "- Skip the two-stage training path entirely: for M=1024, N=8192, K=8192, the GEMM dominates (~137 GFLOP) and BN stats are cheap. Use a single-stage GEMM that writes Y, then a separate small reduction kernel for column sum/sumsq (no atomics \u2014 use 2D grid with reduction over M tiles, then a finalize pass). Atomics on 8192 columns from many tiles serialize badly.\n- For eval mode, the fused linear+scale+shift+swish kernel is the right structure. Focus the rewrite on making B (W.t()) a persistent buffer updated only when weights change (use a version counter, not tensor equality), and ensure `out` is allocated with `torch.empty` aligned to 128B.\n- Consider a split-K GEMM for K=8192: with M=1024 the M-dimension is small relative to N=8192, so 8 row-groups \u00d7 64 col-tiles only gives ~512 programs; a split-K of 2-4 with atomic accumulation into the output (then a separate epilogue applying scale/shift/swish) could better fill the 4090's 128 SMs.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 25,
+    "global_best_node_id": 16,
+    "global_best_score": [
+        1,
+        1,
+        1.306364364810914
+    ]
+}

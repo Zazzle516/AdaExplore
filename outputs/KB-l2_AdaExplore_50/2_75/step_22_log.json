@@ -1,0 +1,30 @@
+{
+    "node_id": 22,
+    "parent_node_id": 20,
+    "context_node_ids": [
+        3,
+        20
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM is M=1024, N=8192, K=8192 \u2014 dominates runtime. Add larger tile autotune configs targeting this shape: `BLOCK_M=64, BLOCK_N=128, BLOCK_K=64` and `BLOCK_M=64, BLOCK_N=256, BLOCK_K=32/64` with `num_warps=4/8, num_stages=4/5`. Also try `BLOCK_M=32, BLOCK_N=256, BLOCK_K=64` since M tiles are limited.\n- Cache `_weight_t` once at init and avoid the `self.training` refresh path during eval (the model is run in eval; refreshing every forward copies 256MB of weight). Gate refresh strictly on parameter version / device change.\n- In `gn_min_kernel`, the row contains 8192 elements as a (512, 16) tile = 8192 lanes \u2014 this likely exceeds register/shared budget. Reduce by tiling groups: launch `(M, num_groups)` grid, one program per (row, group), then a second tiny kernel to reduce per-group mins to a row min; or use `num_warps=16` and verify occupancy.",
+    "large_guidance": "- The bottleneck is a 1024\u00d78192\u00d78192 GEMM (~137 GFLOP) where the M dimension is small. Restructure as a split-K GEMM: partition K across program ids and atomically accumulate (or use a two-stage reduction kernel) to expose more parallelism \u2014 with only 8 M-tiles at BLOCK_M=128, the grid is starved on a 4090. Split-K of 4\u20138 should materially improve SM occupancy.\n- Fuse the bias-add epilogue (already done) but also fuse the GroupNorm's first-pass mean/var directly into the GEMM epilogue per row tile when BLOCK_M covers a full row group's rows \u2014 write out normalized values to skip a separate global read of `y` in `gn_min_kernel`.\n- Replace the final `min_buf.view(1,1,M,1) + bias` (broadcast over N=8192) with a fused kernel that writes the (1,N,M,1) output directly, avoiding the implicit broadcast materialization through PyTorch's add path \u2014 or at minimum ensure the broadcast is contiguous-friendly by reshaping bias to (1,N,1,1) and min to (1,1,M,1) so the result is a single elementwise kernel.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 23,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

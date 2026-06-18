@@ -1,0 +1,29 @@
+{
+    "node_id": 24,
+    "parent_node_id": 20,
+    "context_node_ids": [
+        20
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.40586145328678636,
+    "max_reward": 0.40586145328678636,
+    "avg_reward": 0.40586145328678636,
+    "score": [
+        1,
+        1,
+        0.14835698961598745
+    ],
+    "small_guidance": "- The fused pool+sum kernel is tiny (4096 outputs, ~216 loads each); runtime is dominated by `nn.ConvTranspose3d`. Tuning the pool kernel will not close the gap \u2014 focus must shift to the conv. If staying small, try `BLOCK_C=C=64` (full-C in one pass, no outer loop) with num_warps=2 and remove the c_mask branch.\n- The `channels_last_3d` conversion happens twice (input and pool input) \u2014 drop the explicit `x.contiguous(channels_last_3d)` inside `fused_pool_sum` since cuDNN already produces NDHWC, and avoid a redundant layout copy.\n- Verify cuDNN actually picks an NDHWC ConvTranspose3d algo on a 4090; if not, the `.to(channels_last_3d)` is pure overhead. Benchmark with and without.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)` computing the outer product `input[n, ic, d, h, w] * weight[ic, oc, kd, kh, kw]` and atomically scattering into the output grid at `(d*stride - pad + kd, ...)`. With stride=2, padding=2, k=5, output is 64\u00d764\u00d764 \u2014 large but the input is only 32\u00b3, so a gather formulation (one program per output voxel summing contributing input\u00d7weight pairs) is also viable and avoids atomics.\n- Better: fuse the entire pipeline. Since the final output is only 16\u00d71\u00d75\u00d75\u00d75 = 2000 scalars, write a single persistent kernel where each program computes one output voxel by (a) iterating over the 6\u00d76\u00d76 = 216 conv-output positions feeding it, (b) for each, computing the conv-transpose output on the fly via a gather over IC\u00d7kD\u00d7kH\u00d7kW, (c) max-reducing across the 6\u00b3 window per OC channel, then summing across OC. This eliminates the entire 64\u00d764\u00b3 intermediate tensor (~67 MB) and the conv launch.\n- Even a partial fusion \u2014 custom conv-transpose writing directly into NDHWC plus the existing pool+sum \u2014 should land well under 10 ms since the conv is the bottleneck. Bake bias into the conv epilogue.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 25,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.9494847335423198
+    ]
+}

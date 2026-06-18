@@ -1,0 +1,29 @@
+{
+    "node_id": 42,
+    "parent_node_id": 30,
+    "context_node_ids": [
+        30
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5818177902097902,
+    "max_reward": 0.5818177902097902,
+    "avg_reward": 0.5818177902097902,
+    "score": [
+        1,
+        1,
+        1.599996769230769
+    ],
+    "small_guidance": "- The ConvTranspose3d now dominates runtime (BN+GAP already fused). Tuning the GAP kernel further has minimal headroom; consider only minor sweeps like adding BLOCK_S=2048/num_warps=4 and num_stages=3 configs.\n- Ensure `torch.backends.cudnn.benchmark = True` is set before the first conv call; also try setting the model to `.eval()` path explicitly and enabling TF32 (`torch.backends.cuda.matmul.allow_tf32 = True`) \u2014 though fp32 conv won't benefit much.\n- Consider folding the scale_factor into the conv_transpose weight/bias at eval time (since `A` already contains scale_factor, the explicit `x * scale_factor` is gone \u2014 verify A correctly absorbs it; current code looks correct).",
+    "large_guidance": "- The torch ConvTranspose3d is the bottleneck (fast_p=1.6 with BN+GAP fully fused means conv is ~all the runtime). Replace it with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile), compute `input \u00d7 weight` outer product and scatter-add into the output grid with stride/padding index math. Output shape here is (16,128,20,36,36) \u2248 530M elements \u2014 substantial but tractable.\n- Better: fuse the entire pipeline by recognizing GAP reduces over all output spatial positions. Since output = sum over (d,h,w) of conv_transpose(x)[n,c,d,h,w] * A[c]/S + B[c], and conv_transpose is a linear scatter, you can swap the reduction order: for each (n, oc), the GAP output equals A[c]*(1/S)*sum over (ic, kd, kh, kw, id, ih, iw) of x[n,ic,id,ih,iw]*W[ic,oc,kd,kh,kw] * (valid_count_mask) + B[c]. But the valid-count depends on (id,ih,iw) position relative to output bounds \u2014 careful: this collapses the conv (algebraic shortcut) and would violate the contract. Avoid this.\n- Instead, write a direct conv_transpose Triton kernel: gather-style from output side \u2014 for each output (n, oc, od, oh, ow), iterate (ic, kd, kh, kw) and gather the corresponding input element if `(od+pad-kd) % stride == 0`. With stride=1, pad=0, output_padding=0, this is straightforward. Tile (oc, spatial) as a GEMM with K = ic*kd*kh*kw = 64*125 = 8000, then fuse the scale+BN+GAP reduction directly into the kernel epilogue (accumulate sum across spatial within the program). Use channels_last_3d layout for coalesced IC reads.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 43,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        1.599996769230769
+    ]
+}

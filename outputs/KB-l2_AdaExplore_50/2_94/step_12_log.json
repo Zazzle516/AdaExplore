@@ -1,0 +1,30 @@
+{
+    "node_id": 12,
+    "parent_node_id": 9,
+    "context_node_ids": [
+        8,
+        9
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing with avg diff ~2e-4 \u2014 likely the GroupNorm reads from `y` while the GEMM kernel may not have completed stores for all tiles, or BLOCK_C padding is off. Verify `BLOCK_C` exactly equals `channels_per_group` (32 here, already pow2) and ensure mean/var divide by `C` as float, not int \u2014 cast `C` to float before division (`mean = s / C.to(tl.float32)` style, or pass eps as constexpr float). Also check that hardtanh+mish ordering matches reference exactly (it does).\n- The likely real bug: `tl.sum` over a masked vector where `other=0.0` is fine for mean, but for variance `diff = tl.where(mask, x-mean, 0.0)` is correct \u2014 however when `BLOCK_C == C` exactly, mask is all-true and this is fine. Double-check `fused_bias = gemm.bias + self.bias` dtype/contiguity, and that `weight.stride` is passed correctly (weight is (N,K) row-major so stride_wn=K, stride_wk=1 \u2014 confirm).\n- Add autotune configs with BLOCK_M=128,BLOCK_N=128,BLOCK_K=64,num_warps=8,num_stages=4 for the M=1024,N=8192,K=8192 shape; current best may be suboptimal. Once correct, this should be the dominant config.",
+    "large_guidance": "- Keep the two-kernel structure (fused GEMM+bias+hardtanh+mish, then GroupNorm) \u2014 it is the right fusion boundary since GroupNorm needs full rows of N. Do not try to fuse GroupNorm into the GEMM epilogue (cross-tile reduction).\n- For the GEMM, consider a split-K or persistent-tile design only if autotune plateaus; at M=1024,N=8192,K=8192 a standard tiled GEMM with 128x128x64 tiles and group_m swizzle should be near cuBLAS.\n- For GroupNorm with C=32 per group and M*G=262144 programs, that's a lot of tiny programs. Consider one program per row handling all G groups (loop over groups inside the program) to amortize launch overhead and reuse the row load, or pack multiple groups per program with a 2D reduction.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 13,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

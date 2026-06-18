@@ -1,0 +1,29 @@
+{
+    "node_id": 17,
+    "parent_node_id": 14,
+    "context_node_ids": [
+        14
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.42507805050505054,
+    "max_reward": 0.42507805050505054,
+    "avg_reward": 0.42507805050505054,
+    "score": [
+        1,
+        1,
+        0.30689391666666666
+    ],
+    "small_guidance": "- The conv-transpose gather kernel is the bottleneck (fast_p\u22480.31 means ~17ms vs 5.3ms baseline). Try larger spatial tiles and fewer IC chunks: add configs like `(BLOCK_S=64, BLOCK_OC=64, BLOCK_IC=32, num_warps=8, num_stages=3)` and `(BLOCK_S=128, BLOCK_OC=32, BLOCK_IC=32)`. With IC=32, set BLOCK_IC=32 so the inner `ic_start` loop has a single iteration and avoid loop overhead.\n- Hoist the per-`(kd,kh,kw)` weight pointer math and combine the kd/kh/kw loops with a single fused loop over `KD*KH*KW=27` to reduce branch divergence; precompute `od+PD`, `oh+PH`, `ow+PW` once outside the kernel-loop nest.\n- For the softmax+sigmoid epilogue, C=64 \u2192 BLOCK_C=64 with `num_warps=2` is enough; current launch uses 1 warp which under-occupies. Also coalesce by laying out per-(N,S) row contiguously \u2014 currently strided loads (`+ offs_c * S`) hurt; consider permuting to channels_last for the softmax pass or transposing in the conv epilogue.",
+    "large_guidance": "- Switch the conv-transpose to a scatter-add formulation (input \u00d7 weight outer product accumulated into output positions), or equivalently an implicit-GEMM where the K dimension is `IC` only (per kernel tap) and accumulation across taps becomes outer loops with atomic-free overlapping-stride writes computed analytically. With stride=2, only ~1/8 of (kd,kh,kw) taps contribute to any given output voxel; the current gather wastes most iterations on invalid indices. A direct stride-aware formulation (compute which single (kd,kh,kw) contributes per output position group) eliminates that branching.\n- Fuse the softmax+sigmoid into the conv-transpose epilogue by making the kernel produce a full channel slice per program (BLOCK_OC=OC=64) for one (n, spatial_tile), then perform max/exp/sum/sigmoid in registers before the store. This eliminates a full read+write of the OD\u00b7OH\u00b7OW\u00b7OC tensor (~4MB per batch element).\n- Use channels-last (NDHWC) layout so OC is the contiguous axis: the GEMM-N tile becomes the contiguous dimension for stores, and the softmax reduction over channels becomes a register-resident reduction within the same program, enabling the fusion above cleanly.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 18,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.5287083316831683
+    ]
+}

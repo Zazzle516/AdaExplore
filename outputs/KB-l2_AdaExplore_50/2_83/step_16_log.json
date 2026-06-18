@@ -1,0 +1,30 @@
+{
+    "node_id": 16,
+    "parent_node_id": 14,
+    "context_node_ids": [
+        3,
+        14
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4586787438016529,
+    "max_reward": 0.4586787438016529,
+    "avg_reward": 0.4586787438016529,
+    "score": [
+        1,
+        1,
+        0.5840996363636364
+    ],
+    "small_guidance": "- The conv3d kernel currently iterates IC*KD*KH*KW=81 scalar loads per (M,N) tile with no GEMM-K accumulation via tl.dot; add a `BLOCK_K` dim that packs (ic,kd,kh,kw) into a K-tile and use `tl.dot` on `[BLOCK_M,BLOCK_K] x [BLOCK_K,BLOCK_N]` for tensor-core throughput. Expand autotune to include `BLOCK_M=32/64`, `BLOCK_N=64/128/256`, `BLOCK_K=16/32`.\n- In `fused_gn_min_clamp_kernel`, the per-element `tl.load` for weight/bias inside the second pass is a gather; replace it with broadcast over a `(channels_per_group, S_tile)` 2D tile so weight/bias are loaded once as `[CPG]` vectors and indexed by row. Also drop the redundant `tl.maximum(..., min_value)` since `min(y, min_value) >= min_value` already (it's exactly `min_value`-clamped from above), simplifying to just `tl.minimum(y, min_value)`.\n- Make the conv output channels_last (write `(N, OD, OH, OW, OC)` or at least keep S contiguous) so the GN kernel's reduction over `channels_per_group * S` is contiguous; current layout already has S contiguous within a group, so prefer increasing GN `BLOCK_SIZE` to 4096/8192 with `num_warps=8`.",
+    "large_guidance": "- Rewrite conv3d as an implicit-GEMM with explicit `BLOCK_K` accumulation and `tl.dot`: program over `(N, OC_tile, OutSpatial_tile)`, load a `[BLOCK_M, BLOCK_K]` weight tile and a `[BLOCK_K, BLOCK_N]` im2col-gathered input tile per K step, accumulate via `tl.dot`. With OC=16 the M dim is tiny \u2014 consider grouping multiple N into M (i.e., tile over `(N*OC)` so M can reach 64/128) to fill tensor cores.\n- Fuse the conv epilogue (bias add + GroupNorm + min/clamp) only partially: keep conv as one kernel writing the post-bias output, then a single GN kernel that does both passes. Alternatively, since OD*OH*OW=14*62*62\u224853k per (N,C), one program per (N,group) with a two-pass persistent reduction over `channels_per_group*S` is the right structure \u2014 current code already does this; the win is making pass-2 a 2D tile rather than 1D gather.\n- Consider precomputing the conv output directly in NHWC-style (channels innermost within each spatial position) so the GN reduction over a group can stride contiguously across `(S, CPG)`; this turns the affine gather into a simple broadcast and removes the divmod in the hot loop.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 17,
+    "global_best_node_id": 15,
+    "global_best_score": [
+        1,
+        1,
+        0.6164804264392324
+    ]
+}

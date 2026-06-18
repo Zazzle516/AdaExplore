@@ -1,0 +1,30 @@
+{
+    "node_id": 45,
+    "parent_node_id": 42,
+    "context_node_ids": [
+        39,
+        42
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.47152074058002463,
+    "max_reward": 0.47152074058002463,
+    "avg_reward": 0.47152074058002463,
+    "score": [
+        1,
+        1,
+        0.6900461097852029
+    ],
+    "small_guidance": "- The conv kernel currently uses one program per batch element; with N=128, OC=16 (BLOCK_M=16 already covers all OC), and OS=14*62*62=53816, the grid is N\u00d71\u00d7cdiv(OS,BLOCK_N). Try fusing N into the spatial dimension (one program per (OC tile, N*OS tile)) so grid utilization scales better, and add configs with BLOCK_M=16, BLOCK_N in {64,128,256}, BLOCK_K in {27 padded / 32, 64} since the actual K = 3*3*3*3 = 81 \u2014 large BLOCK_K=128 wastes most of the tile.\n- Add small-K configs (BLOCK_K=32 with num_stages=3, num_warps=4) and ensure the K-loop is unrolled \u2014 at K=81 a single iteration with BLOCK_K=128 is dominant; pick BLOCK_K=32 or 64 to actually use tl.dot efficiently with multiple stages.\n- For the GN kernel, BLOCK_S=2048 with CPG=2 means tiles of 2\u00d72048=4096 elts; group_size=2*53816\u2248107k. Try BLOCK_S=4096 or 8192 with num_warps=4 to reduce loop trip count from ~27 to ~7-13, and fuse the dropout (eval-time it's identity, but at train time generate mask in-kernel via tl.rand using a seed).",
+    "large_guidance": "- Rewrite conv3d as an implicit-GEMM with M = N*OD*OH*OW (output spatial+batch flattened) and N_dim = OC, K = IC*KD*KH*KW = 81. One program per (M tile, OC tile); since OC=16 is tiny, set BLOCK_N=16 fixed and make BLOCK_M large (128/256). This dramatically increases parallelism vs. the current per-batch grid and lets tl.dot operate on properly shaped tiles. Use channels_last_3d layout for x so the IC axis is contiguous and GEMM-K loads coalesce.\n- Fuse the GroupNorm reduction directly into the conv epilogue is hard (needs cross-tile reduction), but you can fuse the bias add and write conv output already in [N, G, CPG, S] layout so the GN kernel's contiguous reduction axis is just S (not strided). Currently layout is fine but verify CPG\u00d7S tile fits in registers; with CPG=2, S=53816, a persistent two-pass kernel per (N,G) is correct \u2014 just enlarge BLOCK_S.\n- Consider a single-pass Welford GN (online mean/var) to halve global-memory traffic on the input \u2014 currently each element is loaded twice. With group size ~107k and BLOCK_S=4096-8192, online Welford in a single loop then a second loop only for normalization+epilogue (still two passes of loads, but the first-pass becomes cheaper if combined with conv epilogue write). Alternatively, store conv output in fp32 register-resident chunks per (N,G) \u2014 not feasible for full S, so two-pass is right; focus on bandwidth (vectorized tl.load of 4 elts).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 46,
+    "global_best_node_id": 20,
+    "global_best_score": [
+        1,
+        1,
+        0.83563387283237
+    ]
+}

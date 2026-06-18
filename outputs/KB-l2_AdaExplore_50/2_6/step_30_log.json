@@ -1,0 +1,29 @@
+{
+    "node_id": 30,
+    "parent_node_id": 27,
+    "context_node_ids": [
+        27
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.45280400354939526,
+    "max_reward": 0.45280400354939526,
+    "avg_reward": 0.45280400354939526,
+    "score": [
+        1,
+        1,
+        0.5356330292825106
+    ],
+    "small_guidance": "- The fused conv+softmax+pool kernel currently does one program per output element with OC=16 lanes \u2014 this severely under-utilizes warps (only 16 lanes active per program). Add a `triton.autotune` over `num_warps \u2208 {4, 8}`, `num_stages \u2208 {2, 3, 4}`, and try grouping multiple `(dp, hp, wp)` tiles per program to amortize the bias/softmax cost.\n- Pad OC up to a power-of-two BLOCK_OC (e.g. 16) constexpr and load weights as a [BLOCK_OC, IC_C] tile once per (kd,kh,kw) \u2014 currently each pool sub-position re-loads the same weights POOL^3 times. Hoist the conv computation: compute conv outputs for all POOL^3 positions first (reusing weights), then do softmax+pool reduction.\n- Use `tl.dot` for the inner GEMM by reshaping to [BLOCK_OC, IC_C] \u00d7 [IC_C, BLOCK_SPATIAL] instead of element-wise sum-reduction; this maps the work to tensor cores.",
+    "large_guidance": "- Restructure as an im2col-style GEMM: one program per `(N, output-spatial tile of size T)`, computing all OC channels for T spatial points via `tl.dot` over the K=IC*KD*KH*KW reduction axis. Then within the same program, perform softmax-over-OC and the combined POOL^3 max-reduction in registers before writing one output per pooled location. This lets weights be loaded once per tile and uses tensor cores for the conv.\n- Choose the spatial tile T = POOL^3 = 64 so each program emits exactly one pooled output across all OC; this makes the softmax+pool epilogue a clean [OC, 64] register reduction (max over OC for stable softmax, then max over the 64 spatial dim per OC).\n- Alternatively, split into two kernels with a better-tuned conv: a dedicated im2col-GEMM conv3d kernel writing to a NHWDC-layout buffer, then a fused softmax+double-pool kernel that does both 2\u00d7 pools as a single 4\u00d74\u00d74 window reduction (POOL_combined=4, not 4=2*2 squared \u2014 note current code uses pool^2=4 which is correct for combined stride). The current direct-conv-per-output-pixel approach cannot reach peak because it does no weight reuse across spatial outputs.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 31,
+    "global_best_node_id": 22,
+    "global_best_score": [
+        1,
+        1,
+        2.689860190720031
+    ]
+}

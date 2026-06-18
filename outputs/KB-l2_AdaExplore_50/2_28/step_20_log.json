@@ -1,0 +1,32 @@
+{
+    "node_id": 20,
+    "parent_node_id": 19,
+    "context_node_ids": [
+        1,
+        2,
+        12,
+        19
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4864894557767638,
+    "max_reward": 0.4864894557767638,
+    "avg_reward": 0.4864894557767638,
+    "score": [
+        1,
+        1,
+        0.8135380101583009
+    ],
+    "small_guidance": "- The GEMM is the bottleneck (M=1024, N=K=8192). Replace `torch.addmm` with the custom `gemm_bias_kernel` and fuse the bias add directly in its epilogue; current code launches cuBLAS then a separate norm kernel, so there's no fusion benefit.\n- Add larger autotune configs targeting this shape: `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3/4` and `BLOCK_M=64, BLOCK_N=256, BLOCK_K=64`. Pre-transpose W once in `__init__` (store `W.t().contiguous()`) so the inner K-loop loads B contiguously along N.\n- For the norm+residual kernel with N=8192 (BLOCK_N=8192), bump `num_warps=16` and `num_stages=2`; the current single-tile persistent design is fine but the autotune key includes `BLOCK_N` which is constant so tuning never re-runs \u2014 drop it from key.",
+    "large_guidance": "- Fuse GEMM + bias + instance-norm + residual into a single persistent kernel: one program per row, tile the K-reduction to compute the full `out_features=8192` row of `x@W.T+b` into SRAM/registers, then do the mean/var reduction and `(xn+y)*y` epilogue in the same program. This eliminates the 32MB write/read roundtrip of the intermediate C matrix, which currently dominates after the GEMM.\n- If full fusion is too register-heavy, do a split-K GEMM that writes C in tiles and immediately follows with an on-chip reduction using atomics for partial mean/sumsq, then a second small kernel for the normalize+residual epilogue \u2014 avoids the full materialize-then-reload pattern.\n- Alternatively, since M=1024 is small and N=K=8192, treat this as a tall-skinny GEMM: use BLOCK_M=32 or 64 with BLOCK_N=256, BLOCK_K=64, num_stages=4 to keep many K-loop loads in flight; the current 128x128 tiles waste M-dimension parallelism (only 8 row-tiles).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 21,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        0.8208452377944534
+    ]
+}

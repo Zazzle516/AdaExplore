@@ -1,0 +1,29 @@
+{
+    "node_id": 44,
+    "parent_node_id": 18,
+    "context_node_ids": [
+        4
+    ],
+    "depth": 6,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness issue is small numeric (avg diff ~9e-5, max ~1.6e-3) which suggests the GroupNorm reduction across only BLOCK_N=CPG=64 channels is correct in structure but tolerance may actually be passing. Verify: check that tl.store mask also covers offs_n (use `mask=mask_m[:, None] & (offs_n[None,:] < N)`) \u2014 and ensure `y` is initialized (use `torch.empty` is fine but write mask is critical so OOB rows aren't written with garbage that later gets read by the comparator, although shouldn't happen here).\n- Cast accumulator to fp32 explicitly when reading bl, bp, gamma, beta (they are fp32 already, but ensure all intermediates stay fp32) and use a slightly tighter `1.0 / tl.sqrt(...)` \u2192 `tl.rsqrt(var + eps)` for accuracy/perf parity.\n- Add larger BLOCK_M configs (e.g. 256) and tune num_warps=8 since BLOCK_N=64 is fixed; with M=32768 and N=4096, grid is (M/BLOCK_M, 64) so bigger BLOCK_M reduces grid and improves W reuse \u2014 add a GROUP_M swizzle or process multiple groups per program to reuse the X tile across all 64 groups (X is loaded G=64 times currently!).",
+    "large_guidance": "- Major redesign: the X tile is currently re-loaded once per group (64x redundant loads of the X matrix). Restructure so one program computes the full N=4096 row tile for its BLOCK_M rows, streaming X once and iterating over all groups in the N dimension. This makes BLOCK_N=CPG=64 the inner tile and the program loops over G=64 groups, doing GEMM into a per-group accumulator, then Swish+bias+GroupNorm epilogue per group before storing. K-loop is shared across all N tiles \u2014 huge X-reuse win.\n- Alternative split-K design: separate the GEMM (tiled BLOCK_M\u00d7BLOCK_N with large BLOCK_N, e.g. 128/256, tuned for tl.dot) into kernel 1 writing the pre-norm activation (fused with linear bias + Swish + param bias), then a second kernel doing GroupNorm with one program per (row, group), reading 64 contiguous channels. This decouples GEMM tile shape (which wants large N) from norm tile shape (which wants N=CPG).\n- Consider transposing W to (K, N) layout once at init so the inner K loop loads W contiguously along K with BLOCK_N along the fast axis; current `w_ptrs = W_ptr + offs_n[None,:]*stride_wn + offs_k[:,None]*stride_wk` with nn.Linear weight `(N,K)` row-major has stride_wn=K making N the slow axis \u2014 fine, but verify tl.dot gets a contiguous-K B operand for best throughput.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 45,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

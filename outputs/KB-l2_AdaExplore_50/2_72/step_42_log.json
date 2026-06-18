@@ -1,0 +1,29 @@
+{
+    "node_id": 42,
+    "parent_node_id": 34,
+    "context_node_ids": [
+        34
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4145216885088404,
+    "max_reward": 0.4145216885088404,
+    "avg_reward": 0.4145216885088404,
+    "score": [
+        1,
+        1,
+        0.2198039301979331
+    ],
+    "small_guidance": "- The eval path still calls `F.conv_transpose3d` then `F.avg_pool3d`; the fused Triton conv-transpose kernel `fused_convt_bn_pool` is defined but never invoked. Wire the eval `forward` to call `fused_convt_bn_pool(x, fused_weight, fused_bias, ones, zeros, stride, pad)` (or a BN-folded variant) so the heavy op runs in Triton instead of cuDNN+pool.\n- Increase `BLOCK_OC` to 32 and add an autotune over `{(BLOCK_OC=16, warps=2), (32,4), (64,4), (64,8)}` keyed on `(OC, OD*OH*OW)`; with OC=16 a single block covers all channels, eliminating the `oc_blk` loop dimension from the grid.\n- Hoist the `b_ptr` load and the `scale/shift` loads outside the 64-iter spatial accumulation loop (they are invariant in oc); also drop the per-voxel `+bias` add inside the inner loops \u2014 add `bias * 64` once after the accumulator, or better fold bias into `shift` so only one affine remains.",
+    "large_guidance": "- Restructure the kernel as a scatter-add conv-transpose: one program per `(N, OC tile, ID*IH*IW tile)` reads `x[n, :, id, ih, iw]` once and scatters `x * W` into the 4\u00d74\u00d74 pooling window of the output. Since stride=2 and pool=4, each input voxel contributes to exactly one pooled output coordinate `(od, oh, ow) = ((id*2+kd-pad)//4, \u2026)`, so you can directly accumulate into the pooled output without materializing the (N,16,65,65,65) intermediate \u2014 this is the real headroom.\n- Equivalently, gather-style: one program per pooled output `(n, oc_tile, od, oh, ow)` performs a GEMM over the 4\u00d74\u00d74\u00d7IC\u00d7(valid kd,kh,kw) contributing pairs. With IC=3, OC=16, output 16\u00d716\u00d716, total work is tiny \u2014 make the kernel persistent across `(od,oh,ow)` for a fixed `(n, oc)` so weights stay resident in registers/SMEM.\n- Fold BN scale/shift and the /64 pool divisor into the weight/bias at init (eval-only path), and run a single Triton kernel end-to-end. The current 26.4 ms vs 5.8 ms baseline shows the cuDNN ConvT+pool path is being used; only a true fused custom ConvT kernel can beat it.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 43,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        0.36042383585251137
+    ]
+}

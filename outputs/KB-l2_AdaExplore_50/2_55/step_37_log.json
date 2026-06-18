@@ -1,0 +1,29 @@
+{
+    "node_id": 37,
+    "parent_node_id": 8,
+    "context_node_ids": [
+        8
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The current kernel uses BLOCK_M as small as 16-64 with one program per row tile, which leaves the RTX 4090's 128 SMs severely underutilized (M=128 means only 2-8 programs total). Add a split-K / split-N strategy: launch a 2D grid over (M tile, N tile) programs, each computing a partial pooled-sum over its N slice, then atomically add into the output (or do a small second-stage reduction). This will expose ~10-100\u00d7 more parallelism.\n- Add larger-M autotune configs (BLOCK_M=128 covers all rows in one tile-row) combined with N-splitting so the K-loop is shared across many programs; also try BLOCK_K=128 with num_stages=4 since K=32768 is huge and benefits from deeper pipelining.\n- Pre-transpose W to (K, N) layout once in `__init__` so the inner `tl.dot` loads B contiguously along N instead of strided along stride_wn; cache it as a buffer to avoid per-call transpose cost.",
+    "large_guidance": "- Redesign as a split-N GEMM-reduction: grid = (cdiv(M, BLOCK_M), cdiv(N, BLOCK_N)). Each program computes its (BLOCK_M, BLOCK_N) GEMM tile + bias, max-pools within the tile (require BLOCK_N % KERNEL_SIZE == 0), sums along the pooled axis to get a (BLOCK_M,) partial, scales, and `tl.atomic_add`s into Out[offs_m]. With M=128, N=32768, BLOCK_M=128, BLOCK_N=256 \u2192 128 programs, matching SM count.\n- Alternatively, two-stage: stage-1 writes per-(m, n_tile) partial sums to a scratch (M, num_n_tiles) buffer with a tiled GEMM kernel; stage-2 reduces along n_tile axis with a small kernel. Avoids atomics at the cost of one extra small launch.\n- Store W transposed (K-major contiguous along N) in `__init__` as a persistent buffer, and prefer BLOCK_M=128, BLOCK_N=128-256, BLOCK_K=32-64, num_warps=8, num_stages=3-4 \u2014 this is a compute-bound GEMM (128\u00d732768\u00d732768 \u2248 275 GFLOPs) and needs proper tile shapes plus SM saturation to hit 4090's ~80 TFLOPs fp32.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 38,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

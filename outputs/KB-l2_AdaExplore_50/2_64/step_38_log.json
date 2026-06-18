@@ -1,0 +1,29 @@
+{
+    "node_id": 38,
+    "parent_node_id": 28,
+    "context_node_ids": [
+        37
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.7618856026681506,
+    "max_reward": 0.7618856026681506,
+    "avg_reward": 0.7618856026681506,
+    "score": [
+        1,
+        1,
+        3.0855562220122428
+    ],
+    "small_guidance": "- The GEMM (1024\u00d78192\u00d78192) dominates runtime; try replacing the bf16 `F.linear` with a Triton tiled GEMM using `tl.dot` (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8, num_warps=4, num_stages=3-4) that writes fp32 directly, eliminating the bf16\u2192fp32 cast and intermediate materialization.\n- The LSE kernel currently launches only 1024 programs each reducing 8192 elements serially in 4096-wide tiles; try BLOCK_N=8192 (single-tile, single-pass online reduction) with num_warps=8/num_stages=2, or split the row across multiple programs and combine via atomics/two-stage for better SM occupancy.\n- Avoid the explicit `gemm_out_bf16.to(torch.float32)` materialization \u2014 pass bf16 directly into the LSE kernel and upcast inside via `tl.load(...).to(tl.float32)`; this halves the bandwidth of the LSE input read.",
+    "large_guidance": "- Fuse the entire pipeline into a single persistent kernel: each program owns one row of the output, streams the input row and weight columns through `tl.dot` to accumulate the GEMM row, then performs the online LSE (running max + running sum) in the same pass, then applies the activations in the epilogue. This eliminates writing/reading the 1024\u00d78192 GEMM output entirely (the dominant memory traffic).\n- Alternatively, keep two kernels but make the GEMM a fused matmul\u2192row-LSE kernel: tile over N with BLOCK_N covering the full row (or split-N with a second-stage combine), so the per-row max/sum is computed as tiles are produced and only a scalar per row is written. This is the highest-leverage fusion because the 1024\u00d78192 fp32 intermediate (32 MB) is never materialized.\n- Keep weights resident in bf16 (already done) and load A in bf16 too; use `tl.dot(..., out_dtype=tl.float32)` for accuracy. The activation chain (2\u00d7LeakyReLU + 2\u00d7GELU) is a handful of flops on 1024 scalars \u2014 always do it in the epilogue.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 39,
+    "global_best_node_id": 37,
+    "global_best_score": [
+        1,
+        1,
+        3.0855562220122428
+    ]
+}

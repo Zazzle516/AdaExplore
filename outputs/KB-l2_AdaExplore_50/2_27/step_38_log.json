@@ -1,0 +1,27 @@
+{
+    "node_id": 38,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.48529241084381664,
+    "max_reward": 0.48529241084381664,
+    "avg_reward": 0.48529241084381664,
+    "score": [
+        1,
+        1,
+        0.8036623894614868
+    ],
+    "small_guidance": "- The conv (Conv3d with B=1024, C=16, D=16,H=32,W=32, k=4) dominates runtime; the post-conv fused kernel is already tight. Add `triton.autotune` over BLOCK_S \u2208 {128, 256, 512, 1024} \u00d7 num_warps \u2208 {4, 8} \u00d7 num_stages \u2208 {2, 3} keyed on `S_CONST` to squeeze the tail.\n- Collapse the two passes into one by caching hardswish output in registers across the S blocks isn't feasible (S\u224810933), but you can skip the second hardswish recomputation by storing `hs` to a scratch tensor \u2014 or better, fuse the normalization+mean into a single pass using the identity `mean_c(norm) = (mean_c(hs) - mean)*rstd*w + b` per channel, which is exact and eliminates the entire second pass.\n- Switch x layout to `(B, G, CPG, S)` already-contiguous and load with `tl.load` of `[CPG, BLOCK_S]` tiles using `tl.multiple_of`/`tl.max_contiguous` hints to improve coalescing.",
+    "large_guidance": "- The Conv3d is the heavy op (~80%+ of runtime now). Replace it with a custom Triton im2col-style GEMM kernel: one program per `(B tile, OC tile, output-spatial tile)` with implicit im2col gather; tile shape e.g. BLOCK_M=64 (spatial), BLOCK_N=16 (OC, full), BLOCK_K=48 (IC*kd*kh*kw=192, tile). Fuse hardswish into the conv epilogue so the conv output is never materialized in global memory for the activation.\n- Go further: fuse conv + hardswish + GroupNorm stats accumulation into one persistent kernel per `(B, group)` that streams output spatial positions, accumulates sum/sumsq on the fly, then does a second streaming pass for normalize+mean. This avoids ever writing the (B,C,S) conv tensor to HBM.\n- Use channels-last (NDHWC) layout end-to-end so the C=16 axis is contiguous (perfectly fits one warp), making the GroupNorm reduction and conv-K accumulation both coalesced.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 39,
+    "global_best_node_id": 30,
+    "global_best_score": [
+        1,
+        1,
+        0.8530881206706803
+    ]
+}

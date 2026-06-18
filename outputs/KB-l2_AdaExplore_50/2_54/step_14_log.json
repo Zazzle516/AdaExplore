@@ -1,0 +1,30 @@
+{
+    "node_id": 14,
+    "parent_node_id": 13,
+    "context_node_ids": [
+        10,
+        13
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.054780681640625
+    ],
+    "small_guidance": "- The current kernel does `tl.dot(w[BLOCK_OC, BLOCK_IC], x[BLOCK_IC, BLOCK_HW])` with BLOCK_IC=64 (full C_in) per kh/kw \u2014 this is fine but `allow_tf32=False` is hurting throughput on a 4090; switch to `allow_tf32=True` (or use `tf32x3`) since fp32 conv tolerates the tiny precision loss within 5e-2.\n- Add larger autotune configs targeting the (64, 64*254*254, 9*64) GEMM shape: try `BLOCK_OC=128, BLOCK_HW=128, num_warps=8, num_stages=3` and `BLOCK_OC=64, BLOCK_HW=512, num_warps=8, num_stages=2`; the spatial tile is the dominant axis (64516 elements per (n,oc) panel), so wider HW tiles amortize weight reloads.\n- Hoist the 9 weight loads out of the inner spatial loop by reordering: load all 9 (BLOCK_OC \u00d7 BLOCK_IC) weight tiles once per program (they don't depend on hw), and only stream x tiles \u2014 currently weights are reloaded per (kh,kw) per program, which is fine given caching, but precomputing `oh[None,:]*stride_xh + ow[None,:]*stride_xw` once and reusing with `+kh*stride_xh+kw*stride_xw` saves index math.",
+    "large_guidance": "- Rewrite as an explicit im2col-style GEMM with the K dimension being `C_in * KH * KW = 576` and accumulate with a single `tl.dot` per K-tile (BLOCK_K=64 or 128) instead of 9 separate dots of K=64. This gives the MMA pipeline more work per iteration and lets `num_stages=3-4` overlap loads. Tile shape `(BLOCK_OC=64, BLOCK_HW=128, BLOCK_K=64)` with allow_tf32=True should approach cuBLAS throughput.\n- Use NHWC (channels-last) input/output layout \u2014 permute x to (N,H,W,C) once on the host, run the kernel with the channel axis contiguous (so the K-dim gather coalesces), and permute back. Conv2d is heavily channel-bound here (C_in=64) and the current NCHW layout makes the BLOCK_IC gather strided.\n- Consider a persistent-CTA strategy: launch `num_SMs * 2` programs and have each iterate over a flat list of (n, oc_tile, hw_tile) work items. With N=64, C_out tiles=1, HW tiles=~500, the grid is ~32k programs of ~3ms each \u2014 persistence reduces launch/scheduling overhead and improves L2 reuse of weights across (n,hw) tiles for the same oc tile.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 15,
+    "global_best_node_id": 12,
+    "global_best_score": [
+        1,
+        1,
+        1.1094821598101265
+    ]
+}

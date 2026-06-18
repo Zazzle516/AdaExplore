@@ -1,0 +1,29 @@
+{
+    "node_id": 22,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        4
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4207638894815953,
+    "max_reward": 0.4207638894815953,
+    "avg_reward": 0.4207638894815953,
+    "score": [
+        1,
+        1,
+        0.27130208822316104
+    ],
+    "small_guidance": "- The fused BN+submean kernel is fine but only addresses ~10% of runtime; the ConvTranspose3d dominates. Within current structure, try `BLOCK_S=2048`, `num_warps=8` and persist `scale`/`shift` in registers (already done) \u2014 small wins only.\n- Consider folding BN scale/shift into the conv_transpose bias and weight at eval time (legitimate since BN at eval is a pure affine on the conv output's channel axis: `w' = w * scale_c`, `b' = b * scale_c + shift_c`), so the BN pass disappears entirely and only submean remains.\n- For the submean pass alone, one program per `(N,C)` row with a two-pass mean+subtract is already optimal; tune `BLOCK_S` to cover `D*H*W=16*64*64=65536` with `num_warps=8, num_stages=3`.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)` computes the outer product `x[n,ic,d,h,w] * w[ic,oc,kd,kh,kw]` and scatter-adds into the output grid at `(n, oc, d*stride+kd-pad, h*stride+kh-pad, w*stride+kw-pad)`. This is the dominant cost (~90% of runtime) and the only path to large speedup.\n- Use channels_last_3d layout for both input and output so the OC/IC axes are contiguous for the GEMM-K reduction; fuse the BN affine (folded into output bias/scale) and the spatial-mean subtraction as the kernel epilogue \u2014 compute the per-(N,OC) sum during scatter via atomic adds to a side buffer, then a second small kernel subtracts mean.\n- Alternatively, formulate as a gather-style GEMM: one program per `(N, OC tile, output-spatial tile)`; for each output voxel, gather the contributing input voxels (those `(d,h,w)` such that `d*stride+kd-pad == d_out` etc.) and reduce over `(IC, kd, kh, kw)`. This avoids atomics and maps cleanly to autotuned BLOCK_M/N/K=`(32,32,16)` starting tile, num_warps=4, num_stages=2.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 23,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.32290846370039283
+    ]
+}

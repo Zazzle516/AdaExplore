@@ -1,0 +1,29 @@
+{
+    "node_id": 33,
+    "parent_node_id": 30,
+    "context_node_ids": [
+        30
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4062796548079026,
+    "max_reward": 0.4062796548079026,
+    "avg_reward": 0.4062796548079026,
+    "score": [
+        1,
+        1,
+        0.15180715216519647
+    ],
+    "small_guidance": "- The pool+sum kernel is tiny (16*~5*~5*~5 programs); the bottleneck is the ConvTranspose3d itself (fast_p=0.15 means conv dominates). Tuning BLOCK_C/num_warps on the pool kernel won't move the needle \u2014 it's already a small fraction of runtime.\n- If staying small, try num_warps=1 and BLOCK_C=64 (C=64 exactly), and consider using `tl.max` reduction over a 2D `[6,6]` tile loaded at once to cut load overhead, but expect <5% overall gain.\n- Ensure the conv output is in channels_last_3d before the pool kernel and stride channel as the contiguous axis to coalesce loads.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)` computing the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and atomically scattering into the output grid at `(n, oc, d*stride - pad + kd, ...)`. This is where the 85% headroom lives.\n- Alternatively, implement ConvTranspose3d as a gather-style GEMM: one program per `(N, OC tile, output-spatial tile)`, where each output point sums over `(ic, kd, kh, kw)` taps whose source `(d - kd + pad)/stride` is integer and in-bounds \u2014 avoids atomics and maps cleanly to a tiled matmul over `IC*kd*kh*kw`.\n- Fuse the two maxpools (effective stride-6 max over a 6\u00d76\u00d76 window) and the channel sum directly into the conv-transpose epilogue so the large `(16,64,63,63,63)` intermediate is never materialized \u2014 write only the final `(16,1,~10,~10,~10)` tensor. Each output point gathers a 6\u00b3 window of conv-transpose results, which is feasible to compute on the fly per program.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 34,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.9494847335423198
+    ]
+}

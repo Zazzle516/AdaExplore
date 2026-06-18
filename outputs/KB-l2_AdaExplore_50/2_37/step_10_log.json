@@ -1,0 +1,31 @@
+{
+    "node_id": 10,
+    "parent_node_id": 5,
+    "context_node_ids": [
+        3,
+        4,
+        5
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM kernel uses `allow_tf32=False` which disables tensor-core TF32 acceleration and is the primary cause of the 10.5ms runtime on a 32768x4096x1024 GEMM. Switch to `allow_tf32=True` in `tl.dot` \u2014 this alone should give 3-5x speedup since the reference `nn.Linear` uses TF32 by default on Ampere/Ada.\n- Add larger tile configs better suited to this shape (M=32768, N=4096, K=1024): `BLOCK_M=128/BLOCK_N=256/BLOCK_K=64` with `num_warps=8, num_stages=3` and `BLOCK_M=256/BLOCK_N=128/BLOCK_K=32`. Prune the tiny `BLOCK_K=32` configs from autotune since K=1024 benefits from larger K blocks.\n- In the GroupNorm kernel, CPG=64 is small \u2014 bump `ROWS_PER_PROG` to 4-8 so each program amortizes launch overhead and processes multiple groups, and drop `num_warps` to 2 since BLOCK_CPG=64 only fills 2 warps of work.",
+    "large_guidance": "- Fuse the GroupNorm into the GEMM epilogue when possible: since each group contains CPG=64 consecutive output channels and BLOCK_N can be a multiple of CPG (e.g. 128 or 256 = 2 or 4 groups), the GEMM tile already has the full group present along N. Compute per-group mean/var across the BLOCK_N dim within the tile and apply normalization before storing \u2014 eliminates one full read/write pass over the 32768x4096 tensor.\n- Alternatively, write a split-K or persistent GEMM where each program handles a full row tile and stores into a buffer, then a fused-tail kernel does swish+bias+groupnorm in one launch reading from a per-row partial-sum cache. The key is collapsing the current 2-kernel structure into 1 to halve HBM traffic for the 512MB intermediate.\n- Ensure W is pre-transposed at init (store W as (K, N) contiguous) so the inner-K load is contiguous along the GEMM's hot axis, removing the strided B-load pattern.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 11,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

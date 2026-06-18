@@ -1,0 +1,27 @@
+{
+    "node_id": 46,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The kernel is doing one program per batch row (128 programs) for a 32768\u00d732768 GEMV-like workload \u2014 this severely underutilizes the GPU. At minimum, split the output-feature dimension across programs: use a 2D grid `(batch, n_tiles)` and atomic-add the partial pooled sums into `out[pid_batch]`, then apply scale in a tiny epilogue kernel (or fold scale into the atomic contribution).\n- Increase BLOCK_N (e.g. 128 or 256) and add autotune configs sweeping `BLOCK_N \u2208 {128, 256, 512}` and `BLOCK_K \u2208 {64, 128, 256}` with `num_warps \u2208 {4, 8}`, `num_stages \u2208 {3, 4}`. Use `tl.dot` on tiles `[BLOCK_M=1 or small, BLOCK_K] \u00d7 [BLOCK_K, BLOCK_N]` rather than a manual `sum(w*x)` reduction.\n- Pre-transpose the weight to `[IN_FEAT, OUT_FEAT]` once in `__init__` so the inner `tl.dot` loads contiguous N along the fast axis; currently `w_ptrs = w + offs_n[:,None]*IN_FEAT + offs_k[None,:]` makes the BLOCK_K axis contiguous but the dot would benefit from K-contiguous-in-A and N-contiguous-in-B.",
+    "large_guidance": "- Reformulate as a tiled GEMM with batch on the M axis: grid `(cdiv(M, BLOCK_M), cdiv(N, BLOCK_N))` where M=batch=128 (one tile covers M), N=out_features. Each program computes a `[BLOCK_M, BLOCK_N]` output tile via `tl.dot`, applies bias, performs maxpool over consecutive pairs along N within the tile (BLOCK_N must be a multiple of kernel_size), reduces the pooled values into a `[BLOCK_M]` partial sum, multiplies by scale, and `tl.atomic_add`s into `out[m]`. This gives O(batch \u00d7 N/BLOCK_N) programs \u2014 hundreds of CTAs \u2014 vs. the current 128.\n- Use `BLOCK_M=128` (covers all rows in one tile), `BLOCK_N=128\u2013256`, `BLOCK_K=32\u201364`, with K-loop pipelined via `num_stages=3\u20134`. Store the weight pre-transposed as `[IN_FEAT, OUT_FEAT]` contiguous so B-tile loads in the `tl.dot` are coalesced along N.\n- Fuse the entire pipeline (matmul + bias + maxpool + partial sum + scale) inside one kernel; the only cross-program communication is the atomic-add of the per-tile partial scalar sum per batch row, which is cheap (\u2264 a few hundred atomics per output element).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 47,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

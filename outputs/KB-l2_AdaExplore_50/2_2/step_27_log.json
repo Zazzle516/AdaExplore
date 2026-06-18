@@ -1,0 +1,30 @@
+{
+    "node_id": 27,
+    "parent_node_id": 7,
+    "context_node_ids": [
+        10,
+        7
+    ],
+    "depth": 5,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.44065861635220127,
+    "max_reward": 0.44065861635220127,
+    "avg_reward": 0.44065861635220127,
+    "score": [
+        1,
+        1,
+        0.4354335849056603
+    ],
+    "small_guidance": "- The current gather kernel computes `ih = (oh+PAD-kh)//STRIDE` etc. which causes most (kh,kw) pairs to be invalid for stride=2 (only 1 of 4 contributes per output). This is structural waste \u2014 but tuning-wise, try larger BLOCK_SP (256) with BLOCK_OC=64 and num_warps=8, num_stages=2, since IC=64 fits in one K-tile and the dot is already tall-skinny; also add a config with BLOCK_OC=32/BLOCK_SP=256.\n- Move the `pid_n` axis to be innermost (program_id(0)) or swizzle (pid_sp, pid_oc) for better L2 reuse of the weight tile across spatial tiles within the same (n, oc) group.\n- Cache the weight tile across the spatial loop by making one program handle multiple spatial tiles per (n, oc) \u2014 i.e. persistent over sp \u2014 so the 64\u00d764 weight load per (kh,kw) is amortized.",
+    "large_guidance": "- Switch from a gather (per-output) formulation to a scatter-add (per-input) formulation, which is the natural shape for ConvTranspose2d with stride>1: one program per (N, IC-tile, input-spatial-tile) computes the outer product `input[ic, ih, iw] * weight[ic, oc, kh, kw]` and atomically (or via deterministic accumulation buffer) adds into `out[n, oc, ih*stride+kh-pad, iw*stride+kw-pad]`. This avoids the stride-divisibility waste where 3/4 of (kh,kw) iterations contribute zero.\n- Alternatively, implement as an explicit im2col-style GEMM where the K dimension is `IC*KH*KW` and the M dimension is `OC`, N dimension is `OH*OW`, but with the index math accounting for stride/padding by masking \u2014 keep one program per (N, OC-tile, OUT-spatial-tile) and load weight as a contiguous [OC, IC*KH*KW] matrix to maximize tensor-core utilization with TF32 mma on a single GEMM rather than KH*KW separate small dots.\n- Fuse bias add + clamp(0, 1/s) into the epilogue (already done) and use channels-last layout for the output write so the OC axis is the contiguous inner stride; this improves store coalescing for the (OC, SP) tile.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 28,
+    "global_best_node_id": 10,
+    "global_best_score": [
+        1,
+        1,
+        0.46421224137931033
+    ]
+}

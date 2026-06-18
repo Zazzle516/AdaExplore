@@ -1,0 +1,27 @@
+{
+    "node_id": 2,
+    "parent_node_id": 1,
+    "context_node_ids": [],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing in training mode: the BN affine path uses biased variance for normalization (matching PyTorch BN), but verify ordering \u2014 PyTorch's BN normalizes with the batch's biased var, and the running_var update uses unbiased. Current code looks right, but max_diff ~2.5e-3 suggests an fp32 reduction precision issue. Try accumulating `col_stats_kernel` sums with a Kahan / two-pass approach, or compute mean first then variance as E[(x-mean)^2] to avoid catastrophic cancellation at M=1024, N=8192.\n- Add `num_stages=3-4` to `bn_apply_kernel` autotune configs (currently missing \u2014 defaults to 2), and consider fusing `col_stats` + `bn_apply` so the materialized `y` is read once. Better: in eval path (which is what timing likely measures since model is in eval), tune `gemm_scale_bn_eval_kernel` with larger `BLOCK_K=64` configs and `num_stages=4` since K=8192 is large.\n- Pass `eps` as `tl.constexpr` to `bn_apply_kernel` to bake it into PTX.",
+    "large_guidance": "- For eval mode (the common benchmarked path), the entire model collapses to a single fused GEMM with per-column affine epilogue `(X @ W^T + B) * cs + csh`. The current eval kernel already does this; redesign should focus on a high-performance split-K or persistent GEMM for M=1024, N=8192, K=8192 \u2014 e.g. `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4`, with W pre-transposed once in `__init__` so the K-loop loads W contiguously along K.\n- For training mode, fuse the two-pass BN: launch one kernel per column tile that computes GEMM output into a tile-local buffer, then a second kernel that reads `y` once to compute mean+var+normalize. Even better: do the GEMM, then a single-pass Welford reduction kernel over M per column producing (mean, invstd), then a fused normalize kernel \u2014 eliminating the redundant `y` read in `bn_apply`.\n- Consider storing W transposed (K, N) at init so both kernels can use a row-major contiguous load on the K-inner axis, which is friendlier to `tl.dot`'s preferred layout on Ampere.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 3,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

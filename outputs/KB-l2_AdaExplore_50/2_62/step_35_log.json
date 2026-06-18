@@ -1,0 +1,31 @@
+{
+    "node_id": 35,
+    "parent_node_id": 34,
+    "context_node_ids": [
+        29,
+        32,
+        34
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness fails: GroupNorm's affine `gamma`/`beta` are per-channel (length C) but loaded with `ch_offs` shaped `[GROUPS_PER_PROG, BLOCK_CH]` masked only by `mask_c[None,:]`. When `BLOCK_CH > CH_PER_GROUP` and `GROUPS_PER_PROG > 1`, lanes with `offs_c >= CH_PER_GROUP` are masked correctly, but the actual issue is likely the tf32 matmul accuracy \u2014 switch `input_precision='ieee'` or accumulate in fp32 with `allow_tf32=False` to tighten the ~5e-3 max-diff that's failing the loose 5e-2 check (avg 2.4e-4 suggests systematic tf32 drift accumulating across K=8192).\n- Verify by first trying `input_precision='ieee'` in `tl.dot`; if that fixes correctness, re-tune with larger `BLOCK_K` (64/128) and `num_stages=4` since K=8192 is large.\n- For the GN kernel, with C=8192, G=512, CH_PER_GROUP=16 \u2014 `BLOCK_CH=16`, so `GROUPS_PER_PROG=16` works; bump `num_warps=4` and consider processing multiple rows per program to amortize gamma/beta loads.",
+    "large_guidance": "- Replace the tf32 GEMM with an fp32-accumulated GEMM (or use cuBLAS via `torch.addmm` and only fuse GN+LeakyReLU+double in Triton) \u2014 the 5e-3 max-diff on a K=8192 reduction is exactly the tf32 signature, and matmul is the dominant cost so getting it right matters most.\n- Alternative: keep Triton GEMM but fuse the GroupNorm reduction into the matmul epilogue by having each program compute a full row tile spanning all N (persistent-M strategy), so the row's groupnorm stats can be computed without a second kernel launch and second global memory round-trip.\n- Consider channels_last/row-major layout for weight (transpose once at init via a buffer, not folded into math) so the K-loop loads B contiguously without `tl.trans` in the hot loop.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 36,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 30,
+    "parent_node_id": 29,
+    "context_node_ids": [
+        29
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5818898134457787,
+    "max_reward": 0.5818898134457787,
+    "avg_reward": 0.5818898134457787,
+    "score": [
+        1,
+        1,
+        1.6005909609276745
+    ],
+    "small_guidance": "- The matmul is the dominant cost (M=1024, N=8192, K=8192). Add larger autotune configs targeting this exact shape: BLOCK_M=128/BLOCK_N=128/BLOCK_K=64 num_warps=8 num_stages=4, and BLOCK_M=64/BLOCK_N=256/BLOCK_K=128 num_warps=8 num_stages=3. Also try BLOCK_K=128 variants since K=8192 is large and benefits from deeper K-loop pipelining.\n- Pre-transpose the weight once (store as K\u00d7N layout in __init__) so the inner load on B is along the contiguous K axis without `tl.trans`, and remove the `offs_k < k_remain` mask in the K loop (K=8192 is divisible by all BLOCK_K choices) to cut per-iteration mask overhead.\n- Skip the partial+reduce two-kernel design when N fits in a single tile group: with BLOCK_N\u2265256 there are only 32 tiles; switch to a split-K-free single-kernel that uses atomicMax on a per-row scalar (or persistent loop over N tiles inside the kernel) so the second reduction kernel and the partial buffer disappear.",
+    "large_guidance": "- Redesign as a persistent / row-stationary kernel: one program per BLOCK_M rows that loops over all N tiles internally, accumulating the running max in registers across pooled tiles. This eliminates the partial buffer, the second reduction kernel launch, and lets the GELU+scale+pool+max fuse into the matmul epilogue with zero extra global traffic.\n- Since weight is constant, store weight pre-transposed (K\u00d7N contiguous) at module init so the K-loop B-load is a simple contiguous block load (no `tl.trans` of an [N,K] tile), enabling cleaner `tl.dot` with BLOCK_K up to 128 and better stage pipelining.\n- Consider FP16/BF16 weight+activation casting inside the kernel epilogue back to FP32 for accumulation \u2014 on a 4090 (Ada) tensor cores deliver ~2-4x throughput on fp16 matmul, and the loose 5e-2 tolerance accommodates the precision drop. The matmul is ~137 GFLOPs per batch at this shape, currently ~80 TFLOPs effective; fp16 tensor cores can push >300 TFLOPs.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 31,
+    "global_best_node_id": 15,
+    "global_best_score": [
+        1,
+        1,
+        1.7535136642010192
+    ]
+}

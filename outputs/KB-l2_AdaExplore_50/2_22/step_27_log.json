@@ -1,0 +1,27 @@
+{
+    "node_id": 27,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The output shape is wrong: reference returns shape `(M, 1)` after logsumexp, but the result `lse * mish(lse)` is correct per-row. The numerical mismatch (~13.5 avg diff) suggests the LSE computation itself is broken \u2014 likely the partial_sum reduction. Verify: when `num_blocks_n=64` (8192/128), `BLOCK_R=64` is fine, but check that fully-out-of-range blocks (none here since N=8192 is divisible) write `-inf`/`0` correctly. More importantly, double-check the formula: ref does `x = x*scale; x = x+x; clamp; lse` \u2014 so the value inside lse is `clamp(2*scale*(Wx+b), min, max)`, which matches `SCALE2=2*scale_factor` applied after bias. That looks right.\n- Real bug: the final activation is `x * mish(x)` where `x = lse`, so `result = lse * (lse * tanh(softplus(lse)))`. That matches code. But `tanh_sp` formula `(1-e^(-2sp))/(1+e^(-2sp))` is correct only for `sp >= 0`; softplus is always \u22650 so fine. Inspect numerics: for large lse (~10 since clamp_max=10, lse over 8192 elements \u2248 10 + log(8192) \u2248 19), softplus(19)\u224819, tanh(19)\u22481, mish\u224819, result\u224819*19=361. Avg diff 13.5 suggests off-by-constant \u2014 likely the partial reduction is summing wrong: `tl.exp(pm - global_max)` when `pm` for masked lanes is `-inf` produces 0, good \u2014 but `ps` for masked lanes was loaded with `other=0.0`, fine.\n- Suspect: `acc * SCALE2` is applied **after** bias, matching `(Wx+b)*2*scale`, which equals reference `2*scale*(Wx+b)`. \u2713. The likely bug: in autotune the kernel signature has `SCALE2: tl.constexpr` but it's passed as a Python float kwarg \u2014 autotune may re-specialize incorrectly, OR the `partial_max`/`partial_sum` strides are computed assuming `num_blocks_n=64` but autotune picks a different BLOCK_N. Force-pin BLOCK_N=128 by removing autotune and using a single fixed config to guarantee partial buffer size matches.",
+    "large_guidance": "- Since M=1024, N=8192, K=8192, the GEMM is huge (~137 GFLOPs) and dominates; the LSE reduction over N=8192 is cheap. Redesign as a single-pass **persistent per-row kernel**: one program per row of M (or small tile of rows), loops over N in tiles, accumulates `Wx+b`, applies scale/clamp, and runs an **online logsumexp** (track running max `m` and running sum `s`, update on each N-tile). This eliminates the partial buffers and second kernel entirely, and fuses the Mish epilogue at the end.\n- Alternatively, keep the two-stage design but make stage 1 a standard tiled GEMM (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8, num_warps=8, num_stages=3) writing the full clamped matrix, then a separate row-wise LSE+Mish kernel. This decouples GEMM tuning from reduction and lets you use proven GEMM configs. Stage-1 perf is what matters; stage-2 is trivial.\n- For the persistent per-row approach, since K=8192 fits the K-loop and each row needs a dot-product with all N=8192 columns, tile as BLOCK_M=16-32 rows \u00d7 BLOCK_N=128 cols \u00d7 BLOCK_K=64; one program handles all N tiles for its row tile, doing online LSE in registers. This avoids materializing the (1024, 8192) intermediate (256 MB) \u2014 big bandwidth win.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 28,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        1.9043525577683185
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 31,
+    "parent_node_id": 16,
+    "context_node_ids": [
+        16
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4816511884805502,
+    "max_reward": 0.4816511884805502,
+    "avg_reward": 0.4816511884805502,
+    "score": [
+        1,
+        1,
+        0.773622304964539
+    ],
+    "small_guidance": "- The dominant cost is the 16384\u00d74096\u00d74096 GEMM (`torch.addmm`); tuning the BN epilogue further won't close the gap. If staying small, fuse the scale+BN-stats pass with the apply pass on a single read of `y` only after replacing the addmm with a Triton GEMM. For the existing apply kernel, try `BLOCK_M=128, BLOCK_N=256, num_warps=8, num_stages=3` with `GROUP_M=8` to improve L2 reuse.\n- Increase `BLOCK_M_STAT` to 2048 or 4096 and `BLOCK_N_STAT=64` with `num_warps=4` to reduce loop trip count for the stats kernel; consider a two-stage tree reduction (block-partial sums, then a tiny finalize kernel) to get more parallelism along M.\n- Avoid recomputing `1/sqrt(var+eps)` and `a,b` via separate elementwise launches \u2014 fold the `mean/var \u2192 a,b` math into a tiny Triton finalize kernel that writes `a`,`b` directly.",
+    "large_guidance": "- Replace the `torch.addmm` with a custom Triton GEMM tiled with `tl.dot` (e.g. `BLOCK_M=128, BLOCK_N=128, BLOCK_K=32`, `GROUP_M=8`, `num_warps=4`, `num_stages=3-4`) and fuse the bias add + per-output-channel `scale` multiply into the epilogue. This single fused kernel produces the post-scale activations and is where the bulk of runtime savings live.\n- Within that fused GEMM epilogue, also accumulate per-N-tile partial `sum` and `sumsq` into global atomics (or write to a `(num_m_tiles, N)` scratch and reduce), so BN stats are obtained without a second full read of the M\u00d7N tensor. Then run a tiny finalize kernel to compute `a,b` and a single apply kernel that re-reads `y` once and writes the normalized output (or, alternatively, persist `y` in registers per-tile by combining stats via a two-pass scheme over tiles in M).\n- Consider a persistent-CTA strategy: each program owns a column tile (BLOCK_N) across all M, streams the GEMM K-loop, accumulates stats locally, then does the BN apply in-place \u2014 eliminating the separate stats and apply launches entirely (one launch end-to-end).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 32,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.7791481785714286
+    ]
+}

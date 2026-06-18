@@ -1,0 +1,29 @@
+{
+    "node_id": 37,
+    "parent_node_id": 35,
+    "context_node_ids": [
+        35
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.45473896911234535,
+    "max_reward": 0.45473896911234535,
+    "avg_reward": 0.45473896911234535,
+    "score": [
+        1,
+        1,
+        0.5515964951768489
+    ],
+    "small_guidance": "- The training path dominates with three passes over the activation tensor (stats kernel writes y, then host reduction over (N,C), then apply_bn reads/writes y again). Fuse the BN apply into the stats kernel by making it a two-pass-per-channel reduction across N: one program per channel `c` that loops over `n` and `HW` to compute sum/sqsum, then loops again to write `(y - mean) * scale + shift`. This avoids the intermediate `y` materialization round-trip.\n- The conv (cuDNN) at `(64,64\u2192128,128\u00d7128, k=3)` is the dominant cost \u2014 measure its share; once Mish+BN is fused into one pass, headroom is bounded by the conv. Consider channels_last memory_format on x/weight to speed the cuDNN conv before any further BN tuning.\n- Add larger autotune tiles for the apply path (BLOCK=8192, num_warps=8, num_stages=3) and ensure scale/shift broadcast loads stay in registers across the HW loop.",
+    "large_guidance": "- Replace `nn.Conv2d` with a custom Triton im2col-style GEMM kernel that fuses the Mish epilogue (`x*tanh(softplus(x))`) directly on the accumulator before storing. With `OC=128`, `N*H_out*W_out \u2248 64*126*126`, and `IC*KH*KW = 576`, a tile of `BLOCK_M=64, BLOCK_N=64, BLOCK_K=32, num_warps=4, num_stages=2` fits SMEM and gives a single fused conv\u2192Mish output in one launch.\n- For BN at eval, fold scale/shift into the conv epilogue too (one launch end-to-end); for training, follow the conv-Mish kernel with a single channel-reduction kernel that does both stats and the affine application in two passes per channel block (no intermediate write/read of the post-Mish tensor besides what stats need).\n- Use channels_last layout throughout so the GEMM-K dimension (IC*KH*KW) is contiguous and the BN reduction along (N,H,W) per-channel coalesces.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 38,
+    "global_best_node_id": 16,
+    "global_best_score": [
+        1,
+        1,
+        0.5587834201954398
+    ]
+}

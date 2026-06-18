@@ -1,0 +1,29 @@
+{
+    "node_id": 30,
+    "parent_node_id": 21,
+    "context_node_ids": [
+        21
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure is likely from the GroupNorm kernel: `gamma` and `beta` are per-channel (size C), but indexed as `gamma_ptr + group * CPG + offs`. That's actually correct for contiguous layout. More likely issue: when `mask` is False, `x - mean` uses `other=0.0` loaded value, then `xc` is masked to 0 \u2014 that part is OK. The real bug may be that `BLOCK = next_power_of_2(CPG)` with CPG=512 gives BLOCK=512, mask all true \u2014 should be fine. Check whether `tl.sum(x, axis=0)` on masked-out lanes (where x=0) is correct: yes. Try setting `eps=1e-5` matches PyTorch default \u2014 confirmed. Investigate if input `x` from `x.cuda()` differs from reference (reference runs on CPU vs GPU); ensure reference path also moves to GPU. The 0.0002 avg diff suggests a real numerical bug \u2014 possibly accumulator precision in GEMM. Try increasing `BLOCK_K` to 64 and ensure fp32 accumulation (already done).\n- Tighten autotune: drop tiny tiles (64x64), focus on 128x128x32/64 and 128x256x64 since M=N=1024/8192 are large and well-aligned.\n- For GroupNorm with CPG=512, use `num_warps=8`, `num_stages=3`, and load gamma/beta once into registers reused across the mul-add.",
+    "large_guidance": "- Rewrite GroupNorm+Hardtanh as a two-pass kernel that fuses with the GEMM epilogue impossible across samples, but consider a persistent kernel where one program processes a (sample, group) tile and uses Welford or a single-pass variance via E[x^2]-E[x]^2 with fp32 accumulators. Verify against PyTorch by isolating the GN kernel with a unit test.\n- Consider a fused GEMM\u2192GroupNorm pipeline: since each group spans CPG=512 contiguous output channels, schedule one program per (M-row-tile, group) so the GEMM writes a tile that immediately feeds the reduction without a global round-trip. This halves memory traffic for the 1024\u00d78192 intermediate.\n- Alternatively, split N axis along group boundaries: launch GEMM with BLOCK_N = CPG (512) so each program block produces exactly one group's worth of channels for its M rows, write to SMEM/registers, then reduce and normalize in-place before storing.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 31,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

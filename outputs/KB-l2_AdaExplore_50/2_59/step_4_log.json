@@ -1,0 +1,29 @@
+{
+    "node_id": 4,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- Add larger tile configs tuned for M=128, N=K=32768: with only 2 row-tiles of BLOCK_M=64, try `BLOCK_M=64, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4` and `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4` to maximize K-loop pipelining over the very long K=32768 dimension.\n- Drop the `% M` / `% N` wraparound on `offs_am`/`offs_bn` and instead clamp via masks on the load \u2014 the modulo introduces extra integer ops and can hurt address generation; also try `GROUP_M=4` since M is tiny (only 128 rows, 1-2 row tiles).\n- Ensure inputs are in fp16/bf16-free fp32 path but enable `tl.dot(..., allow_tf32=True)` (already set) and consider casting `x` and `weight_t` to tf32-friendly contiguous layout; verify `weight_t` stride has N contiguous (currently `t().contiguous()` gives `[K, N]` row-major so N is contiguous \u2014 good).",
+    "large_guidance": "- The workload is a skinny GEMM (M=128, N=K=32768): occupancy is limited because there are only ~128 N-tiles \u00d7 1-2 M-tiles \u2248 128-256 programs, far below the 4090's 128 SMs once you account for K-loop latency. Rewrite as a **split-K (or stream-K) GEMM**: partition the K=32768 reduction across multiple programs per output tile, accumulate partial sums via `atomic_add` into the output (or a temp buffer reduced in a second tiny kernel that also fuses bias+swish+scale).\n- Alternatively, since M=128 is small, treat this as a **tall matvec-batch**: persistent kernel where each program owns a `BLOCK_N` slab of output columns and streams across all of K once, holding the BLOCK_N\u00d7BLOCK_K weight tile and reusing it across all 128 rows of x \u2014 this maximizes weight reuse (weight is the dominant 4 GiB read) and converts the problem from compute-bound to bandwidth-bound on weight.\n- Consider casting weight to fp16/bf16 at init (store as fp16 buffer) and accumulating in fp32 \u2014 halves the 4 GiB weight read, which is the true bottleneck on a 4090 for this shape; correctness tolerance (5e-2) easily permits it.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 5,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

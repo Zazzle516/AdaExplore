@@ -1,0 +1,29 @@
+{
+    "node_id": 4,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing: training-mode running stats updates use the post-scale activation correctly, but `bn_stats_kernel` computes mean/var on `out` which is fine; the real issue is likely that the reference `nn.BatchNorm1d` in training mode normalizes using the *biased* batch variance but the test harness probably runs in eval mode after a warmup, or the reference uses running stats. Force eval-mode parity: always normalize with the freshly-computed batch mean/biased var when training, and ensure `use_var` is biased (it already is) \u2014 double-check that the reference `Model` is being compared in the same mode (likely `.eval()` is not called, so both use batch stats; the diff ~3e-3 suggests the BN weight/bias aren't applied correctly. Verify `self.bn.weight`/`bias` are the same parameters (init), and that the `scale` parameter is the *same* random tensor (seed the RNG identically) \u2014 actually the harness instantiates both models, so parameters differ unless copied. Add parameter copying from a reference or trust the harness, but ensure dtype of mean/var matches (use fp32 throughout \u2014 already done).\n- The `bn_apply_kernel` loads `mean`/`var` per-(pid_m,pid_n) tile redundantly; precompute fused `scale_eff = w / sqrt(var+eps)` and `shift_eff = b - mean*scale_eff` in a tiny prep kernel or on host, then the apply kernel only loads two vectors per N-tile.\n- Try `BLOCK_M=256, BLOCK_N=128` for `bn_apply_kernel` with `num_warps=8, num_stages=3` since M=1024, N=8192.",
+    "large_guidance": "- Fuse the entire BN-apply pass into the GEMM epilogue when running in eval (or after computing batch stats in a separate reduction kernel): one GEMM kernel writes the already-normalized output, eliminating the extra read/write of an 8192\u00d71024 fp32 tensor (~32MB). Strategy: (1) launch GEMM that writes pre-BN `out` AND simultaneously accumulates per-column sum and sum-of-squares via `atomic_add` into N-sized buffers; (2) a tiny N-program kernel finalizes mean/invstd and fused affine; (3) a second pass kernel reads `out`, applies `(x-mean)*scale + shift`. Or, even better, split into: GEMM\u2192write out + compute column stats inline (split-K-style reduction), then a single fused BN-apply kernel.\n- Alternatively, do GEMM in two passes: pass-1 computes stats only (no materialization needed if we recompute), pass-2 recomputes GEMM and writes normalized output. With K=8192 this doubles compute but removes the intermediate; usually not a win \u2014 prefer the column-stats-during-GEMM approach with atomics or a split-K reduction buffer.\n- Ensure the GEMM uses `tl.dot` with B transposed via strides (already done) but consider materializing `W^T` once in `__init__` as a contiguous (K,N) tensor so the inner-K loads are contiguous along N \u2014 this is the single biggest perf lever for an 8192\u00b3 GEMM on a 4090.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 5,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

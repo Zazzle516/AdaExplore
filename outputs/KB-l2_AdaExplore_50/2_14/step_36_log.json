@@ -1,0 +1,30 @@
+{
+    "node_id": 36,
+    "parent_node_id": 33,
+    "context_node_ids": [
+        25,
+        33
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness bug: the partial scratch is allocated with `max_num_n = cdiv(N,64)` but the reduce kernel uses `num_n = cdiv(N, block_n)` from the chosen config; if BLOCK_N > 64, rows of `partial` beyond column `num_n` contain stale data from earlier iters, and if BLOCK_N < 64 (none here) it would be undersized. Fix by zero-initializing partial (`torch.zeros`) sized to the worst-case, or allocate exactly `cdiv(N, BLOCK_N)` columns after resolving best_config (run a warmup), or fuse the reduction so no scratch is needed.\n- Drop the two-kernel split entirely: since the final output is just `sum_n (X @ W^T)_{m,n} * scale`, fuse into a single kernel where each program handles a BLOCK_M row tile and loops over all N tiles, accumulating `tl.sum(acc, axis=1)` into a `(BLOCK_M,)` register; write once at the end. This removes the scratch + second pass and the staleness bug.\n- For the fused row-reduction kernel, prefer BLOCK_M=64, BLOCK_N=128, BLOCK_K=32, num_warps=8, num_stages=3 on the 4090; sweep BLOCK_N in {128,256} since N=8192 and a wider N tile amortizes the X reload across the N loop.",
+    "large_guidance": "- Rewrite as a single fused kernel: grid = `(cdiv(M, BLOCK_M),)`, each program loads its X row tile once into registers/SMEM and streams over N in BLOCK_N chunks, doing `tl.dot(x_tile, w_tile^T)` and immediately reducing along the N axis into a `(BLOCK_M,)` accumulator. Output is `(M,)` \u2014 no partial scratch, no second pass, no staleness.\n- Even better: recognize that the result is `scale * (X @ W^T).sum(dim=1) = scale * X @ (W.sum(dim=0))` mathematically \u2014 but per the safety contract this is a forbidden algebraic shortcut (collapses the GEMM into a matvec). Do NOT do this; keep the full GEMM executing and only fuse the trailing reduction/scale into its epilogue.\n- Consider a split-K style design where multiple programs per row collaborate via `tl.atomic_add` into a single `(M,)` output, letting you use larger M-grid parallelism when M=1024 is small relative to SM count; combine with a persistent loop over N within each program for L2 reuse of X.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 37,
+    "global_best_node_id": 27,
+    "global_best_score": [
+        1,
+        1,
+        0.8119585150360703
+    ]
+}

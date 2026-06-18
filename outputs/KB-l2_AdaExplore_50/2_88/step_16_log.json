@@ -1,0 +1,30 @@
+{
+    "node_id": 16,
+    "parent_node_id": 10,
+    "context_node_ids": [
+        9,
+        10
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing with avg_diff ~5e-5 which is suspicious \u2014 likely the GroupNorm kernel masking is wrong: when `g_mask` masks out rows of the `[GPB, GS]` tile, the `tl.sum(x, axis=1)` for masked rows yields 0 and `mean=0`, but more importantly the divisor `GROUP_SIZE` is always used, which is fine \u2014 recheck that `GROUPS_PER_BLOCK` evenly divides `G=256` (it does for all branches), so the issue is elsewhere. Verify gamma/beta loads use the correct global channel index; also confirm `_weight_t` is updated if weights change (register as buffer means it's frozen at init \u2014 this breaks any weight updates but for inference-only eval it's fine; however during eval the test re-inits Model so the buffer must reflect current `self.gemm.weight`).\n- Tighten autotune: at M=1024, N=8192, K=8192, the best configs are typically BLOCK_M=128/BLOCK_N=256/BLOCK_K=32 or BLOCK_M=128/BLOCK_N=128/BLOCK_K=64 with num_warps=8, num_stages=3. Trim the config list to those 2-3 to cut autotune overhead.\n- For GroupNorm fusion: GROUP_SIZE=32 here, so GROUPS_PER_BLOCK=32 gives 1024 elements/block \u2014 set num_warps=8, num_stages=2; ensure col_idx arithmetic uses int32 and the row stride `pid_m * N` doesn't overflow (it won't at this size).",
+    "large_guidance": "- Redesign so the post-GEMM fused kernel does one program per `(row, group-chunk)` with the row tile kept in registers/shared and a two-pass Welford-free reduction (sum, sum-of-squares) computed in a single pass to halve memory traffic. With GROUP_SIZE=32 and 256 groups, you can fit an entire row (8192 floats = 32KB) in one CTA's shared memory and do all 256 group reductions in one persistent program per row \u2014 eliminating the `(M, num_g_blocks)` grid in favor of just `(M,)`.\n- Consider fusing the bias-add from the GEMM epilogue directly into the GroupNorm kernel by writing GEMM output without bias and adding bias inside the GN kernel where the row is already loaded \u2014 saves one read/write pass of an 8192-wide row. Alternatively, fold `multiply_weight` into a precomputed `gamma * mw` only if you keep the two swishes separate; safer to leave mw distinct since the first swish sits between gamma\u00b7x+beta and the mw multiply.\n- The current `_weight_t` buffer is a layout optimization but make sure correctness uses `self.gemm.weight` at forward time (re-transpose on the fly or sync the buffer) \u2014 a stale buffer is a likely cause of the ~5e-5 mismatch if any test mutates the linear weight.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 17,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

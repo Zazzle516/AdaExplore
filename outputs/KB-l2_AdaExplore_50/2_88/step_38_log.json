@@ -1,0 +1,29 @@
+{
+    "node_id": 38,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing with avg_diff ~5e-5 and max ~4e-3 \u2014 likely the GroupNorm variance is computed with `tl.where(mask, x - mean, 0.0)` but `mean` was computed over masked-sum/CH_PER_G which is fine; however CH_PER_G = 8192/256 = 32, so BLOCK=32 and num_warps should be small (1 or 2), not 4. Also try `eps` as `tl.constexpr` (e.g. 1e-5 baked in) instead of a Python float positional \u2014 float-arg specialization is fragile.\n- Cast gamma/beta/mw loads carefully and ensure the GroupNorm weight/bias are initialized as the reference (default init of `nn.GroupNorm` is gamma=1, beta=0); verify forward uses the same eps (1e-5) as `nn.GroupNorm` default.\n- For the GEMM, add a larger-N config tuned for (1024, 8192, 8192) such as BLOCK_M=128, BLOCK_N=256, BLOCK_K=32, num_warps=8, num_stages=3, and ensure K-loop mask uses `offs_k[None,:] + k*BLOCK_K < K` form for clarity.",
+    "large_guidance": "- Keep the two-kernel structure (GEMM+bias, then fused GN+Swish+Mul+Swish) \u2014 it's the right fusion boundary. The redesign should make the GN kernel persistent per row: one program handles all `num_groups` groups for a row, loading the full out_features=8192 row once into registers/shared memory, doing per-group reductions, and writing back \u2014 this halves global traffic vs. one program per (row, group).\n- Bake `CH_PER_G`, `C`, `num_groups`, and `eps` as `tl.constexpr` so the compiler fully unrolls the 32-wide reduction; pass eps as constexpr float, not a positional Python float.\n- Consider fusing the bias-add of the GEMM epilogue with a partial GN reduction is not feasible across rows, but you can switch the GEMM output to `channels_last`-style (row-major M\u00d7N, already the case) and have the GN kernel read with vectorized 4-wide loads (`tl.load` on float4-aligned offsets via BLOCK=32 and num_warps=1).",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 39,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

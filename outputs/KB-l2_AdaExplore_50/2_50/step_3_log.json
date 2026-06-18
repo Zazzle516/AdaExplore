@@ -1,0 +1,27 @@
+{
+    "node_id": 3,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.03863772076923077
+    ],
+    "small_guidance": "- The scatter kernel uses atomic_add over the full output grid; this is the bottleneck (208ms vs 8ms baseline). Tuning alone won't fix it, but as a quick win: use `tl.atomic_add` only when needed, and consider tiling over (kd, kh, kw) so multiple output writes per input load reuse `x_val`. Also raise `num_warps=4`, `num_stages=2` via `triton.autotune`.\n- In `fused_post_kernel`, drop the inner triple loop and load 8 values via vectorized offsets; also avoid adding `conv_b` 8 times then dividing \u2014 add once after the mean. Tune BLOCK over {128, 256, 512, 1024}.\n- Use `channels_last_3d` layout so OC is contiguous, enabling coalesced atomic_add writes across the BLOCK_OC dimension.",
+    "large_guidance": "- Rewrite ConvTranspose3d as a **gather-based GEMM** at the output grid, not scatter+atomic. One program per (N, OC-tile, output-spatial-tile); each program loops over (IC, kd, kh, kw), gathers the corresponding input element (with stride/padding inverse-map: `id = (od + PD - kd) / SD` valid when divisible), and accumulates into an OC\u00d7spatial tile. This eliminates all atomics and matches im2col-style conv perf.\n- Fuse AvgPool3d(k=2) directly into the conv kernel epilogue: have each program compute a 2\u00d72\u00d72 output block of the conv, sum-reduce to one pooled element in registers, then apply `(sum/8 + conv_bias) * scale1 + bias) * scale2` \u2014 eliminating the entire conv_out materialization (currently ~1MB\u00d7128 = huge memory traffic) and the second kernel launch.\n- Use channels-last (NDHWC) layout for both input and weight reshape so the GEMM-K axis (IC) is contiguous; tile BLOCK_OC=32, BLOCK_SPATIAL=64, autotune num_warps\u2208{4,8}, num_stages\u2208{2,3}.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 4,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.22448731620111734
+    ]
+}

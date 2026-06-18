@@ -1,0 +1,29 @@
+{
+    "node_id": 39,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.47273587790740335,
+    "max_reward": 0.47273587790740335,
+    "avg_reward": 0.47273587790740335,
+    "score": [
+        1,
+        1,
+        0.7000709927360775
+    ],
+    "small_guidance": "- Add a `triton.autotune` over the conv3d kernel with configs sweeping BLOCK_M \u2208 {16, 32}, BLOCK_N \u2208 {64, 128, 256}, BLOCK_K \u2208 {32, 64, 81}, num_warps \u2208 {4, 8}, num_stages \u2208 {2, 3, 4}; K=81 is small so a single-iteration loop with BLOCK_K\u226581 (padded) likely wins.\n- In the GN kernel, precompute `c = idx // S + g*channels_per_group` and gate `tl.load(weight_ptr + c, ...)` with the same mask but use `other=0.0`; also raise BLOCK_SIZE to 2048 and try num_warps=4 \u2014 group_size = 2*S = 2*14*62*62 \u2248 107k, so larger blocks reduce loop overhead.\n- Cache the loaded x tile from pass-1 in registers when group_size fits (it doesn't here at 107k), otherwise reduce the per-channel weight/bias loads by hoisting them: load `channels_per_group` weights/biases once into SMEM-resident vectors and index by `c_in_group`.",
+    "large_guidance": "- The conv3d kernel uses an implicit im2col with BLOCK_M=16 (==OC), so each program does a skinny 16\u00d7N GEMM \u2014 tensor cores are underutilized. Redesign so one program covers multiple batches (fuse N into the M dimension: M = N_tile * OC or process several batches sharing the same spatial tile and weight tile) to get a fatter GEMM. Alternatively switch to a `channels_last` (NDHWC) layout so the K-axis (IC*KD*KH*KW) is contiguous and inputs coalesce.\n- Fuse the GroupNorm + min + clamp epilogue directly into the conv3d kernel's store path when the spatial tile aligns with a group's footprint; otherwise do a single-pass Welford GN keyed on (N, group) reading the just-written conv output once instead of twice. Current two-pass GN re-reads 107k elements per (N,group) \u2014 a persistent kernel that keeps the slab resident in registers/SMEM would halve memory traffic.\n- For K=81 (small), prefer a direct conv formulation: one program per (N, OC_tile, output-tile) with the KD/KH/KW loops unrolled as `tl.constexpr` and weights kept fully resident in registers (OC*IC*27 = 16*3*27 = 1296 floats fits trivially). This eliminates the im2col index math and the BLOCK_K loop entirely.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 40,
+    "global_best_node_id": 20,
+    "global_best_score": [
+        1,
+        1,
+        0.83563387283237
+    ]
+}

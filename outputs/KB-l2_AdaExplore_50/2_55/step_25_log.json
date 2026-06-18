@@ -1,0 +1,29 @@
+{
+    "node_id": 25,
+    "parent_node_id": 17,
+    "context_node_ids": [
+        17
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The current kernel loads W tile of shape [OUT_PER_PROG, BLOCK_K] = up to [128, 4096] each iter \u2014 huge register/shared pressure with `tl.sum(w*x)` not using `tl.dot`. Rewrite the inner accumulation as `tl.dot(w_tile, x_vec)` by shaping x as [BLOCK_K, 1] and using BLOCK_K=32 or 64 with BLOCK_M (OUT_PER_PROG) = 64/128 to engage tensor cores.\n- Add autotune configs with smaller BLOCK_K (32, 64, 128) and larger GROUPS_PER_PROG (32, 64) combined with `num_warps=8, num_stages=4` so the K-loop pipelines properly; current BLOCK_K=4096 prevents overlap.\n- Transpose W once at init to [IN_FEATURES, OUT_FEATURES] (contiguous along OUT) so the dot consumes B as [BLOCK_K, BLOCK_N] without strided loads in the hot loop.",
+    "large_guidance": "- Treat the whole forward as a tiled GEMM with epilogue: compute `y = x @ W^T + b` using `tl.dot` with BLOCK_M tiling over batch (M=128) and BLOCK_N tiling over out_features (N=32768), then within each program fuse the pairwise max-pool (kernel=2) and partial-sum across N into the epilogue. Use a 2-stage reduction: each program writes a partial sum per (batch row, N-tile) to a small buffer, then a tiny second kernel sums across tiles and multiplies by scale.\n- Pre-transpose the weight to (IN_FEATURES, OUT_FEATURES) at init so the GEMM's B operand is contiguous on the N axis; this is the dominant cost (128\u00d732768\u00d732768 \u2248 137 GFLOPs) and must run on tensor cores via `tl.dot`, not scalar `sum(w*x)`.\n- With M=128 only, consider BLOCK_M=128 (single program along M) and split-K across the grid: grid = (num_N_tiles, SPLIT_K), each program reduces a K-slab, atomically adds its pooled+summed partial into a [B, num_N_tiles] buffer, then a final reduction kernel sums across N-tiles. This exposes far more parallelism than the current (B=128, gtiles) grid.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 26,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

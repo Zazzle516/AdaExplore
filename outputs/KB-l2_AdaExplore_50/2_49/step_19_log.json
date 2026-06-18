@@ -1,0 +1,30 @@
+{
+    "node_id": 19,
+    "parent_node_id": 11,
+    "context_node_ids": [
+        10,
+        12
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4519646462646265,
+    "max_reward": 0.4519646462646265,
+    "avg_reward": 0.4519646462646265,
+    "score": [
+        1,
+        1,
+        0.5287083316831683
+    ],
+    "small_guidance": "- The fused softmax+sigmoid kernel is already memory-bound and small relative to the conv; further tuning here yields little. Try adding configs with `BLOCK_S=1024, num_warps=8` and `num_stages=3` keyed on `(C,S)`, and consider one-program-per-(N, S-tile) with `BLOCK_C=64` (exact C) so the channel dim is a single tile and the reduction stays in registers.\n- Ensure the store mask uses `mask_c[:,None] & mask_s[None,:]` (currently fine) and consider writing in fp32 with vectorized `BLOCK_S` powers-of-two only.\n- Bigger lever: the ConvTranspose3d dominates runtime (~8-9ms of the 10.1ms). No amount of softmax tuning will move `fast_p` past ~0.55.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC-tile, D_in, H_in tile, W_in tile)` computing the input\u00d7kernel outer product and atomically (or via deterministic accumulation per output tile) scattering into the output grid, handling stride=2, padding=1, output_padding=1 in index math. Fuse bias-add into the same epilogue.\n- Alternatively, formulate ConvTranspose3d as a gather-style GEMM: one program per `(N, OC-tile, output-spatial-tile)`, where each output position gathers the contributing `(ic, kd, kh, kw)` taps (only those satisfying `(od+pad-kd) % stride == 0` and in-range), accumulating into a tile. Use `channels_last_3d` layout so IC is the contiguous GEMM-K axis. Start with safe tiles `(BM,BN,BK)=(32,32,16)` num_warps=4 num_stages=2 inside `triton.autotune`.\n- Fuse the channel-softmax+sigmoid into the conv-transpose epilogue when feasible: have the conv kernel produce a full OC vector per spatial point in registers/SMEM, then do the max/sum/exp/sigmoid before storing \u2014 eliminates a full read/write pass over the 16\u00d764\u00d732\u00d764\u00d764 output tensor.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 20,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.5287083316831683
+    ]
+}

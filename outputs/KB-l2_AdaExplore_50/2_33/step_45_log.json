@@ -1,0 +1,30 @@
+{
+    "node_id": 45,
+    "parent_node_id": 44,
+    "context_node_ids": [
+        43,
+        44
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5662217975196222,
+    "max_reward": 0.5662217975196222,
+    "avg_reward": 0.5662217975196222,
+    "score": [
+        1,
+        1,
+        1.4713298295368833
+    ],
+    "small_guidance": "- The GEMM (M=1024, N=8192, K=8192) dominates runtime; addmm via cuBLAS is already strong but you can fuse the scale+bias+BN-affine epilogue into a custom Triton GEMM to eliminate the separate apply kernel pass over the 32MB output. Add autotune configs around BLOCK_M=64/128, BLOCK_N=128/256, BLOCK_K=32/64, GROUP_M=8, num_warps=8, num_stages=3-4.\n- In eval mode, precompute `a_coef`/`b_coef` once (cache invalidated on train()) and bake them as the epilogue of the GEMM so forward is a single kernel launch.\n- For the training-mode stats kernel, increase BLOCK_M to 2048 or use multiple programs per column with atomic add / two-stage reduction; current single-program-per-column with BLOCK_M=1024 underutilizes SMs (only 8192 programs each scanning 1024 rows serially is fine, but try num_warps=4 since reduction is narrow).",
+    "large_guidance": "- Rewrite as a tiled GEMM in Triton with `tl.dot` over K, fusing scale * BN-affine into the epilogue: `y = (acc + bias) * a_coef + b_coef`. One program per (M-tile, N-tile), GROUP_M swizzle for L2 reuse. This removes the separate apply kernel entirely and avoids materializing the pre-BN output in HBM.\n- For training, do a fused two-pass: first GEMM-with-scale writes `out` and accumulates per-column partial sum/sumsq via atomics (or a second small reduction kernel over tiles), then a single epilogue apply kernel reads `out` and writes normalized `y`. Keep stats computation tiled across M with one program per (col-tile, row-tile) reducing into a (num_row_tiles, N) workspace, then a tiny finalize kernel.\n- Consider TF32 `tl.dot` (input_precision='tf32') for the K=8192 contraction \u2014 accuracy is within the 5e-2 tolerance and gives ~2x throughput on Ada.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 46,
+    "global_best_node_id": 43,
+    "global_best_score": [
+        1,
+        1,
+        1.4797857480974401
+    ]
+}

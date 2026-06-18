@@ -1,0 +1,29 @@
+{
+    "node_id": 47,
+    "parent_node_id": 44,
+    "context_node_ids": [
+        44
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.48769105729589846,
+    "max_reward": 0.48769105729589846,
+    "avg_reward": 0.48769105729589846,
+    "score": [
+        1,
+        1,
+        0.8234512226911619
+    ],
+    "small_guidance": "- The conv_transpose is now the dominant cost (post kernel is tiny). Tuning the post kernel further won't move the needle; if staying small, at least remove the `x.contiguous()` after conv (channels_last_3d -> contiguous is a full copy) by writing the post kernel to consume strided/channels_last_3d input directly.\n- Add larger BLOCK over multiple (ho,do) rows per program to amortize gamma/beta loads, and keep `num_warps=4, num_stages=2` as the baseline autotune; current configs sweep too broadly.\n- Precompute `sum_w + beta_fold` only if mathematically equivalent \u2014 not applicable here since LN normalizes; instead, store gamma/beta in shared once via a persistent kernel per (n,c) tile.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add (or im2col-GEMM) kernel \u2014 it's the runtime bottleneck now that the epilogue is fused. Implement as one program per (N, OC tile, output-spatial tile) doing `input \u00d7 weight` outer-product scatter, handling stride=2/pad=1/output_padding=1 in the index math, with bias add fused in the epilogue.\n- Fuse the entire pipeline: conv_transpose \u2192 +sum_weight \u2192 LayerNorm (over C only, since norm_shape=(out_channels,) means LN is per-(N,D,H,W) over C) \u2192 avg_pool3d(2) \u2192 GELU into one or two kernels. Note: norm_shape=(C,) means the reduction axis is **channels**, not W \u2014 the current kernel reduces over W which is incorrect-looking but matches because LN dim is the last dim of the tensor; verify the LN axis assumption (LayerNorm with norm_shape=(C,) on an (N,C,D,H,W) tensor would error \u2014 confirm whether the reference reshapes).\n- Use channels_last_3d throughout and write the conv-transpose kernel to produce output already in channels_last so the LN-over-C reduction is a contiguous reduction; this enables a single fused kernel: one program per (N, output-spatial pooled tile), load 2\u00d72\u00d72 conv outputs, normalize over C, pool, GELU, store.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 48,
+    "global_best_node_id": 42,
+    "global_best_score": [
+        1,
+        1,
+        1.0453392767097385
+    ]
+}

@@ -1,0 +1,31 @@
+{
+    "node_id": 47,
+    "parent_node_id": 32,
+    "context_node_ids": [
+        25,
+        28,
+        32
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure likely comes from `tl.where(mask_n[None, :], gemm_acc, 0.0)` interacting with already-masked loads; instead, mask `w_tile` rows with `mask_n` set to 0 (already done) and skip the extra `where` \u2014 or apply `mask_n` before the dot accumulation. Verify by testing with M, N, K that are exact multiples of block sizes.\n- Tighten autotune configs to ones known good for M=1024, N=K=8192: `BLOCK_M=64, BLOCK_N=128, BLOCK_K=32, num_warps=4, num_stages=3` and `BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, num_warps=8, num_stages=3`. Drop the BLOCK_N=256 variant (register pressure on 4090).\n- Avoid materializing the full `(BLOCK_M, BLOCK_N)` gemm tile then reducing \u2014 accumulate `row_acc += tl.sum(tl.dot(...), axis=1)` per K-loop iteration, or better, accumulate `tl.dot` into a full row-tile then reduce once at end (current). Try fp32 accumulator with `tl.dot(..., out_dtype=tl.float32)` explicitly.",
+    "large_guidance": "- Since the output is just a per-row scalar `sum_j (x @ W^T)[i,j] * scale`, the work per row is M\u00b7(N\u00b7K) MACs. The kernel can be reorganized as: one program per row-tile of M, loop over K in blocks, load `x_tile (BLOCK_M, BLOCK_K)` once and accumulate against a streaming reduction over N inside. Concretely, for each K-block, compute `w_col_sum_k = sum_n W[n, k]` \u2014 but this is the forbidden algebraic shortcut. Instead: keep the full GEMM, but use a split-K / split-N persistent strategy with atomic adds into a `(M,)` output to maximize occupancy.\n- Switch to a 2D grid `(pid_m, pid_n)` computing partial row sums per `(BLOCK_M, BLOCK_N)` tile via `tl.dot`, reducing along N inside the program, and `tl.atomic_add` into `out[offs_m]`. This raises parallelism from `M/BLOCK_M \u2248 16` programs (severely under-occupying a 4090's 128 SMs) to `M/BLOCK_M * N/BLOCK_N \u2248 16*64 = 1024` programs.\n- Ensure `weight` is pre-transposed once in `__init__` (store `W` as `(input_size, hidden_size)` contiguous) so the GEMM is `x @ W` with both operands K-contiguous on inner axis \u2014 better for `tl.dot` throughput than transposing inside the kernel.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 48,
+    "global_best_node_id": 27,
+    "global_best_score": [
+        1,
+        1,
+        0.8119585150360703
+    ]
+}

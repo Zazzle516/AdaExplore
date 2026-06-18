@@ -1,0 +1,31 @@
+{
+    "node_id": 39,
+    "parent_node_id": 13,
+    "context_node_ids": [
+        2,
+        6,
+        8
+    ],
+    "depth": 5,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5029678464899782,
+    "max_reward": 0.5029678464899782,
+    "avg_reward": 0.5029678464899782,
+    "score": [
+        1,
+        1,
+        0.9494847335423198
+    ],
+    "small_guidance": "- The fused pool+sum kernel is fine; the bottleneck is the ConvTranspose3d. Within the existing kernel, try `BLOCK_C=64` (exact, no mask) with `num_warps=4, num_stages=2` and consider loading the 6\u00d76\u00d76=216 window with vectorized reads per-channel-tile to improve L2 reuse.\n- Add `@triton.autotune` over `{BLOCK_C: 32/64/128, num_warps: 2/4/8, num_stages: 2/3}` keyed on `(C,)` to pick the best config for `C=64`.\n- Keep input contiguous in standard NCDHW (not channels_last_3d) before the fused kernel since the pool kernel strides over spatial; only the conv input should be channels_last.",
+    "large_guidance": "- The dominant cost (~95% of runtime) is `nn.ConvTranspose3d`. Replace it with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)`, computing the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and `tl.atomic_add`-ing into the output grid at `(n, oc, d*stride - pad + kd, ...)`. Fuse the bias add into the same kernel epilogue.\n- Better: fuse ConvTranspose3d directly with both MaxPool3d(2)\u00b7MaxPool3d(3) and the channel sum. Since the final output is `(N,1,OD/6,OH/6,OW/6)`, each output element depends on a 6\u00d76\u00d76 window of conv-transpose outputs. Launch one program per output element, compute the needed conv-transpose values on-the-fly (gather form: for each output spatial position in the 6\u00d76\u00d76 window, sum over `ic, kd, kh, kw` the contributing input \u00d7 weight products), reduce max across the two pool stages, sum across OC, and write a single scalar. This avoids materializing the large `(16,64,64,64,64)` intermediate.\n- If full fusion is too complex, at minimum implement the conv-transpose as an im2col-style GEMM with bias fused, in channels_last_3d layout, and keep the existing fused pool+sum kernel for the tail.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 40,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.9494847335423198
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 14,
+    "parent_node_id": 2,
+    "context_node_ids": [
+        2
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4778726903178123,
+    "max_reward": 0.4778726903178123,
+    "avg_reward": 0.4778726903178123,
+    "score": [
+        1,
+        1,
+        0.7424496951219514
+    ],
+    "small_guidance": "- Add larger autotune configs targeting the OH*OW=128*128=16384, OC=128 shape: try `BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, num_warps=8, num_stages=3/4` and `BLOCK_M=256, BLOCK_N=64, BLOCK_K=64`. Current best likely picks 64x128 which underutilizes; OC=128 fits exactly one BLOCK_N=128 tile so prioritize wider M tiles.\n- Pull the inner `for k in range(0, IC, BLOCK_K)` loop out so the GEMM-K accumulation is shared across all (kh,kw) \u2014 i.e. swap loop order to `for k: for kh: for kw:` and reuse the loaded x tile across the 16 kernel positions, or precompute all 16 valid masks once. Currently the input tile is reloaded KH*KW=16 times.\n- Since IC=64 and BLOCK_K=64 covers it in one iteration, hardcode a config with `BLOCK_K=64` and remove the K-loop overhead; also drop the `valid &` from the x mask (already zeroed via `ih_safe/iw_safe` + multiply by `valid` after dot, or fold into tile) to simplify masking.",
+    "large_guidance": "- Switch from gather-based transposed conv to a scatter-add formulation: one program per input tile (n, ih_tile, iw_tile, ic_tile) computes the `input[ic] \u00b7 weight[ic, :, kh, kw]` outer product and atomically scatters into the output. With stride=2, KH=KW=4, each input pixel writes to 4 disjoint output pixels per (kh,kw) \u2014 a direct GEMM where M=OC, K=IC, N=tile of input spatial, then scatter. This avoids the `(ih_num % STRIDE == 0)` waste where 3/4 of kernel positions miss.\n- Alternative: implicit-GEMM with the K-dimension being `IC * (KH/STRIDE) * (KW/STRIDE) = 64*2*2 = 256` (only the valid kernel positions per output pixel for stride=2). Precompute per-output-pixel the 4 contributing (kh,kw) pairs as constexpr; collapse into a single GEMM with K=256 and no inner masking.\n- Fuse the conv epilogue's bias add into the conv kernel store, and have the conv kernel write directly in NHWC so the softmax kernel reads contiguous channels without a separate pass \u2014 they already are, but ensure the conv stores in fp32 without an intermediate. Consider a two-stage persistent pipeline where the softmax/sigmoid kernel reads conv output tiles still resident, though cross-kernel persistence is impractical \u2014 instead make the conv kernel also do the channel-wise softmax when OC fits in one BLOCK_N tile (OC=128 does fit), eliminating the separate epilogue read/write entirely.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 15,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.0969527027027028
+    ]
+}

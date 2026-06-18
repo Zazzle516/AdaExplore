@@ -1,0 +1,30 @@
+{
+    "node_id": 14,
+    "parent_node_id": 11,
+    "context_node_ids": [
+        9,
+        11
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.48085621468347517,
+    "max_reward": 0.48085621468347517,
+    "avg_reward": 0.48085621468347517,
+    "score": [
+        1,
+        1,
+        0.7670637711386697
+    ],
+    "small_guidance": "- The kernel currently fixes BLOCK_K=IC=64 and uses a single static im2col loop over KH*KW=9 with full BLOCK_K reduction; try adding configs with BLOCK_K=32 (looping K twice) at BLOCK_M=128,BLOCK_N=128,num_warps=8,num_stages=3 to enable better pipelining, and prune oversized configs (256x64 with num_stages=3) that may spill.\n- Avoid the two extra `permute(...).contiguous()` calls per forward (input NCHW\u2192NHWC and output NHWC\u2192NCHW each cost a full tensor copy on a 128\u00d7128\u00d7128\u00d7128 fp32 tensor \u2248 134MB); fuse the input layout transform by having the kernel gather directly from NCHW (compute `(n*IC + ic)*IH*IW + ih*IW+iw`) and write the output directly into an NCHW buffer with `out[n,oc,oh,ow]` indexing \u2014 this alone likely closes most of the gap to baseline.\n- Add a swizzled program-id ordering (group pid_m in groups of 8) to improve L2 reuse across the OC tile dimension.",
+    "large_guidance": "- Redesign to operate directly in NCHW with no pre/post permute+contiguous: launch over (N*OH*OW tile, OC tile), and inside the K-loop iterate `ic` as the contiguous inner dim while `(kh,kw)` are static_range outer \u2014 load `x[n, ic_block, ih, iw]` as a strided gather and `w[oc_block, ic_block, kh, kw]` likewise. The two contiguous() copies are currently ~25% of runtime.\n- Alternatively, keep NHWC but make the layout transform free by writing a tiny fused NCHW\u2192NHWC kernel and a fused NHWC\u2192NCHW+identity kernel, OR better: have the conv kernel itself output NCHW directly (store with stride `OH*OW` along channel), so only the input transform remains and it can be fused into the first K-iteration's load as a gather.\n- Consider a persistent / split-K-free design with BLOCK_K=IC=64 fully unrolled and KH*KW=9 fully static_range unrolled (already done), but increase output tile to BLOCK_M=128,BLOCK_N=128 with channels_last weight pre-permuted at init (cache once, not per-forward via _version check which still pays a Python overhead).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 15,
+    "global_best_node_id": 6,
+    "global_best_score": [
+        1,
+        1,
+        1.328878056640625
+    ]
+}

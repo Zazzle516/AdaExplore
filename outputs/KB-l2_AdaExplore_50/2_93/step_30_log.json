@@ -1,0 +1,30 @@
+{
+    "node_id": 30,
+    "parent_node_id": 29,
+    "context_node_ids": [
+        10,
+        29
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4057546630030879,
+    "max_reward": 0.4057546630030879,
+    "avg_reward": 0.4057546630030879,
+    "score": [
+        1,
+        1,
+        0.14747596977547495
+    ],
+    "small_guidance": "- Add `triton.autotune` over BLOCK_M\u2208{64,128}, BLOCK_N\u2208{64,128}, BLOCK_K\u2208{32,64}, num_warps\u2208{4,8}, num_stages\u2208{2,3} \u2014 current 64/64/32 with 4 warps is likely undersized for OC=128 and OH*OW=16,641.\n- Hoist the IC loop to be the outermost reduction (over kh, kw inside) so x tile loads can be reused across kh,kw; alternatively, precompute all kh,kw weight contributions per (ic_tile) into accumulator without re-walking IC each (kh,kw) \u2014 the current `for kh: for kw: for ic` reloads weights with high redundancy (KH*KW=16 passes over IC).\n- Switch grid order so spatial tile is program_id(0) (largest dim) for better L2 locality across OC tiles sharing input; consider channels_last input layout so IC-contiguous loads coalesce in the GEMM-K dimension.",
+    "large_guidance": "- Rewrite as a scatter-add (input-stationary) ConvTranspose: one program per (N, IC tile, input-spatial tile) computes the outer product input \u00d7 weight[ic,:,kh,kw] for all (kh,kw) and atomic-adds into the output grid. Avoids the gather-side validity masking that wastes ~75% of threads at stride=2 (most (oh,ow) only have one valid (kh,kw) per kernel position). Fuse bias+add+min+GELU+multiply in a second tiny epilogue pass over the dense output (or skip epilogue fusion and do it post-scatter).\n- Alternatively, im2col-style GEMM: materialize the (N*OH*OW, IC*KH*KW) gather implicitly with one program per (N, OH*OW tile, OC tile) doing a single K-loop over IC*KH*KW \u2014 this gives a clean GEMM-K of 64*16=1024 and lets BLOCK_K=32/64 with `tl.dot` reach peak. The current kernel has KH*KW separate dot calls of width BLOCK_K \u2014 collapsing them into one K-loop dramatically increases tensor-core utilization.\n- Pre-pack weight to layout [OC, IC, KH, KW] \u2192 [IC*KH*KW, OC] (or [OC, IC*KH*KW]) once in `__init__` (recompute on weight change) so the GEMM-K stride is unit and `tl.dot` operates on contiguous tiles.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 31,
+    "global_best_node_id": 8,
+    "global_best_score": [
+        1,
+        1,
+        0.932189808951965
+    ]
+}

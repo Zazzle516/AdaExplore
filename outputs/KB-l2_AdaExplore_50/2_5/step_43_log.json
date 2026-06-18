@@ -1,0 +1,29 @@
+{
+    "node_id": 43,
+    "parent_node_id": 21,
+    "context_node_ids": [
+        32
+    ],
+    "depth": 5,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.49943537915742797,
+    "max_reward": 0.49943537915742797,
+    "avg_reward": 0.49943537915742797,
+    "score": [
+        1,
+        1,
+        0.9203418780487805
+    ],
+    "small_guidance": "- The fused bias+tanh epilogue is already memory-bound and tiny vs the conv; further tuning of BLOCK/num_warps here won't move the needle. If you stay small, flatten to a 1D grid over N*C*HW with BLOCK=4096-8192, num_warps=4, and avoid the `.contiguous()` call before the kernel (output of ConvTranspose2d is already contiguous).\n- Drop the `x.contiguous()` call in forward \u2014 it's a redundant copy on an already-contiguous tensor and adds bandwidth cost.\n- Try channels_last memory format for the conv_transpose input/weight; cuDNN's NHWC ConvTranspose2d kernels are often faster on Ampere/Ada for these shapes.",
+    "large_guidance": "- The ConvTranspose2d dominates runtime (fast_p=0.92 with an already-fused tail). Replace it with a custom Triton scatter-add (or equivalent gather) kernel: for stride=2, padding=1, output_padding=1, kernel=4, each input pixel contributes to a 4x4 patch in the output with stride-2 spacing. Implement as a gather-style kernel over output tiles where, for each output (n, oc, oh, ow), you loop over (ic, kh, kw) with the inverse-stride index math and accumulate `input[n, ic, ih, iw] * weight[ic, oc, kh, kw]`, fusing bias subtraction and tanh in the epilogue before store.\n- Layout the weight as [IC, OC, KH, KW] reshaped to a GEMM-friendly [IC*KH*KW, OC] view and tile over (N*OH*OW, OC) with BLOCK_M=64-128, BLOCK_N=64, BLOCK_K=32; autotune over a small grid. Use channels_last for input so the IC axis is contiguous and loads coalesce along K.\n- Persist the bias broadcast in the OC tile (load once per program), apply `tanh` via `(exp(2y)-1)/(exp(2y)+1)` on the accumulator, and store directly \u2014 fully eliminating the second pass over the 32\u00d764\u00d7512\u00d7512 output tensor.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 44,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        1.1098240294117647
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 12,
+    "parent_node_id": 9,
+    "context_node_ids": [
+        9
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.42046628675215814,
+    "max_reward": 0.42046628675215814,
+    "avg_reward": 0.42046628675215814,
+    "score": [
+        1,
+        1,
+        0.2688468657053044
+    ],
+    "small_guidance": "- The bn_mean_sub kernel is fine but irrelevant to runtime \u2014 ConvTranspose3d dominates. Tuning BLOCK_S/num_warps further won't move fast_p meaningfully.\n- If keeping the current structure, at least fold the BatchNorm affine (weight/bias) and running stats into `scale`/`shift` directly (currently scale=ones, shift=zeros, so BN is left to torch and then a redundant pass runs). Fuse the real BN into the mean-sub kernel.\n- Use channels_last_3d layout on the BN output so the (D,H,W) reduction is contiguous and use BLOCK_S=2048, num_warps=8, num_stages=2 for S=D'\u00b7H'\u00b7W' \u2248 31\u00b763\u00b763.",
+    "large_guidance": "- The heavy op is ConvTranspose3d (16\u219232, k=3, stride=2, pad=1, output \u2248 16\u00d732\u00d731\u00d763\u00d763). Replace it with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile), computing the outer product input[n,ic,d,h,w] \u00d7 W[ic,oc,kd,kh,kw] and scatter-adding into out[n,oc, d*stride-pad+kd, ...] with bounds masks. This is the single highest-headroom move.\n- Fuse the eval-time BatchNorm (fold running_mean/var and affine into per-OC scale/shift) and the spatial-mean subtraction into the conv-transpose epilogue: accumulate a per-(N,OC) sum during a second pass (or two-kernel pipeline: scatter-add producing y, then a fused BN+mean+sub kernel like the current one but with real scale/shift). Avoid calling torch's BN entirely.\n- Use channels_last memory format for both input and output so OC is the contiguous axis; tile GEMM-style with BLOCK_OC=32, BLOCK_SPATIAL=64, BLOCK_IC=16, num_warps=4, num_stages=2 to stay well under the 132KB SMEM budget. Autotune over a small grid keyed on (OC, D'\u00b7H'\u00b7W', IC\u00b7KD\u00b7KH\u00b7KW).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 13,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.32290846370039283
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 14,
+    "parent_node_id": 13,
+    "context_node_ids": [
+        9,
+        13
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.48573292978086374,
+    "max_reward": 0.48573292978086374,
+    "avg_reward": 0.48573292978086374,
+    "score": [
+        1,
+        1,
+        0.8072966706921256
+    ],
+    "small_guidance": "- The GN+mean kernel is already cheap; the dominant cost is `F.conv3d` via cuDNN. Tuning BLOCK_S/num_warps further on this kernel will not move fast_p materially. If staying small, try fusing the conv bias add into the GN kernel's first load (skip bias in conv by passing `None`) and pre-compute `1/(OC*SPATIAL)` on host as a constexpr float to remove a divide.\n- Lower BLOCK_S to 512 with num_warps=4 \u2014 SPATIAL per channel is 22*30*30=19800, and 8 warps on a small per-program reduction wastes occupancy across (N=128, G=8)=1024 programs.\n- Combine the two passes into one by keeping the loaded tile in registers (SPATIAL*CHANS_PER_GROUP = 59400 floats per group \u2014 too large to persist), so instead store partial sum/sumsq tiles and reuse; otherwise accept the 2-pass reload.",
+    "large_guidance": "- Replace `F.conv3d` with a custom Triton im2col-style GEMM kernel: one program per (N, OC tile, output-spatial tile), gathering input offsets implicitly. With OC=24, K^3*IC=81, and output spatial=19800, this is a (24 x 19800) x (81) GEMM per batch \u2014 small K, well-suited to a single fused kernel that also writes directly into the GN reduction.\n- Fuse conv epilogue \u2192 GN stat reduction in one kernel: have the conv kernel's program-per-(N, group) write its OC slice while accumulating sum and sum_sq for that group in shared memory; a second kernel then normalizes and reduces to the per-batch mean. This eliminates the OC*SPATIAL writeback+reread of the conv output (\u224810 MB per batch).\n- Use channels_last3d layout for the conv output so the GN reduction reads contiguously across channels-per-group, and pick BLOCK tiles aligned to D_out*H_out*W_out=19800 (e.g. BLOCK_S=128 spatial \u00d7 CHANS_PER_GROUP=3 channel inner).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 15,
+    "global_best_node_id": 10,
+    "global_best_score": [
+        1,
+        1,
+        0.898688746619536
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 42,
+    "parent_node_id": 37,
+    "context_node_ids": [
+        37
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.6004258986910327,
+    "max_reward": 0.6004258986910327,
+    "avg_reward": 0.6004258986910327,
+    "score": [
+        1,
+        1,
+        1.7535136642010192
+    ],
+    "small_guidance": "- The GEMM dominates (M=N=K=8192). Add larger tile autotune configs tuned for square problems: `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3` and `BLOCK_M=256, BLOCK_N=128, BLOCK_K=64, num_warps=8, num_stages=4`, plus `BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, num_warps=8, num_stages=4`. Larger BLOCK_K (64) halves the K-loop iteration count.\n- Pre-transpose W to (K, N) once in `__init__` (store `self.weight_t`) so the inner-loop B load is contiguous along N (stride 1) rather than along K, improving coalescing and enabling better `tl.dot` layouts.\n- Drop the `% M` / `% N` index wrap and rely solely on masked stores; the modulo introduces unnecessary integer ops. Also bump `BLOCK_P=256` for the pool/GELU/max kernel since P=512 \u2014 fewer chunks and a single-pass reduction with num_warps=4.",
+    "large_guidance": "- Fuse the entire epilogue (AvgPool1d + GELU + scale + row-wise max) directly into the GEMM kernel's store stage: each program already produces a (BLOCK_M, BLOCK_N) tile of Y; instead of writing Y, reduce pool-windows within the tile, apply GELU+scale, take a partial row-max, and `atomicMax` (or a two-stage reduction buffer) into a per-row output of length M. This eliminates the full M\u00d7N writeback and re-read entirely \u2014 currently 256 MB of Y is round-tripped through HBM.\n- Alternatively, use a split-K / persistent GEMM that accumulates the full row in registers/SMEM by tiling only along N (BLOCK_N covers a whole pool window or multiple), and emits the reduced scalar directly. Because output is just (M,), avoiding Y materialization is the single biggest available win.\n- If keeping a separate pool/max kernel, make it a 2D grid (rows \u00d7 N-tile) with partial maxes combined via atomic max on a small per-row buffer, so multiple SMs cooperate on each row's 8192 elements rather than one program serializing the whole row.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 43,
+    "global_best_node_id": 41,
+    "global_best_score": [
+        1,
+        1,
+        1.7761396469649033
+    ]
+}

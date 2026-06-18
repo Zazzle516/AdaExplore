@@ -1,0 +1,30 @@
+{
+    "node_id": 49,
+    "parent_node_id": 37,
+    "context_node_ids": [
+        28,
+        46
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.452539264229006,
+    "max_reward": 0.452539264229006,
+    "avg_reward": 0.452539264229006,
+    "score": [
+        1,
+        1,
+        0.5334489298892989
+    ],
+    "small_guidance": "- The conv3d dominates runtime here (output is 128\u00d716\u00d714\u00d762\u00d762 \u2248 137M elements; GN+min+clamp is cheap). Tuning BLOCK_S/num_warps on the GN kernel won't move fast_p meaningfully \u2014 focus tuning effort on the conv. If staying with this kernel, try BLOCK_S=2048, num_warps=4, num_stages=3 and merge the two passes via Welford.\n- Fuse the dropout mask generation into the GN epilogue (Philox in-kernel) so the post-conv tensor is touched only once instead of twice.\n- Since min_value=0, max_value=1: the epilogue collapses to `max(min(x, 0), 0)` clamped to [0,1] \u2014 still write it generally but precompute `scale = rstd*w` and `shift = b - mean*rstd*w` once per (n,g) so the inner loop is one FMA.",
+    "large_guidance": "- Replace nn.Conv3d with a custom Triton im2col-GEMM kernel: one program per (N, OC_tile, output-spatial tile). With kernel_size=3, in_channels=3, out_channels=16, the K dim is only 81 \u2014 use BLOCK_K=81 (or padded 128), BLOCK_M=16 (OC), BLOCK_N=128 (spatial). This is where the 5.4ms\u2192<2.9ms gap lives.\n- Fuse conv bias + GroupNorm + min + clamp into the conv epilogue: have the conv kernel write per-(N,C) partial sums to a small workspace, run a tiny stats kernel over (N,G), then a second conv-shaped epilogue kernel that re-reads conv output (or recomputes) and applies (x-mean)*rstd*w+b \u2192 clamp \u2192 dropout in one pass. Alternatively, since GN reduces over C/G\u00b7D\u00b7H\u00b7W (~217k elements per group), a two-kernel split (conv\u2192write, then fused norm+clamp+dropout) is fine \u2014 the conv itself is the bottleneck.\n- Use channels_last_3d layout for the conv output so the GN reduction loads contiguous channel chunks per group, and so the conv kernel's GEMM-N axis is the contiguous spatial axis.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 50,
+    "global_best_node_id": 20,
+    "global_best_score": [
+        1,
+        1,
+        0.83563387283237
+    ]
+}

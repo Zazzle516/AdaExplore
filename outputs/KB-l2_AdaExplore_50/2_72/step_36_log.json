@@ -1,0 +1,31 @@
+{
+    "node_id": 36,
+    "parent_node_id": 33,
+    "context_node_ids": [
+        28,
+        31,
+        33
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4145216885088404,
+    "max_reward": 0.4145216885088404,
+    "avg_reward": 0.4145216885088404,
+    "score": [
+        1,
+        1,
+        0.2198039301979331
+    ],
+    "small_guidance": "- The conv-transpose kernel is the bottleneck (26.4ms vs 5.8ms baseline). Wrap it in `@triton.autotune` over `(BLOCK_OC, BLOCK_OW, num_warps, num_stages)` configs like `(16,32,4,2)`, `(16,64,4,2)`, `(16,128,8,2)`, `(32,64,8,3)`, `(32,32,4,3)` keyed on `(OC, OW, OD*OH)` \u2014 current fixed `BLOCK_OC=16, BLOCK_OW=64, num_warps=4` is likely suboptimal.\n- Inside the conv-transpose kernel, the innermost `tl.static_range(IC)` issues IC scalar `tl.load`s per `(kd,kh,kw)`; instead load all IC channels at once as a vector `tl.arange(0, IC_PAD)` and use `tl.dot` between `[IC, BLOCK_OC]` weights and `[IC, BLOCK_OW]` activations to leverage tensor cores.\n- The `valid_2d = id_valid & ih_valid` test is loop-invariant in `kw` and `ic` \u2014 hoist it out of those loops via early-exit-via-mask only (no branch); also predicate the entire (kd,kh) iteration with a Python-level skip when `id_valid`/`ih_valid` are known constexpr false impossible (they aren't constexpr here, so this requires masking, already done).",
+    "large_guidance": "- Re-architect the conv-transpose as an im2col-style implicit-GEMM with one program per `(N, OC-tile, output-spatial-tile)` where the K dimension is `IC*KD*KH*KW`. Use `tl.dot` over `BLOCK_M=BLOCK_OC (up to 32)`, `BLOCK_N=BLOCK_SPATIAL (64-128)`, `BLOCK_K=16 or 32` so the MAC count goes through tensor cores instead of scalar FMA in a 27-deep static loop.\n- Fuse the BatchNorm scale/shift directly into the conv-transpose epilogue, then have a separate fused 4\u00d74\u00d74 avg-pool kernel read the conv output. Better: skip materializing the full conv-transpose output entirely \u2014 fuse the BN + 4\u00d74\u00d74 pool into the conv-transpose by having each program compute one `(N, OC-tile, pooled-output-voxel)` and internally sum the 64 contributing output positions; each pooled voxel maps to a bounded set of input positions via the transpose-conv index math, so the inner GEMM-K is still `IC*KD*KH*KW` but the M/N grid shrinks 64\u00d7.\n- Switch to `channels_last_3d` memory layout for input/weight/output so the IC (and OC) axis is contiguous, enabling vectorized loads along the GEMM-K reduction.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 37,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        0.36042383585251137
+    ]
+}

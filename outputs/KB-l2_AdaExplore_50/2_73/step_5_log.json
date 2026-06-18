@@ -1,0 +1,29 @@
+{
+    "node_id": 5,
+    "parent_node_id": 2,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.40230923682476943,
+    "max_reward": 0.40230923682476943,
+    "avg_reward": 0.40230923682476943,
+    "score": [
+        1,
+        1,
+        0.11905120380434783
+    ],
+    "small_guidance": "- The kernel currently sets `K = IC*KH*KW = 8*3*3 = 72`, which is not a power of two and forces a single full-K `tl.dot` per program. Pad K to the next power of two (e.g. 128) via masked loads, or split K into a small loop (`BLOCK_K=16` or `32`) so accumulator stages can pipeline; combined with `num_stages=3-4` this should hide global-load latency.\n- Add larger spatial tiles to the autotune list (e.g. `BLOCK_M=128, BLOCK_N=64, BLOCK_K=32, num_warps=4, num_stages=3` and `BLOCK_M=256, BLOCK_N=32`). With `OH*OW=15876` per (N,OC), small `BLOCK_M=32/64` launches far too many programs; bigger M tiles reuse loaded weights better. Verify SMEM: `(256*32 + 32*64)*4*3 \u2248 122KB` fits.\n- Swap the grid order so `pid_m` (OC tile) is axis-0 and `(N, pid_s)` are flattened into axis-1 for better L2 weight reuse across batch, and switch input/output to `channels_last` so `stride_xc=1` makes the K-gather coalesced.",
+    "large_guidance": "- Rewrite as an explicit im2col-style GEMM with a real K-loop: `for k in range(0, K, BLOCK_K): load x_tile [BLOCK_M, BLOCK_K], load w_tile [BLOCK_K, BLOCK_N], acc += tl.dot(...)`. Hoist `ic/kh/kw` decoding per K-block outside the inner gather and precompute base input offsets per (oh,ow) once. This enables `num_stages>=3` pipelining that the current single-shot dot cannot exploit.\n- Move tensors to `channels_last` (NHWC) layout and store the fused weight as `[OC, KH, KW, IC]` so the K dimension is contiguous in memory for both X and W loads \u2014 currently the K axis strides over IC and over (kh,kw) of the image, both non-contiguous, which is the dominant bottleneck.\n- Fuse the bias+scale epilogue (already done) and consider a persistent/grid-stride kernel over (N, OC tiles) so each program loops over the spatial tiles, amortizing weight loads across many output pixels. For OC=64 and OH*OW\u224815876, one program per OC-tile reusing weights across all spatial tiles is a big win.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 6,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.11905120380434783
+    ]
+}

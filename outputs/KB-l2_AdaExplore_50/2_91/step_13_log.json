@@ -1,0 +1,29 @@
+{
+    "node_id": 13,
+    "parent_node_id": 5,
+    "context_node_ids": [
+        5
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.499689393939394,
+    "max_reward": 0.499689393939394,
+    "avg_reward": 0.499689393939394,
+    "score": [
+        1,
+        1,
+        0.9224375000000001
+    ],
+    "small_guidance": "- Drop the final `out_nhwc.permute(0,3,1,2).contiguous()` \u2014 write directly into an NCHW output by computing `out_ptr + n*OC*OH*OW + c*OH*OW + oh*OW + ow` in the store, eliminating a full tensor copy at the tail.\n- Add larger autotune configs (`BLOCK_M=256, BLOCK_K=64, num_warps=8`) and a `BLOCK_M=64, BLOCK_K=128` config; with OC=128 (BLOCK_N=128) the inner GEMM is 64\u00d7128\u00d7K, so larger M tiles should improve MMA utilization.\n- Hoist `pid_b * IH * IW * IC` and the `KHKWOC` strides as 64-bit precomputed bases outside the kh/kw loops, and replace `ih_num // STRIDE` / `% STRIDE` with a single `tl.where((ih_num & (STRIDE-1)) == 0, ...)` when STRIDE is a power of two (stride=2 here) to cut integer-op pressure in the hot loop.",
+    "large_guidance": "- Switch from gather (current: per-output, loop kh/kw, divide by stride) to a scatter-add implementation: one program per `(N, IC tile, IH*IW tile)`, compute `input \u00d7 weight[ic,:,kh,kw]` outer product, and `tl.atomic_add` into the OH\u00d7OW output grid at `(oh = ih*stride - pad + kh, ow = iw*stride - pad + kw)`. This removes the `ih_num % STRIDE == 0` waste (currently 75% of (kh,kw) pairs are invalid per output with stride=2), but softmax can no longer be fused in the same kernel.\n- With scatter-add, split into two kernels: (1) ConvT scatter producing NHWC pre-activation, (2) a row-fused softmax+bias+scale+sigmoid kernel where each program handles one (n, oh, ow) row with OC=128 fully resident in registers (BLOCK_N=128, num_warps=4). This separation lets each kernel use its ideal layout.\n- Alternatively, since stride=2, kh=4, kw=4: each output `(oh,ow)` only sees 4 valid (kh,kw) pairs (one per parity class). Specialize the kernel on parity: compute `kh_start = (oh+pad) & 1`, iterate `kh in {kh_start, kh_start+2}` only (same for kw). This cuts the kh/kw loop trip count from 16 to 4, a 4\u00d7 reduction in the GEMM-K outer iterations, while keeping the current fused softmax structure.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 14,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.0969527027027028
+    ]
+}

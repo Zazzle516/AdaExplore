@@ -1,0 +1,31 @@
+{
+    "node_id": 46,
+    "parent_node_id": 43,
+    "context_node_ids": [
+        3,
+        42,
+        43
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness failed with avg_difference ~3e-4 and max ~1.7e-3, which suggests the residual is being computed against the post-bias accumulator but the reference adds the residual `original_x` (the pre-sigmoid linear output). Actually that matches \u2014 `out = sig*scale + acc` is correct. The diff is more likely fp32 accumulation drift from autotune configs with small BLOCK_K=32 on K=8192; try restricting configs to BLOCK_K=64 or 128 and confirm `tl.dot` uses fp32 accumulator (it does by default). Also verify weight transpose: `w.t().contiguous()` gives shape (K, N) \u2014 correct.\n- The 5e-2 tolerance should easily pass with max diff 1.7e-3, so the \"correctness\" failure may be a shape/stride issue rather than numerics. Double-check that bias is loaded with `mask=offs_n<N` and `other=0.0` (it is). Try removing the weight transpose cache (it may be stale across parameter updates) and just use `w` directly with swapped strides: pass `w` with `stride_wk=w.stride(1), stride_wn=w.stride(0)` to avoid the contiguous copy.\n- Add configs tuned for M=N=K=8192: `BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, num_warps=4, num_stages=4` and `BLOCK_M=64, BLOCK_N=128, BLOCK_K=64`.",
+    "large_guidance": "- The structure (fused GEMM + sigmoid + scale + residual epilogue) is correct and well-suited; no redesign needed. If rewriting, keep the same single-kernel fusion but consider a persistent-GEMM scheme over the 64x64 tile grid for 1024x8192 output to reduce launch/scheduling overhead.\n- Avoid the extra `w.t().contiguous()` transpose entirely \u2014 pass the original weight `(N, K)` and load with `w_ptr + offs_n[None,:]*stride_w_n + offs_k[:,None]*stride_w_k`, where `stride_w_n = K, stride_w_k = 1`. This saves a one-time copy and removes the cache-staleness risk that may be causing the correctness mismatch.\n- Use fp32 throughout (inputs are fp32) and ensure `tl.dot(..., allow_tf32=False)` if max diff must be tighter \u2014 though 5e-2 tolerance makes TF32 fine.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 47,
+    "global_best_node_id": 41,
+    "global_best_score": [
+        1,
+        1,
+        1.4653670699658488
+    ]
+}

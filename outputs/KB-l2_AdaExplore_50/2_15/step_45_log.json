@@ -1,0 +1,30 @@
+{
+    "node_id": 45,
+    "parent_node_id": 41,
+    "context_node_ids": [
+        4,
+        22
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4207638894815953,
+    "max_reward": 0.4207638894815953,
+    "avg_reward": 0.4207638894815953,
+    "score": [
+        1,
+        1,
+        0.27130208822316104
+    ],
+    "small_guidance": "- The fused BN+submean kernel is fine but irrelevant: at fast_p=0.27 with baseline 1.78ms vs 6.57ms, the torch ConvTranspose3d dominates. Tuning BLOCK_S/num_warps on the tail kernel cannot close the gap.\n- If staying small, at least fold the BN scale/shift constants properly (current shift_c is uninitialized garbage but unused since we recompute mean \u2014 still, drop shift_c and the bn.bias load entirely; emit a single-pass Welford-style kernel that computes mean and applies `scale*(x-mean)` while bn.bias cancels in the submean step).\n- Consider channels_last_3d layout for the BN+submean tail and use larger BLOCK_S=4096 with num_warps=8, num_stages=3 \u2014 but expected gain is <5% of total runtime.",
+    "large_guidance": "- Replace nn.ConvTranspose3d with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile) computing the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and scattering into the output grid with stride=2, padding=1. Output shape is (16,32,31,63,63). Handle output_padding=0 in index math; mask out-of-bounds output positions.\n- Fuse BN (eval-mode: fold running_mean/var, gamma, beta, plus conv bias into a per-oc scale/shift) into the scatter epilogue so the output written is already `scale*conv_out + shift`. Then a separate small kernel computes per-(n,oc) spatial mean and subtracts it. Note bn.bias and shift cancel under submean, so the scatter can write `scale*conv_out` directly.\n- Alternative gather formulation: one program per (N, OC tile, output-spatial tile); for each output (od,oh,ow) loop over (kd,kh,kw) checking `(od+pad-kd) % stride == 0` and gather the corresponding input voxel \u2014 this gives coalesced output writes and avoids atomics. Use BLOCK_M=32, BLOCK_N=64, BLOCK_K=16, num_warps=4, num_stages=2 to stay within SMEM. Autotune over (32,32,16),(64,32,16),(32,64,16),(64,64,32).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 46,
+    "global_best_node_id": 29,
+    "global_best_score": [
+        1,
+        1,
+        0.3246729908244386
+    ]
+}

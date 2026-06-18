@@ -1,0 +1,29 @@
+{
+    "node_id": 48,
+    "parent_node_id": 17,
+    "context_node_ids": [
+        17
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.6054606888179541,
+    "max_reward": 0.6054606888179541,
+    "avg_reward": 0.6054606888179541,
+    "score": [
+        1,
+        1,
+        1.7950506827481205
+    ],
+    "small_guidance": "- The first GEMM (M=16384, N=4096, K=2048) is the dominant cost; add larger-tile autotune configs targeting this shape: `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4` and `BLOCK_M=256, BLOCK_N=128, BLOCK_K=64, num_warps=8, num_stages=3`, and also try `BLOCK_K=128` to reduce K-loop iterations. Pre-transpose `linear1.weight` once in `__init__` (like `linear2_wt`) so the B-operand is `(K, N)` contiguous and inner loads coalesce \u2014 currently the kernel loads B via `stride_bn=1, stride_bk=N` from a transposed view which is fine, but ensure it's contiguous in N for vectorized 128-bit loads.\n- Drop the per-iteration `k_offs < K` mask in the K loop by requiring `K % BLOCK_K == 0` (true here: 2048, 4096 are divisible by 32/64/128) \u2014 emit a no-mask fast path; this removes a compare+and per load and meaningfully helps the K-loop throughput.\n- For `lse_kernel`, N=1024 is small \u2014 use `BLOCK_M=16` or `32` with `num_warps=8`, `num_stages=2`, and skip `tl.where` after exp (use `other=-float('inf')` on the load so masked lanes contribute 0 to the sum naturally).",
+    "large_guidance": "- Replace the two-kernel GEMM+GEMM+LSE pipeline with a fused split-K / two-stage persistent design that avoids materializing the (16384, 4096) hidden activation: tile the M dimension persistently per SM, compute a BLOCK_M\u00d74096 sigmoid(hidden) slab in registers/shared memory, immediately matmul against `linear2_wt` (4096\u00d71024) tile-by-tile to produce a BLOCK_M\u00d71024 logits tile, then do the row-wise logsumexp on that tile in-kernel and write only the (BLOCK_M,) output. Eliminates a 256 MB HBM round-trip for `h` and a 64 MB round-trip for `logits`.\n- Alternatively, fuse just gemm2+LSE: a single kernel that, per row-tile, streams over the K=4096 dim accumulating a (BLOCK_M, 1024) logits tile in registers (1024 fits as 8\u00d7128 warp tiles), then does online-LSE across N=1024 before storing only the scalar output \u2014 saves the 64 MB logits write/read.\n- Use tensor-core friendly fp16/bf16 accumulation only if numerics allow; otherwise stick with fp32 inputs but make sure both GEMM B-operands are stored once in (K,N)-contiguous layout to maximize `tl.dot` MMA throughput on Ada.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 49,
+    "global_best_node_id": 42,
+    "global_best_score": [
+        1,
+        1,
+        2.1662898750439603
+    ]
+}

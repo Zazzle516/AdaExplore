@@ -1,0 +1,30 @@
+{
+    "node_id": 36,
+    "parent_node_id": 13,
+    "context_node_ids": [
+        1,
+        13
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Fix the GroupNorm weight/bias indexing bug: `weight` and `bias` are per-channel of length `C` (= out_features), not per-group. Use `tl.load(weight_ptr + group * CG + offs, ...)` is actually correct since channels are laid out contiguously \u2014 but verify: channels in group `g` are `[g*CG, g*CG+CG)`, so the indexing is right. The actual likely correctness issue is the `eps` argument: it is passed as a Python float positional, which is fragile \u2014 pass `eps` as `tl.constexpr` or hardcode `1e-5`. Also ensure `self.group_norm.eps` matches reference (default 1e-5) and that `CG` is passed as `tl.constexpr` so `1.0 / CG.to(tl.float32)` doesn't misbehave (currently `CG` is a runtime int \u2014 `CG.to(tl.float32)` on a Python int is invalid in Triton; use `tl.constexpr` for CG or compute `inv_cg` on host).\n- Make `CG`, `BLOCK`, and `eps` all `tl.constexpr` in `group_norm_kernel`; precompute `inv_cg = 1.0 / float(CG)` on host and pass as constexpr to avoid the `.to(tl.float32)` on a non-tensor.\n- After fixing correctness, autotune GEMM with an additional config tailored for M=32768, N=4096, K=1024 (e.g. BLOCK_M=128, BLOCK_N=256, BLOCK_K=32, num_warps=8, num_stages=4) and consider splitting K with `tl.dot(..., allow_tf32=True)` (already default) \u2014 main win is bigger N tiles.",
+    "large_guidance": "- Redesign GroupNorm as one program per (row, group) with persistent registers since CG=64 is tiny \u2014 load the 64 values into a single warp, do an in-register Welford or sum/sumsq reduction, no `BLOCK` masking needed. Pack multiple groups per program (e.g. 4 groups \u00d7 64 channels = 256 elements per program) to amortize launch overhead with M*G = 32768*64 = 2M programs (way too many) \u2014 reduce launches by handling several groups per program.\n- Consider fusing the GroupNorm directly into the GEMM epilogue: after the GEMM produces a full row tile, do the per-group reduction inside the same kernel. This requires BLOCK_N to cover whole groups (multiples of CG=64) \u2014 easy. Eliminates the intermediate `out` tensor write/read of 32768\u00d74096 fp32 = 512 MB of traffic, which likely dominates runtime.\n- Alternatively, keep GEMM and GroupNorm separate but make GroupNorm row-persistent: one program per row processes all 64 groups, reusing the loaded row in shared memory / registers, cutting launches from 2M to 32K.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 37,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

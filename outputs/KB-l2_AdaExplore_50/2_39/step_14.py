@@ -1,0 +1,129 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import triton
+import triton.language as tl
+
+
+# Stage 1: compute per-column sum and sumsq of y*scale, where y = gemm output.
+# Split-M strategy: multiple programs along M reduce partial sums per column,
+# then atomic-add into the global per-column accumulators.
+@triton.jit
+def scale_bn_stats_kernel(
+    Y_ptr, scale_ptr, sum_ptr, sumsq_ptr,
+    M, N,
+    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
+):
+    pid_m = tl.program_id(0)
+    pid_n = tl.program_id(1)
+
+    offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    mask_n = offs_n < N
+    s = tl.load(scale_ptr + offs_n, mask=mask_n, other=0.0)
+
+    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    mask_m = offs_m < M
+    ptrs = Y_ptr + offs_m[:, None] * N + offs_n[None, :]
+    y = tl.load(ptrs, mask=mask_m[:, None] & mask_n[None, :], other=0.0)
+    v = y * s[None, :]
+    psum = tl.sum(v, axis=0)
+    psumsq = tl.sum(v * v, axis=0)
+
+    tl.atomic_add(sum_ptr + offs_n, psum, mask=mask_n)
+    tl.atomic_add(sumsq_ptr + offs_n, psumsq, mask=mask_n)
+
+
+# Stage 2: apply out = y * a + b
+@triton.jit
+def fused_scale_bn_apply_kernel(
+    Y_ptr, Out_ptr, a_ptr, b_ptr,
+    M, N,
+    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
+):
+    pid_m = tl.program_id(0)
+    pid_n = tl.program_id(1)
+
+    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    mask_m = offs_m < M
+    mask_n = offs_n < N
+    mask = mask_m[:, None] & mask_n[None, :]
+
+    a = tl.load(a_ptr + offs_n, mask=mask_n, other=0.0)
+    b = tl.load(b_ptr + offs_n, mask=mask_n, other=0.0)
+
+    ptrs = Y_ptr + offs_m[:, None] * N + offs_n[None, :]
+    y = tl.load(ptrs, mask=mask, other=0.0)
+    out = y * a[None, :] + b[None, :]
+    out_ptrs = Out_ptr + offs_m[:, None] * N + offs_n[None, :]
+    tl.store(out_ptrs, out, mask=mask)
+
+
+def fused_scale_batchnorm(y, scale, gamma, beta, running_mean, running_var, eps, momentum, training):
+    M, N = y.shape
+    if training:
+        sum_buf = torch.zeros(N, device=y.device, dtype=torch.float32)
+        sumsq_buf = torch.zeros(N, device=y.device, dtype=torch.float32)
+        BLOCK_M_STAT = 512
+        BLOCK_N_STAT = 128
+        grid_stat = (triton.cdiv(M, BLOCK_M_STAT), triton.cdiv(N, BLOCK_N_STAT))
+        scale_bn_stats_kernel[grid_stat](
+            y, scale, sum_buf, sumsq_buf,
+            M, N,
+            BLOCK_M=BLOCK_M_STAT, BLOCK_N=BLOCK_N_STAT,
+            num_warps=8, num_stages=3,
+        )
+        mean = sum_buf / M
+        var = sumsq_buf / M - mean * mean
+        invstd = 1.0 / torch.sqrt(var + eps)
+
+        with torch.no_grad():
+            running_mean.mul_(1 - momentum).add_(mean, alpha=momentum)
+            unbiased_var = var * (M / (M - 1)) if M > 1 else var
+            running_var.mul_(1 - momentum).add_(unbiased_var, alpha=momentum)
+    else:
+        mean = running_mean
+        invstd = 1.0 / torch.sqrt(running_var + eps)
+
+    a = scale * invstd * gamma
+    b = beta - mean * invstd * gamma
+
+    out = torch.empty_like(y)
+    BLOCK_M_AP = 128
+    BLOCK_N_AP = 128
+    grid = (triton.cdiv(M, BLOCK_M_AP), triton.cdiv(N, BLOCK_N_AP))
+    fused_scale_bn_apply_kernel[grid](
+        y, out, a, b,
+        M, N,
+        BLOCK_M=BLOCK_M_AP, BLOCK_N=BLOCK_N_AP,
+        num_warps=8, num_stages=3,
+    )
+    return out
+
+
+class ModelNew(nn.Module):
+    def __init__(self, in_features, out_features, scale_shape, eps=1e-5, momentum=0.1):
+        super().__init__()
+        self.gemm = nn.Linear(in_features, out_features)
+        self.scale = nn.Parameter(torch.randn(scale_shape))
+        self.bn = nn.BatchNorm1d(out_features, eps=eps, momentum=momentum)
+        self.eps = eps
+        self.momentum = momentum
+        self.in_features = in_features
+        self.out_features = out_features
+
+    def forward(self, x):
+        x = x.contiguous().cuda()
+        W = self.gemm.weight
+        b = self.gemm.bias
+        scale = self.scale.contiguous().view(-1)
+
+        y = torch.addmm(b, x, W.t())
+
+        out = fused_scale_batchnorm(
+            y, scale,
+            self.bn.weight, self.bn.bias,
+            self.bn.running_mean, self.bn.running_var,
+            self.eps, self.momentum, self.training,
+        )
+        return out

@@ -1,0 +1,29 @@
+{
+    "node_id": 37,
+    "parent_node_id": 9,
+    "context_node_ids": [
+        9
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4751590566859561,
+    "max_reward": 0.4751590566859561,
+    "avg_reward": 0.4751590566859561,
+    "score": [
+        1,
+        1,
+        0.7200622176591376
+    ],
+    "small_guidance": "- The fused ReLU+GroupNorm is fine but conv_transpose3d dominates (~7ms baseline, kernel only 9.74ms total). Tuning the GN kernel won't help much \u2014 try BLOCK=1024 with num_warps=4 and a vectorized 2D tile `[CHANS_PER_GROUP, BLOCK]` to do the reduction in one pass per group instead of nested Python loops, but expect <10% gain.\n- Cache the mean/rstd in registers and skip the second ReLU recompute by storing the post-ReLU values to scratch in pass 1 \u2014 or better, fold ReLU into the conv epilogue so pass 2 only does affine.",
+    "large_guidance": "- The dominant cost is `nn.ConvTranspose3d` (in=64, out=128, k=3, input 32\u00b3, output 34\u00b3). Replace it with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile) computing the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and atomic-adding into the output grid at `(d+kd, h+kh, w+kw)`. With kernel=3 and stride=1, each input voxel contributes 27 output voxels per (ic,oc) pair.\n- Alternative: implement as a gather-style direct conv where each program computes one (N, OC tile, output-spatial tile) by summing over (IC, kd, kh, kw) \u2014 avoids atomics, im2col-style GEMM with BLOCK_OC=64, BLOCK_SPATIAL=64, BLOCK_IC=32. For ConvTranspose with stride=1 this is equivalent to a regular conv with flipped weights and padding=k-1.\n- Fuse ReLU + GroupNorm pass-1 reduction into the conv epilogue: each conv program accumulates partial sum_x and sum_x\u00b2 for its (N, group) into a small workspace, then a second light kernel does the normalize+affine. This eliminates the full read of the conv output in GN pass 1.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 38,
+    "global_best_node_id": 22,
+    "global_best_score": [
+        1,
+        1,
+        1.3618264077669902
+    ]
+}

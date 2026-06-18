@@ -1,0 +1,29 @@
+{
+    "node_id": 26,
+    "parent_node_id": 17,
+    "context_node_ids": [
+        17
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4816511884805502,
+    "max_reward": 0.4816511884805502,
+    "avg_reward": 0.4816511884805502,
+    "score": [
+        1,
+        1,
+        0.773622304964539
+    ],
+    "small_guidance": "- Replace the separate `torch.addmm` with a fused Triton GEMM that performs `Y = X @ W^T + bias`, and have its epilogue directly compute the per-column partial sums and sum-of-squares (atomic-add into `sum_buf`/`sumsq_buf`) so the stats pass disappears. Tile with BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, num_warps=4, num_stages=3, and GROUP_M=8 swizzle.\n- For the apply kernel, increase BLOCK_M to 128 and reduce BLOCK_N to 128 (square tiles map better to 4090 L1/L2); try num_warps=4, num_stages=4. Also store `a`/`b` once in a small constant-loaded buffer reused across all M-tiles in a row group.\n- Autotune both kernels over (BLOCK_M, BLOCK_N, BLOCK_K, num_warps, num_stages) using `triton.autotune` keyed on `(M, N, K)`; current hand-picked BLOCK_M_STAT=2048 with BLOCK_N=128 produces very wide tiles that hurt occupancy.",
+    "large_guidance": "- The GEMM (16384\u00d74096\u00d74096 \u2248 550 GFLOPs) dominates; the current code delegates it to `torch.addmm` and then runs three extra passes (stats, apply, plus the addmm itself reads/writes Y twice). Rewrite as a single fused Triton matmul kernel `Y = X W^T + b` with a split-K or two-stage design that emits Y and per-column `sum`/`sumsq` via atomic adds, then one elementwise kernel applies `a*y+b`. This eliminates two full M\u00d7N reads of Y.\n- Alternatively, fuse the entire forward into two kernels: (1) tiled GEMM that writes Y plus column reductions, (2) a single epilogue kernel that reads Y once and writes the normalized output. Keep K-loop pipelined with num_stages=3-4 and use `tl.dot` with tf32 disabled (fp32 inputs).\n- Consider using `channels_last` / transposed-B layout so B (W^T) loads contiguously in the inner K-loop, and use a persistent kernel across N-tiles per row group to maximize L2 reuse of X tiles.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 27,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.7791481785714286
+    ]
+}

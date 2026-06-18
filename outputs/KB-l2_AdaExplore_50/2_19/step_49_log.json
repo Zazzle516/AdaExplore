@@ -1,0 +1,29 @@
+{
+    "node_id": 49,
+    "parent_node_id": 48,
+    "context_node_ids": [
+        48
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5564096815426998,
+    "max_reward": 0.5564096815426998,
+    "avg_reward": 0.5564096815426998,
+    "score": [
+        1,
+        1,
+        1.3903798727272725
+    ],
+    "small_guidance": "- The two-pass kernel reads x twice (stats + apply) and recomputes GELU twice. Try a single persistent kernel per (N, group) that loads each element once, accumulates sum/sum\u00b2 in registers, then re-streams via a second pass over the same group while keeping mean/rstd in registers \u2014 eliminates the intermediate mean/rstd global round-trip and one full GELU evaluation if you cache GELU outputs to a scratch buffer (group of 64*65k floats = 16MB, too big \u2014 instead recompute GELU but skip the global mean/rstd store/load).\n- Autotune stats kernel over BLOCK_SIZE \u2208 {2048, 4096, 8192} \u00d7 num_warps \u2208 {8, 16, 32}; the group has 64\u00d7258\u00d7258 \u2248 4.26M elements so larger BLOCK with more warps may improve bandwidth utilization.\n- For the apply kernel, increase BLOCK_SIZE to 4096 or 8192 and drop num_warps to 4 \u2014 HW per channel is 258\u00d7258=66564, so fewer, fatter programs reduce launch overhead.",
+    "large_guidance": "- The ConvTranspose2d almost certainly dominates the 27.5ms runtime (output is 128\u00d764\u00d7258\u00d7258 \u2248 2.17B elements). Replace it with a custom Triton scatter-add kernel: stride=1, kernel=3, so each input element scatters into a 3\u00d73 output neighborhood. With stride=1 this is equivalent to a direct conv of the input (padded) with the flipped kernel \u2014 implement as a gather-style im2col GEMM over output tiles where each output pixel reads a 3\u00d73\u00d7IC patch from the (zero-padded) input. This is the high-headroom move.\n- Fuse bias add + GELU into the conv epilogue (write GELU(conv+bias) directly), then a separate fused GroupNorm pass. Even better: since GroupNorm needs global stats per group, do conv\u2192GELU\u2192write to global, then the existing fused stats+apply kernel \u2014 but the conv replacement alone should yield the biggest win.\n- Use channels-last layout for the conv output so the GroupNorm reduction along (C_in_group, H, W) has the channel axis contiguous in the inner dimension of the GEMM tile, improving coalescing for both the conv epilogue and the norm pass.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 50,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        1.4057149448529411
+    ]
+}

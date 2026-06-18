@@ -1,0 +1,29 @@
+{
+    "node_id": 38,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.45062706915306916,
+    "max_reward": 0.45062706915306916,
+    "avg_reward": 0.45062706915306916,
+    "score": [
+        1,
+        1,
+        0.5176733205128204
+    ],
+    "small_guidance": "- The epilogue kernel is already memory-bound and tiny relative to conv3d (~3.9ms total vs ~2ms baseline) \u2014 conv3d dominates. Tuning the epilogue further (block size sweep, dropping the scale_nc/bias_nc `.repeat` allocations by indexing `pid_nc % C` instead) gives only marginal wins.\n- Drop the `scale.repeat(N)` / `bias.repeat(N)` allocations; pass length-C tensors and compute `c = pid_nc % C` (or launch grid as (N, C, tiles)) to avoid two extra NC-sized buffers per call.\n- Try larger BLOCK (8192) with num_warps=8, num_stages=3 since SPATIAL=D*H*W=14*62*62\u224853k per (n,c) and is plenty large.",
+    "large_guidance": "- The conv3d is the bottleneck (~2ms baseline, epilogue adds ~2ms more \u2014 the torch conv itself is the floor). Replace `nn.Conv3d` with a custom Triton implicit-GEMM kernel: one program per (N, OC tile, output-spatial tile), gather inputs via im2col indexing without materializing the unfolded tensor. Output shape is (128, 16, 14, 62, 62); GEMM-K = IC*kD*kH*kW = 3*27 = 81 (small) and M = OC = 16 (small) \u2014 so tile aggressively along the spatial dim (BLOCK_SPATIAL=128 or 256) and keep OC and K fully unrolled.\n- Fuse the entire epilogue (scale, tanh-via-sigmoid, bias, sigmoid) into the conv kernel's accumulator before the store \u2014 eliminates the separate epilogue pass entirely, saving a full read+write of the 128*16*14*62*62 tensor.\n- Use channels-last (NDHWC) layout internally if possible so the IC*kD*kH*kW gather coalesces; otherwise keep NCDHW and load the small (3,3,3,3) weight into registers once per program. Bake kernel_size, stride=1, padding=0 as constexpr to let Triton unroll the 27-tap reduction.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 39,
+    "global_best_node_id": 37,
+    "global_best_score": [
+        1,
+        1,
+        1.4420899642857143
+    ]
+}

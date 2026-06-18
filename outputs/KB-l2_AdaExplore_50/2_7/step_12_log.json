@@ -1,0 +1,30 @@
+{
+    "node_id": 12,
+    "parent_node_id": 11,
+    "context_node_ids": [
+        10,
+        11
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5111639309294058,
+    "max_reward": 0.5111639309294058,
+    "avg_reward": 0.5111639309294058,
+    "score": [
+        1,
+        1,
+        1.0171024301675977
+    ],
+    "small_guidance": "- Add a `triton.autotune` over `(BLOCK_M, BLOCK_N, BLOCK_K, num_warps, num_stages)` keyed on `(OC, DHW_out, K_TOTAL)`. With `K_TOTAL=216` and `OC=32`, try configs like `(128,32,32,4,2)`, `(128,32,64,4,2)`, `(64,32,32,4,2)`, `(128,16,32,4,3)` \u2014 `BLOCK_N=32` already covers all of OC, so widening BLOCK_M reduces program count and weight reload cost.\n- Store output in a layout that matches the GEMM tile: write `(N, D_out, H_out, W_out, OC)` (channels-last) directly from the kernel \u2014 `out_offsets` currently strides by `DHW_out` along N which makes stores non-coalesced. Either permute at the end or have the kernel store contiguously along `offs_n` (the inner GEMM-N axis) with a final permute to NCDHW.\n- Hoist the conv bias load outside the K-loop (already done) and consider preloading the entire weight tile `(OC, K_TOTAL)=(32,216)` into registers/SMEM once per block-row since K_TOTAL is small \u2014 a single-pass K loop with `BLOCK_K=K_TOTAL` rounded to 256 may eliminate loop overhead.",
+    "large_guidance": "- Switch input layout to NDHWC (channels-last 3D) so the GEMM-K dimension `IC*KD*KH*KW` is contiguous in memory. Currently each `tl.load` of `x_vals` strides through D_in*H_in*W_in per IC, which is the worst-case gather. With NDHWC the inner loop over `ic` becomes a contiguous vector load and im2col gathers become spatially local.\n- Re-tile around the small-OC reality: OC=32 means BLOCK_N=32 saturates the channel axis; a persistent kernel with one program per `(N, output-tile-of-spatial)` that loads the entire weight `(32, 216)` tile once into SMEM and streams output spatial tiles will amortize weight traffic far better than the current 3D grid.\n- Alternative: since K_TOTAL=216 is tiny, implement a direct conv (no im2col gather indexing) with explicit nested loops over `(kd, kh, kw, ic)` unrolled, accumulating into a `(BLOCK_SPATIAL, OC)` tile. This avoids the modulo/div index decomposition currently dominating address arithmetic and lets the compiler vectorize input loads along W.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 13,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.95764876344086
+    ]
+}

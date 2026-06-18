@@ -1,0 +1,30 @@
+{
+    "node_id": 14,
+    "parent_node_id": 13,
+    "context_node_ids": [
+        3,
+        13
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5688465612484663,
+    "max_reward": 0.5688465612484663,
+    "avg_reward": 0.5688465612484663,
+    "score": [
+        1,
+        1,
+        1.4929841302998472
+    ],
+    "small_guidance": "- Add `triton.autotune` over BLOCK_M/BLOCK_N/BLOCK_K configs (try 128/256/32, 256/128/32, 128/128/64, 64/256/32) with num_warps in {4,8} and num_stages in {3,4} \u2014 the GEMM is the dominant cost (2048\u00d78192\u00d78192) and current 128/128/32 is likely suboptimal on a 4090.\n- Since only the row-sum of the GEMM output is needed, drop the BLOCK_N-wide accumulator write and instead reduce `acc` along N in-register before the atomic_add; also pre-reduce `bs_vals` contribution as `BLOCK_N * bs_mean_tile` to skip the broadcast add. Consider splitting K across the grid (split-K) only if BLOCK_N reductions don't already saturate.\n- For the residual kernel, BLOCK_F=2048 with num_warps=8 is fine but the kernel is a pure broadcast-add; try BLOCK_F=4096, num_warps=8, num_stages=2, and load `rs` once via `tl.load` with `eviction_policy=\"evict_last\"`.",
+    "large_guidance": "- The mean\u2192logsumexp(dim=1 of a keepdim=1 tensor) is just an identity on a scalar per row, so the whole middle pipeline collapses to: `g = gelu(mean_over_N(W\u00b7x + b - sub))`, then broadcast-add to original x. Restructure as a single fused \"GEMV-like\" kernel: per row m, compute `sum_n (sum_k W[n,k]*x[m,k] + bs[n])` directly as `sum_k x[m,k] * colsum_W[k] + sum(bs)` \u2014 but this is the forbidden algebraic shortcut, so instead do a tiled GEMM that reduces N inside each program (BLOCK_N as wide as possible, e.g. 256) and only atomic-adds a scalar per (m,k-group), eliminating the BLOCK_N-wide store.\n- Use split-K with a 2D grid (pid_m, pid_k) where each program computes a partial row-sum over a K-slice and a full N-slice, then a tiny second kernel finishes: gelu(rowsum/N) and broadcast-adds to original_x. This shrinks atomic contention vs the current N-tiling scheme.\n- Fuse the final gelu+residual into the epilogue of a persistent kernel that, after the rowsum reduce-scatter completes, reads original_x tiles and writes output \u2014 avoiding the separate launch and the extra read of rowsum.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 15,
+    "global_best_node_id": 10,
+    "global_best_score": [
+        1,
+        1,
+        1.5925164056531704
+    ]
+}

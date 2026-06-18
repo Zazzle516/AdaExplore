@@ -1,0 +1,29 @@
+{
+    "node_id": 42,
+    "parent_node_id": 19,
+    "context_node_ids": [
+        18
+    ],
+    "depth": 5,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM (1024\u00d78192\u00d78192) dominates at this size; cuBLAS via F.linear is reasonable but try `torch.addmm` with pre-transposed weight and ensure TF32 is off (fp32 expected). The GN+Swish kernel with GROUP_SIZE=32 is tiny \u2014 bump `num_warps=1` and `num_stages=2` explicitly, and process multiple groups per program (e.g. 4 groups \u00d7 32 = 128 elements per program along N) to reduce launch overhead from 1024\u00d7256=262k programs.\n- Pack rows into the program too: one program handles `(BLOCK_M_ROWS=4, groups_per_prog=4)`, doing 16 independent group-norms with vectorized loads \u2014 cuts grid by 16\u00d7.\n- Ensure `multiply_weight` and gn weight/bias are loaded once and reused across the row tile (broadcast along M).",
+    "large_guidance": "- The dominant cost is the 1024\u00d78192\u00d78192 GEMM (~137 GFLOPs). At fp32 on 4090, cuBLAS hits ~40 TFLOPs giving ~3.4ms \u2014 matching the observed 3.37ms. The GN/Swish epilogue is negligible. To beat this, fuse the bias+GN+Swish+Mul+Swish *directly into the GEMM epilogue* as a single tiled Triton matmul kernel: accumulate the row's full output in registers/shared mem, then compute mean/var across the 32-element groups within that row tile before storing.\n- Alternatively, use a split-K or persistent matmul Triton kernel tuned for (M=1024, N=8192, K=8192) fp32 with BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, num_stages=3, num_warps=8 \u2014 but fp32 tl.dot on Ada is unlikely to beat cuBLAS. The real win is epilogue fusion eliminating the separate read/write of the 1024\u00d78192 intermediate (~33 MB \u2192 saves ~0.3ms of HBM traffic).\n- Since GN groups are 32 channels wide and N-tile of 128 spans 4 full groups, the reduction fits entirely within one N-tile column \u2014 no cross-tile communication needed, making fusion clean.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 43,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

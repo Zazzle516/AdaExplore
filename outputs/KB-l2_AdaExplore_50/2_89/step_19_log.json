@@ -1,0 +1,29 @@
+{
+    "node_id": 19,
+    "parent_node_id": 18,
+    "context_node_ids": [
+        18
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.03503373034883721
+    ],
+    "small_guidance": "- The conv-transpose kernel issues one program per output pooled voxel and re-runs the full im2col gather 8 times per program; try increasing parallelism by splitting OC into tiles (one program per (n, pd, ph, pw, oc_tile)) and using `tl.dot` for the IC\u00d7OC contraction with BLOCK_OC=16, BLOCK_IC=4, num_warps=2.\n- Add a `triton.autotune` over (BLOCK_OC, num_warps\u2208{2,4,8}, num_stages\u2208{2,3,4}) keyed on (N, OC, PD*PH*PW); the current static 4-warp config likely under-occupies the SMs given only N*PD*PH*PW=128*4*8*8=32768 programs.\n- Hoist the divisibility checks (`(id_num - id_val*SD)==0`) by iterating only over kernel taps that are valid for the given output stride phase \u2014 for stride=2, only even/odd kd matter per od, cutting the kd*kh*kw inner work by ~8\u00d7.",
+    "large_guidance": "- Rewrite the conv-transpose as a scatter-add GEMM: for each input voxel, compute `input[n,ic,id,ih,iw] * weight[ic,:,:,:,:]` as an outer product and scatter-add into the output grid. This avoids the 27-tap gather with mostly-invalid taps inherent in the gather formulation (only ~1/8 of taps contribute under stride=2). Pair with an integrated 2\u00b3 max-pool reduction by accumulating directly into the pooled output using atomic max, or by writing to OD\u00d7OH\u00d7OW then doing the pool in a second small kernel.\n- Alternative: implicit-GEMM formulation where one program tiles (OC, output-spatial) and the K-loop is over (IC, KD, KH, KW) with the stride-divisibility test pruned to valid taps only. Use channels-last layout for the input and weight (pack IC contiguous) so the K reduction coalesces, and use `tl.dot` with BLOCK_M=32 (spatial), BLOCK_N=16 (OC), BLOCK_K=16.\n- Fold the post-pool softmax+sub+swish+channel-max directly into the conv-transpose kernel epilogue: since OC=16 fits in registers, after computing the 8 pooled values per (n, pd, ph, pw) you already have all channels \u2014 do softmax over channels, subtract, swish, and channel-max in-register, eliminating the second kernel entirely and the intermediate (N,OC,PD,PH,PW) write.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 20,
+    "global_best_node_id": 16,
+    "global_best_score": [
+        1,
+        1,
+        2.2484334402985073
+    ]
+}

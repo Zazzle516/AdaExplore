@@ -1,0 +1,29 @@
+{
+    "node_id": 26,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness bug: InstanceNorm2d on shape (M,1,1,N) treats H=1, W=N \u2192 normalizes across the W axis (N elements) per (batch, channel=1). That part the kernel does correctly, BUT InstanceNorm2d with num_features=out_features expects C=out_features; the reference squeezes from (M,1,1,N) \u2014 channel dim is 1, not N, so PyTorch's InstanceNorm2d effectively still normalizes over H*W=N. Recheck: PyTorch does NOT validate channel count against num_features when affine=False/track_running_stats=False, so it just normalizes per (M, 1) over N elements. The kernel matches that semantically. The ~1e-4 mismatch suggests an fp32 reduction precision issue \u2014 accumulate `sum` and `sum_sq` in a numerically stable way (use two-pass with float32 throughout \u2014 already done) or use Welford. Also ensure `N` is cast to float (`N_f = tl.full((), N, tl.float32)` or `mean = s / N.to(tl.float32)`).\n- The remaining error magnitude (~1.4e-3 max, 1.2e-4 avg) likely comes from GEMM accumulation in fp32 with `tl.dot` default `allow_tf32=True`. Pass `allow_tf32=False` to `tl.dot` (or use `input_precision=\"ieee\"`) since reference uses full fp32 matmul.\n- Avoid host-side `.cuda()` / `.contiguous()` copies in forward when inputs are already CUDA+contiguous \u2014 guard with `if not x.is_cuda`.",
+    "large_guidance": "- The GEMM dominates (M=N=K=8192 \u2192 1.1 TFLOP). Keep the tiled `tl.dot` GEMM but materialize B = W\u1d40 once in `__init__` (store as buffer) to avoid the per-forward `W.t().contiguous()` 256MB transpose copy. Alternatively, load W directly with swapped strides inside the kernel.\n- Fuse the bias-add into GEMM epilogue (already done) and consider also fusing the entire norm+residual+mul into the GEMM epilogue only when M-tile rows are fully computed \u2014 but since norm reduces across full N, prefer a two-kernel design: GEMM writes C, then a single persistent row-kernel does mean/var/normalize/add-y/mul-y in one pass with Welford for numerical stability.\n- For N=8192 the norm kernel uses BLOCK_N=8192 in one block \u2014 32KB per row, fine with num_warps=16 or 8 and num_stages=2. Consider tiled two-pass (mean pass, then normalize pass with cached statistics in registers) using 2-4 blocks per row with atomics or a small scratch buffer to reduce register pressure.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 27,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        0.8208452377944534
+    ]
+}

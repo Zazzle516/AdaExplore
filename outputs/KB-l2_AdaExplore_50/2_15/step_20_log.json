@@ -1,0 +1,30 @@
+{
+    "node_id": 20,
+    "parent_node_id": 10,
+    "context_node_ids": [
+        9,
+        10
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4075201621997374,
+    "max_reward": 0.4075201621997374,
+    "avg_reward": 0.4075201621997374,
+    "score": [
+        1,
+        1,
+        0.16204133814783347
+    ],
+    "small_guidance": "- The conv-transpose kernel is the bottleneck; current layout iterates IC in the innermost loop with scalar loads per `(kd,kh,kw,ic)`. Restructure to use a GEMM-style tile: load a `[BLOCK_OC, BLOCK_IC]` weight tile and `[BLOCK_IC, BLOCK_S]` input tile per `(kd,kh,kw)` and use `tl.dot` to accumulate; pick `BLOCK_OC=32, BLOCK_S=64, BLOCK_IC=16` at num_warps=4, num_stages=2 to fit SMEM.\n- Add `@triton.autotune` over `{(32,64,16),(64,32,16),(32,32,16),(64,64,16)}` \u00d7 `num_warps\u2208{4,8}` \u00d7 `num_stages\u2208{2,3}`, keyed on `(OC, OD*OH*OW, IC*KD*KH*KW)`.\n- Fuse the BN affine + spatial-mean subtraction epilogue directly into the conv-transpose kernel's store path is hard because mean needs all S; instead, keep BN fusion but speed up `_bn_mean_sub_kernel` by computing the per-(N,C) sum in one pass using a larger `BLOCK_S=4096`, num_warps=8, and reload-free second pass (cache vals in registers when S small enough \u2014 here S=32*32*32=... but D=31,H=63,W=63 so S\u2248123k, too large; keep two-pass but increase BLOCK_S).",
+    "large_guidance": "- Rewrite the ConvTranspose3d as a scatter-add formulated as a GEMM: for each input voxel tile, compute `out_tile[OC, kd*kh*kw] = W[IC,OC,kd*kh*kw]^T @ x[IC, tile]` via `tl.dot`, then scatter-add into the output grid at the appropriate `(od,oh,ow)` positions derived from `stride/padding/output_padding`. One program per `(N, OC_tile, input-spatial tile)`; this exposes IC as the GEMM-K dimension and uses tensor cores.\n- Alternatively, keep the gather (output-centric) formulation but flatten `(kd,kh,kw,ic)` into a single K-dimension GEMM with `tl.dot`: precompute valid masks per `(kd,kh,kw,od,oh,ow)` once, then loop K in `BLOCK_K=32` tiles loading `W[BLOCK_OC, BLOCK_K]` and `X[BLOCK_K, BLOCK_S]` with masking. Use channels-last (NDHWC) layout for `x` so the IC axis is contiguous and coalesces along K.\n- Make the kernel persistent over `(OD,OH,OW)` tiles per `(N, OC_tile)` so weight tiles for each `(kd,kh,kw)` are reused across many output spatial tiles, amortizing weight loads. Fold the BN scale/shift into the epilogue (constant per-OC), but leave the spatial-mean subtraction as a separate small reduction kernel since it requires a full spatial sum.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 21,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.32290846370039283
+    ]
+}

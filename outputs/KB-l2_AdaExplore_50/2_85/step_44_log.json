@@ -1,0 +1,30 @@
+{
+    "node_id": 44,
+    "parent_node_id": 42,
+    "context_node_ids": [
+        10,
+        39
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4419677136948581,
+    "max_reward": 0.4419677136948581,
+    "avg_reward": 0.4419677136948581,
+    "score": [
+        1,
+        1,
+        0.4462336379825792
+    ],
+    "small_guidance": "- The conv kernel uses gather-style indexing with a per-(kh,kw,ic) scalar weight load broadcast; this is bandwidth-bound. Switch to a proper GEMM tile: pre-load weight tile `[BLOCK_OC, IC*KH*KW]` once with `tl.dot`, and use larger `BLOCK_HW=256` with `num_warps=8, num_stages=3`. Also try `BLOCK_OC=64, BLOCK_HW=128, num_warps=4, num_stages=4`.\n- The GN-stats `BLOCK=2048` over `group_size=65536` (CPG=4, HW=16384) requires 32 iterations \u2014 bump `BLOCK` to 4096 or 8192 with `num_warps=8` to halve loop iters; consider 2D layout reducing per-row then across rows.\n- In the fused maxpool kernel, `BLOCK_HW=1024` with `H_OUT*W_OUT=1024` (32\u00d732) is fine but `POOL=4` static loops over 16 strided loads per output is gather-heavy; switch reads to a 2D tile (`oh[:,None]*POOL+ph`, `ow[None,:]*POOL+pw`) so the W-direction is contiguous, and try `BLOCK_HW=256, num_warps=4`.",
+    "large_guidance": "- The conv2d should be rewritten as an explicit im2col GEMM with `tl.dot`: program tiles `(N, BLOCK_OC, BLOCK_HW)`, K-loop over `IC*KH*KW=72` in chunks of `BLOCK_K=32`, accumulator from `tl.dot`. With C_OUT=64 a single program covers all OC (BLOCK_OC=64); grid becomes `(N, cdiv(H_OUT*W_OUT, BLOCK_HW))`. This will be 3-5\u00d7 faster than the current scalar-broadcast accumulator and unlocks tensor-core fp32 throughput.\n- Fuse the GN reduction directly into the conv epilogue when feasible, or at minimum use a single-pass Welford in one kernel rather than two launches; with CPG=4 and HW=16384 per group, a persistent kernel per `(N,G)` doing reduce-then-affine-then-maxpool-then-clamp in one pass over the data avoids re-reading the conv output twice.\n- Output layout: produce the conv result in `channels_last` (NHWC) so that the GN reduction over CPG (contiguous) and the maxpool window (contiguous in W) both vectorize cleanly; currently NCHW forces strided gathers in the pool kernel.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 45,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        0.9287336140344138
+    ]
+}

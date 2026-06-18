@@ -1,0 +1,27 @@
+{
+    "node_id": 44,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4585734128447774,
+    "max_reward": 0.4585734128447774,
+    "avg_reward": 0.4585734128447774,
+    "score": [
+        1,
+        1,
+        0.5832306559694131
+    ],
+    "small_guidance": "- Fuse the final mean reduction into the group_norm kernel's second pass: each (n,g) program already computes normalized values, so accumulate their sum into a per-batch partial (atomic add to out[n] scaled by 1/(C*S)) instead of writing out_gn and launching a second kernel.\n- Replace the per-element gather of weight/bias inside the normalization loop with a precomputed per-channel scale=w*rstd and shift=b-mean*scale loaded once per channel block; this removes redundant tl.load of weight/bias on every block iteration.\n- Add a `triton.autotune` over BLOCK_S \u2208 {512,1024,2048,4096} and num_warps \u2208 {4,8} keyed on group_size \u2014 for CPG*S = 3*22*30*30 \u2248 59k a larger BLOCK_S with num_warps=8 typically wins on Ampere.",
+    "large_guidance": "- The torch Conv3d dominates runtime here (group_norm + mean are tiny relative to a 128\u00d724\u00d722\u00d730\u00d730 conv3d). Replace nn.Conv3d with a custom Triton im2col-style GEMM kernel: one program per (N, OC tile, output-spatial tile), implicit im2col gather, BLOCK_M/N/K = 64/64/32 starting point, channels_last layout so IC*kD*kH*kW is the contiguous K axis.\n- Fuse the conv epilogue with GroupNorm and the final spatial-mean: have the conv kernel write per-(n,g) partial sums of x and x^2 (atomic adds to small scratch buffers), then a single tiny kernel computes mean/rstd per group and a second pass over the conv output applies normalize + global mean. Or even better, since the final op is a scalar mean over C,D,H,W, the conv kernel can directly accumulate \u03a3x and \u03a3x\u00b2 per (n,g) without materializing the full conv output twice.\n- Fold the GroupNorm affine (weight,bias) into the conv bias only for the global-mean contribution: since output = mean_over_all((x-\u03bc_g)*rstd_g*w_c + b_c), the per-channel b_c contributes a constant 1/C * mean(b) to the output \u2014 but keep the (x-\u03bc)*rstd*w term computed at runtime from the actual conv output (do NOT precompute \u03a3w\u00b7\u03a3conv as that would be the forbidden algebraic shortcut).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 45,
+    "global_best_node_id": 41,
+    "global_best_score": [
+        1,
+        1,
+        1.3739568337740984
+    ]
+}

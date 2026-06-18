@@ -1,0 +1,30 @@
+{
+    "node_id": 24,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        15,
+        23
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness fails: output diff ~0.005 suggests TF32 precision loss in the GEMM. Switch `input_precision=\"ieee\"` (or remove TF32) for the linear, or accumulate in fp32 with stricter precision; K=8192 accumulates significant error in TF32.\n- The K-loop mask uses only `offs_k < K - k*BLOCK_K` but ignores the row/col validity from the `% M` / `% N` wraparound. Since 1024/8192 are divisible by tile sizes this is fine, but ensure bias load mask is correct \u2014 `offs_bn < N` after modulo wrap can read wrong bias for tail tiles (here N divides cleanly so OK).\n- Keep the GN+LeakyReLU+double fusion; tune `num_warps` per ch_per_g (hidden=8192, groups=512 \u2192 ch_per_g=16, groups_per_prog=16 \u2192 256 elems, nw=2 is reasonable but try nw=4).",
+    "large_guidance": "- Replace the TF32 GEMM with an IEEE-fp32 `tl.dot` (or use `allow_tf32=False`) to satisfy the 5e-2 atol; current max diff ~0.005 is correct but the harness reports mismatch \u2014 verify by recomputing reference with same precision. If still failing, the bug is likely in the strided B access: weight is (N,K) row-major, B=W^T means stride_bk=W.stride(1)=1, stride_bn=W.stride(0)=K \u2014 confirm this and consider materializing W^T once if loads are uncoalesced.\n- Consider a split-K or persistent GEMM for M=1024,N=8192,K=8192 (large K) to better overlap loads; current single-pass over K=8192 with BLOCK_K=32 is 256 iterations per tile.\n- Fuse the bias add + write directly into a layout consumable by GN (e.g., write transposed or keep `[B,C]` row-major which it already is). The GN kernel assumes B=1024 programs \u00d7 32 group-blocks = 32K programs, each loading 256 elems \u2014 this is fine; ensure gamma/beta are cached (small, 8192 floats) by hoisting outside the per-batch loop via a persistent kernel that reuses gamma/beta across rows.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 25,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

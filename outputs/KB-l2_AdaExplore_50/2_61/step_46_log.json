@@ -1,0 +1,29 @@
+{
+    "node_id": 46,
+    "parent_node_id": 45,
+    "context_node_ids": [
+        43
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.475248758914946,
+    "max_reward": 0.475248758914946,
+    "avg_reward": 0.475248758914946,
+    "score": [
+        1,
+        1,
+        0.7208022610483041
+    ],
+    "small_guidance": "- The fused ReLU+GroupNorm kernel is already lean; try BLOCK_S=1024 or 2048 with num_warps=4 and num_stages=2 to reduce register pressure (S=34^3\u224839304 per channel, 16 channels per group \u2192 group_size~628864, so smaller BLOCK_S with more iterations may improve occupancy on the 4090).\n- Cache the post-ReLU values to avoid re-reading and re-applying ReLU in the second pass: store ReLU output to `y` during the stats pass, then read from `y` in the affine pass (turns 2 reads of x into 1 read + 1 read of y, eliminating the redundant max).\n- Add `triton.autotune` over BLOCK_S \u2208 {512,1024,2048,4096}, num_warps \u2208 {4,8} keyed on (C_PER_GROUP, S).",
+    "large_guidance": "- The ConvTranspose3d dominates runtime (fast_p=0.72 with the norm already fused). Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: for each input voxel \u00d7 kernel offset, accumulate `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` into `output[n,oc,d+kd,h+kh,w+kw]`. With stride=1, padding=0, output is (D+2,H+2,W+2). Kernel size 3\u00b3=27 and IC=64, so a GEMM-style tile over OC with K=IC*27 is viable.\n- Better: implement as a gather-based direct conv treating ConvTranspose3d (stride=1, no padding) as an equivalent Conv3d with a flipped weight and padding=kernel_size-1. This converts the op into a standard im2col GEMM, one program per (N, OC-tile, output-spatial-tile), with BLOCK_M=64, BLOCK_N=64, BLOCK_K=32. Fuse ReLU and GroupNorm stat accumulation into the conv epilogue (write conv output and atomically/locally accumulate per-(n,group) sum and sum_sq), then a second small kernel applies the affine \u2014 eliminates one full tensor read.\n- Use channels-last (NDHWC) layout for the conv output so the GroupNorm reduction over (C_per_group, spatial) has the channel axis contiguous and stats can be accumulated in-register during the conv epilogue.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 47,
+    "global_best_node_id": 22,
+    "global_best_score": [
+        1,
+        1,
+        1.3618264077669902
+    ]
+}

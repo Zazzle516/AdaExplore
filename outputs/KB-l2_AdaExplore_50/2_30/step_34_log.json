@@ -1,0 +1,31 @@
+{
+    "node_id": 34,
+    "parent_node_id": 33,
+    "context_node_ids": [
+        3,
+        5,
+        33
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (max diff ~0.0016, avg ~0.00023) is consistent with TF32 precision loss in the K=8192 GEMM. Drop `input_precision='tf32'` to `'ieee'` (or use fp32 accumulation without TF32) to pass the 5e-2 tolerance \u2014 though tolerance should already accept this; verify whether the issue is actually a stride/transpose bug in `_get_wt` (weight is `(out, in)`, `w.t()` gives `(in, out)` which matches K\u00d7N \u2014 that looks right). More likely: GroupNorm uses biased variance (`/C_PER_G`) matching PyTorch, good; but check that `eps` is passed as fp32 not fp64.\n- Add explicit boundary masking in the GEMM K-loop (`tl.load(a_ptrs, mask=offs_k[None,:] + k*BLOCK_K < K, other=0.0)`) \u2014 K=8192 is divisible by BLOCK_K so not the bug, but M/N tail masking is missing for store and could corrupt outputs if M/N aren't tile-multiples (here 1024/8192 are, so safe).\n- Try `input_precision='ieee'` first; if that fixes correctness, then re-sweep autotune configs with larger `BLOCK_K=64/128` and `num_stages=4` for the K=8192 dimension.",
+    "large_guidance": "- The structure is sound (tiled GEMM + fused GN/HardTanh). A redesign should keep this split but consider a persistent GEMM with split-K reduction since K=8192 is large relative to M=1024, or fuse the GN row-reduction with the GEMM epilogue when BLOCK_N spans a full group (C_PER_G=512, so BLOCK_N=512 could let each program produce a full group's stats in-register).\n- Alternative: write a single fused kernel where one program computes one (row, group) output \u2014 does a partial GEMM accumulating into a 512-wide vector, then normalizes and hardtanh's in-register, eliminating the intermediate `y` materialization (1024\u00d78192 fp32 = 32MB of HBM traffic).\n- Ensure GN matches PyTorch's biased variance and fp32 reduction; cast `eps` via `tl.constexpr` or as a Python float baked at compile time.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 35,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

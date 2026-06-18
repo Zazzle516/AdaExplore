@@ -1,0 +1,27 @@
+{
+    "node_id": 23,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Replace `tl.reshape(y, (num_groups, group_size))` (which fails because `num_groups` and `group_size` are runtime ints, not constexpr) by passing `NUM_GROUPS` and `GROUP_SIZE` as `tl.constexpr` arguments and reshaping with those.\n- Reduce `BLOCK_N=8192` per row: register pressure is enormous. Tile over N for the GEMM accumulation, store `y` to shared/global, then do a second pass for GN. Or split into separate kernels: GEMM tile + fused GN/min/bias.\n- Bump `BLOCK_K` to 128\u2013256 with `num_stages=3-4`, `num_warps=8`; current `BLOCK_K=64` underutilizes K-loop pipelining for K=8192.",
+    "large_guidance": "- The current \"one program per row, materialize all 8192 outputs in registers\" design is the structural problem: a single program holding [8192] fp32 plus [8192] gn affine plus loop accumulators blows the register file and forces tl.reshape on non-constexpr dims. Redesign as multiple kernels: (1) a tiled GEMM kernel `(BLOCK_M=64/128, BLOCK_N=128, BLOCK_K=32)` with fused bias add writing y to global, (2) a fused GroupNorm+min+bias kernel where each program owns one row and reduces within groups using `tl.arange(0, GROUP_SIZE)` per-group block, accumulating a running minimum over groups so only `[GROUP_SIZE]` lives in registers at once.\n- Better still: since the final output is `min_over_n(gn(y))[m] + bias[n]`, fuse GN+min into one persistent kernel per row that loads `y` in `[GROUP_SIZE]` chunks, computes per-group `(mean, rstd)` and the affine-normalized values, and updates a scalar running min \u2014 then a tiny elementwise kernel adds `bias[n]` and writes the `[1, N, M, 1]` output. This keeps all reductions in-kernel and avoids any large-shape reshape.\n- Pass `NUM_GROUPS`, `GROUP_SIZE`, `N`, `K` as `tl.constexpr` (they are all known at module init) so Triton can bake shapes; never call `tl.reshape` with runtime-int dims.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 24,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

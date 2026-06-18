@@ -1,0 +1,29 @@
+{
+    "node_id": 20,
+    "parent_node_id": 19,
+    "context_node_ids": [
+        19
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The kernel currently applies InstanceNorm to the post-conv tensor but skips the first `x * multiplier` before normalization (reference does `x = x * mult; x = InstanceNorm(x); x = clamp(x); x = x * mult`). Multiply by `mult` before computing sum/sum_x2 and before the normalize pass to fix correctness.\n- After fixing, keep BLOCK_S=512, num_warps=4, num_stages=2; consider adding an autotune sweep over BLOCK_S \u2208 {256, 512, 1024, 2048} and num_warps \u2208 {4, 8} since S=14*30*30=12600 per (N,C) and the two-pass loop is the hot path.\n- Channel count C=16 is small; broadcasting `[C, BLOCK_S]` tiles is fine, but try one program per `(N, S-tile)` with a persistent reduction-first pass via a separate small mean/var kernel to overlap I/O \u2014 or fuse multiplier into mean/var math analytically (mean_c = mult_c * mean(x_c), var_c = mult_c^2 * var(x_c)) to skip one multiply pass.",
+    "large_guidance": "- The Conv3d (cuDNN) almost certainly dominates runtime for shape [128,3,16,32,32]\u2192[128,16,14,30,30]. Replace it with a custom im2col-style Triton GEMM kernel: one program per (N, OC-tile, output-spatial-tile), with implicit im2col gather and channels_last layout so IC*kT*kH*kW (=81) is the K dim. Fuse the multiplier, InstanceNorm (two-pass over output spatial), clamp, second multiplier, and channel-max into the conv epilogue \u2014 eliminating the intermediate [N,16,14,30,30] tensor entirely.\n- Alternative simpler design: keep torch conv but ensure the post-conv fused kernel correctly implements `mul \u2192 InstanceNorm \u2192 clamp \u2192 mul \u2192 max_over_C`. Use one program per N, load the full [C=16, S=12600] tile in chunks, do Welford or sum/sum\u00b2 in fp32, then a second pass emitting max-over-C. This is the current structure \u2014 the bug is just missing the pre-norm multiplier.\n- For the channel-max reduction, since C=16 is tiny and constant, unroll across C in registers and avoid `tl.max(axis=0)` overhead by pairwise reduction; this also lets the multiplier be baked as a constexpr-shaped vector load once per program.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 21,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.9527247729854249
+    ]
+}

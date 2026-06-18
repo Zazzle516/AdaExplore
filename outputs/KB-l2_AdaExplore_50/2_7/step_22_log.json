@@ -1,0 +1,27 @@
+{
+    "node_id": 22,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4726471896946417,
+    "max_reward": 0.4726471896946417,
+    "avg_reward": 0.4726471896946417,
+    "score": [
+        1,
+        1,
+        0.6993393149807938
+    ],
+    "small_guidance": "- Add a `triton.autotune` over the conv3d kernel keyed on `(OC, OS, IC*KD*KH*KW)` with configs like `(BM,BN,BK) \u2208 {(64,32,16),(32,64,16),(64,64,16),(128,32,16),(32,128,16)}` at `num_warps=4/8`, `num_stages=2/3` \u2014 current fixed `(64,32,16)` likely underutilizes Tensor Cores given K=216 and OC=32.\n- Fuse the activation+bias epilogue (ReLU\u2192LeakyReLU\u2192GELU\u2192Sigmoid\u2192+bias collapses to `sigmoid(gelu(relu(acc))) + bias[oc]`) directly into the conv3d kernel's store, eliminating the second pass and the extra full read/write of a 64\u00b732\u00b730\u00b762\u00b762 fp32 tensor (~470 MB traffic saved).\n- Switch output layout written by conv3d to channels-last-style `[N, OD, OH, OW, OC]` so the BN tile contiguous along OC matches `offs_n`, enabling vector stores; or alternatively swap the program tiling so BLOCK_N spans OC fully (OC=32 fits in one tile) and remove the OC tiling loop.",
+    "large_guidance": "- Redesign as a single fused conv3d+epilogue kernel: one program per `(N, output-spatial tile)`, with `BLOCK_N = OC = 32` held in registers across the whole tile so the OC dim disappears from the grid. K = IC\u00b7KD\u00b7KH\u00b7KW = 216 is small enough to fully unroll with `BLOCK_K=216` (or 32-step loop) and avoid the K-loop tail.\n- Apply the entire activation chain in the accumulator epilogue before the store \u2014 `sigmoid(0.5\u00b7r\u00b7(1+erf(r\u00b7invsqrt2)))` where `r=max(acc,0)` (LeakyReLU is a no-op after ReLU on nonneg values), then add `bias[oc]`. This removes the second kernel entirely.\n- Consider precomputing weight in `[OC, IC*KD*KH*KW]` (im2col-GEMM view) once in `__init__` to avoid recomputing the layout per call, and load it as a small constant tile (32\u00d7216 = 27 KB) that easily fits SMEM.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 23,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        1.9646906654676257
+    ]
+}

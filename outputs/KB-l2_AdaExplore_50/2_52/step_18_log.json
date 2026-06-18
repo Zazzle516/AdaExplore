@@ -1,0 +1,29 @@
+{
+    "node_id": 18,
+    "parent_node_id": 13,
+    "context_node_ids": [
+        13
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.45506300876291184,
+    "max_reward": 0.45506300876291184,
+    "avg_reward": 0.45506300876291184,
+    "score": [
+        1,
+        1,
+        0.5542698222940226
+    ],
+    "small_guidance": "- The conv (cudnn) likely dominates; verify by profiling. If so, fuse conv output\u2192Mish\u2192BN-stats into fewer launches by using a channels_last layout for the conv output and a single persistent kernel per (N,C) row over HW that streams Mish and accumulates partial sum/sqsum without a separate `_apply_bn_kernel` pass \u2014 store y once and apply the affine in the same elementwise loop in eval mode.\n- Replace `log(1+exp(x))` + `(e^{2sp}-1)/(e^{2sp}+1)` with the numerically cheaper Mish form `x * tanh(softplus(x))` using `tl.extra.libdevice.tanh` and `softplus = tl.where(x>20, x, tl.log(1+tl.exp(x)))` to halve the transcendentals; tune BLOCK={2048,4096,8192} and num_warps={4,8} via `@triton.autotune`.\n- For training, do BN reduction with one program per channel (grid = C) accumulating across N*HW with a 2D tile, eliminating atomic_adds on `sum_ptr/sqsum_ptr` which serialize C-way across N programs.",
+    "large_guidance": "- Replace `nn.Conv2d` with a custom Triton im2col-GEMM kernel (one program per (N, OC tile, output-spatial tile), implicit im2col), and fuse Mish in the epilogue on the accumulator before store. This is the high-headroom move since the conv dominates a 6.2ms runtime versus 3.4ms baseline.\n- Run BN in eval-style fold: at eval, fold weight/bias/running_stats into per-channel scale/shift and apply in the same conv epilogue (conv\u2192Mish\u2192affine) so the entire forward is one kernel + (training only) a stats pass.\n- For training, keep a two-kernel design: (1) conv+Mish writing y in channels_last with per-channel partial sum/sqsum into a [num_blocks, C] buffer, (2) a small reduction+affine kernel that finalizes mean/var, updates running stats, and applies BN to y in place \u2014 avoiding atomics and the extra full read/write of y.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 19,
+    "global_best_node_id": 16,
+    "global_best_score": [
+        1,
+        1,
+        0.5587834201954398
+    ]
+}

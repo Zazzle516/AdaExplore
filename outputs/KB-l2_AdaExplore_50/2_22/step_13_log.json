@@ -1,0 +1,29 @@
+{
+    "node_id": 13,
+    "parent_node_id": 10,
+    "context_node_ids": [
+        10
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4406014462064613,
+    "max_reward": 0.4406014462064613,
+    "avg_reward": 0.4406014462064613,
+    "score": [
+        1,
+        1,
+        0.4349619312033055
+    ],
+    "small_guidance": "- The kernel is GEMM-bound (M=1024, N=K=8192). Add larger tile configs: BLOCK_M=128/BLOCK_N=128/BLOCK_K=64 with num_warps=8, num_stages=4, and BLOCK_M=64/BLOCK_N=256/BLOCK_K=64 num_warps=8 num_stages=4 \u2014 current configs cap BLOCK_K at 64 and mostly use small BLOCK_M which under-utilizes tensor cores.\n- Pre-transpose W to [K, N] contiguous once in `__init__` so the inner load is contiguous along N (current `stride_wn=K, stride_wk=1` forces strided B loads in the K loop); store as a buffer and pass the transposed pointer.\n- Hoist the bias load + scale+clamp out of the per-tile epilogue by fusing them only once per N-tile (already done), but also drop the `mask_n` `tl.where(-inf)` and instead skip the partial tile when `N % BLOCK_N == 0` (it is: 8192/128) via a `EVEN_N: tl.constexpr` specialization to remove the masked load overhead.",
+    "large_guidance": "- The dominant cost is the 1024\u00d78192\u00d78192 GEMM (~137 GFLOPs); the LSE/Mish epilogue is negligible. A from-scratch design should be a standard split-K or stream-K GEMM with a row-wise online-LSE epilogue, rather than a persistent row-tile kernel that serializes the K loop per M-tile. With M=1024 only, persistent-M kernels leave SMs idle when BLOCK_M is large; stream-K or a 2D (M,N) grid with atomic row-wise LSE merging would expose more parallelism.\n- Alternatively, since N=K=8192 and bias+scale+clamp+LSE are cheap, split the work into two kernels: (1) a highly-tuned cuBLAS-equivalent Triton GEMM writing the [M,N] intermediate (or use `torch.addmm` directly), (2) a fused clamp+LSE+Mish reduction kernel. The current \"avoid materializing [M,N]\" optimization is not paying off because the GEMM tile shapes are suboptimal; letting cuBLAS handle the GEMM may beat 6.83 ms (baseline is 2.97 ms, so cuBLAS GEMM alone is ~2 ms).\n- If keeping fusion, switch the W layout to [K,N] row-major (transpose once at init), use BLOCK_M=128, BLOCK_N=256, BLOCK_K=32, GROUP_M swizzle of 8, and a 2D grid (pid_m, pid_n) with per-row partial (max, sum) accumulated via atomic-merge or a second small reduction kernel \u2014 this exposes ~256 tiles vs. the current 8-32.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 14,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.8922229236424055
+    ]
+}

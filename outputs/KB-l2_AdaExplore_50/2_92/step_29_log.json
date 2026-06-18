@@ -1,0 +1,29 @@
+{
+    "node_id": 29,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5059530811633315,
+    "max_reward": 0.5059530811633315,
+    "avg_reward": 0.5059530811633315,
+    "score": [
+        1,
+        1,
+        0.9741129195974848
+    ],
+    "small_guidance": "- The conv itself dominates runtime here; the post-conv fused LSE kernel is already correct and fast. Within current structure, try fusing the GroupNorm stats computation into the LSE kernel by using a single persistent program per `(n)` that loads all C\u00d7S data once into shared/registers \u2014 eliminates the stats kernel launch and the second read of x_conv.\n- For the existing `fused_lse_kernel`, add autotune configs with `BLOCK_S=2048, num_warps=8, num_stages=2` and `BLOCK_S=4096, num_warps=16, num_stages=2`; with C_CONST=64 the inner static loop is large, larger BLOCK_S amortizes the per-iteration overhead.\n- Hoist the redundant `mean`/`inv_std` loads out of the `tl.static_range` loop \u2014 `mean_v` and `invstd_v` are already preloaded as vectors indexed by `g_idx`; index them with `c` as a constexpr (`tl.where`) instead of issuing fresh `tl.load` per channel.",
+    "large_guidance": "- The torch `nn.Conv2d` (8\u219264, 3\u00d73, 128\u00d7128, batch 128) is the dominant cost. Replace it with a custom Triton conv kernel: implement as an implicit-GEMM/im2col where one program computes a tile of `(OC \u00d7 output-spatial)` for one batch element, fusing the bias add directly into the accumulator epilogue. Channels_last layout for the conv output makes the downstream LSE coalesced over channels too.\n- Once conv is custom, fuse the entire pipeline (conv \u2192 GN stats \u2192 GN affine \u2192 tanh \u2192 hardswish \u2192 residual \u2192 LSE) by writing two kernels: (1) custom conv writing channels-last into a workspace plus a per-(n,group) reduction tree for GN stats accumulated in-flight; (2) a second pass that re-reads conv output, applies GN+activations+residual, and does LSE. Avoids the current double-read of x_conv only after conv is no longer the bottleneck.\n- Alternatively, since C=64 is small and fits in registers, design a single persistent kernel per `(n, spatial-tile)` that performs the conv directly (loading the 3\u00d73\u00d78 weights once per program), accumulates GN statistics across spatial tiles via atomics or a two-phase grid, then does GN+activations+LSE \u2014 collapsing all five post-conv ops with the conv into one launch.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 30,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.9741129195974848
+    ]
+}

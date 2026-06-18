@@ -1,0 +1,29 @@
+{
+    "node_id": 35,
+    "parent_node_id": 33,
+    "context_node_ids": [
+        31
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure is likely from the `gemm_bias_stats_kernel` not masking out-of-bounds tiles when M or N is not a multiple of BLOCK_M/BLOCK_N \u2014 add `mask=(offs_m[:,None]<M)&(offs_k[None,:]<K)` on A loads, similar for B, and mask the store/atomic_add so OOB lanes don't poison the column sums (especially `acc*acc` for garbage values). Also, atomics on the stats accumulator across many tiles can introduce nondeterministic NaN if any tile overflows; clamp `var = max(var, 0)` before rsqrt in `finalize_ab_kernel`.\n- In the eval path the code reuses `gemm_bias_stats_kernel` which still does atomic adds into dummy stats buffers \u2014 this is wasted bandwidth. Split into a stats-free GEMM kernel for eval, or guard the atomic_add with a `compute_stats: tl.constexpr` flag.\n- For `affine_softmax_kernel` with N=8192, BLOCK_N=8192 with num_warps=16 may spill; try a two-pass online-softmax tiled over BLOCK_N=1024\u20132048 with num_warps=8, num_stages=2.",
+    "large_guidance": "- Redesign so BN stats are computed in a dedicated single-pass reduction kernel over `lin_out` (one program per column, reducing over M with BLOCK_M tiles) rather than via cross-tile atomic_add in the GEMM. This eliminates atomic contention and ordering nondeterminism, and lets the GEMM kernel stay pure (and thus faster and easier to autotune). Pipeline: GEMM+bias \u2192 col-reduce stats \u2192 finalize a,b \u2192 affine+softmax.\n- Alternatively, since N==K==8192 and M=1024, consider a persistent GEMM with split-K disabled and use `tl.dot` accumulation in fp32 with BLOCK_M=128, BLOCK_N=128, BLOCK_K=64; transpose the weight once at init (cache `weight.t().contiguous()`) so B loads are along the contiguous axis.\n- Fuse the affine (a*x+b) into the GEMM epilogue once a,b are known; in eval mode a,b are cached, so the GEMM can directly produce pre-softmax activations, removing one full M\u00d7N read/write pass before softmax.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 36,
+    "global_best_node_id": 31,
+    "global_best_score": [
+        1,
+        1,
+        1.5172727599900722
+    ]
+}

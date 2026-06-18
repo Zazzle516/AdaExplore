@@ -1,0 +1,29 @@
+{
+    "node_id": 30,
+    "parent_node_id": 18,
+    "context_node_ids": [
+        18
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The atomic_add accumulation across N-tiles for the same row is the likely correctness culprit when BLOCK_N doesn't divide N cleanly: masked-out lanes get `-inf`, and although they're masked from max, the `tl.reshape` + `tl.max` over `KERNEL_SIZE=2` is fine, but the partial sum reduction includes pooled groups that span valid+invalid pairs only at the tail \u2014 guard by ensuring `BLOCK_N % KERNEL_SIZE == 0` AND that N is divisible by BLOCK_N, or compute the pool group's validity mask and zero out fully-invalid groups before summing. Since N=32768 is divisible by all tile sizes here, the more likely bug is the atomic_add race / dtype: `out` is fp32 and `partial` is fp32, that's fine, but multiple programs hitting the same row need deterministic ordering \u2014 verify by running with a single N-tile (BLOCK_N=N) to isolate.\n- Drop atomics entirely: launch grid as `(cdiv(M, BLOCK_M),)` with each program looping over all N tiles internally, accumulating `pool+sum` in registers, then doing one non-atomic store per row. This removes the cross-program reduction race and is faster.\n- Once correct, sweep `BLOCK_M \u2208 {32,64,128}` with `BLOCK_N \u2208 {128,256,512}`, `BLOCK_K \u2208 {32,64}`, `num_warps=8`, `num_stages=3-4`.",
+    "large_guidance": "- Rewrite as a persistent per-row-tile kernel: grid = `(cdiv(M, BLOCK_M),)`, each program streams over the full K (for the GEMM) and full N (for the pool+sum) in registers, eliminating the atomic_add and the cross-tile reduction hazard. The output is one scalar per row, so there is no reason to split N across programs.\n- Alternative structure: two-stage \u2014 stage1 produces the post-bias activations into a (B, N) scratch with a standard tiled GEMM+bias kernel; stage2 is a row-reduction kernel that does max-pool-then-sum-then-scale in a single pass over N per row. This trades memory traffic for simpler correctness and may be competitive since N=32768 fits comfortably.\n- Consider splitting K across programs with a separate split-K reduction only if the single-program K loop is bandwidth-bound; with K=32768 and BLOCK_K=64 that's 512 iterations per tile, which is fine for a non-split-K design.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 31,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

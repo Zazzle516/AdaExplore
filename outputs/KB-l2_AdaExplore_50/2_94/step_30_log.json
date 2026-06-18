@@ -1,0 +1,30 @@
+{
+    "node_id": 30,
+    "parent_node_id": 29,
+    "context_node_ids": [
+        1,
+        29
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing with avg_diff ~2e-4: likely the Mish softplus path. The current code computes `sp = max(x,0) + log(1+exp(-|x|))` then `tanh(sp)`. After hardtanh, `acc \u2208 [-1,1]` so this is fine numerically; the issue is more likely the GroupNorm using `1.0 / tl.sqrt(var + eps)` with a possibly fp32-truncated `CPG` divisor \u2014 verify `CPG` is computed in fp32 (`mean = sum_x / float(CPG)`) and that `eps` is passed as a float (it currently is positional, not constexpr \u2014 pass as `tl.constexpr` or ensure dtype). Also double-check `bias_extra=zeros` plus `bias_combined` isn't being added twice \u2014 currently `bias = bias_lin + bias_extra` inside fused_gemm with bias_extra=0 is OK, but you already pre-summed in forward, so the bias is correct.\n- The real culprit is likely the GEMM accumulator: `allow_tf32=True` on fp32 inputs gives ~1e-3 max error, which exceeds 5e-2 tolerance only marginally \u2014 but with 8192 reduction it's ~2e-4 avg, which matches the observed mismatch pattern. Try `allow_tf32=False` or upcast to fp32 explicitly; if tolerance still fails, the tolerance check may be tight on this graph \u2014 switch to `tl.dot(a, b, acc, input_precision='ieee')` or accumulate with `out_dtype=tl.float32` and disable TF32.\n- Add larger autotune tile (e.g. BLOCK_M=128, BLOCK_N=256, BLOCK_K=32, num_warps=8, num_stages=3) \u2014 M=N=1024, K=8192 favors deep K pipelining.",
+    "large_guidance": "- Keep the two-kernel structure (fused GEMM+bias+hardtanh+mish, then GroupNorm) \u2014 it's the right fusion boundary since GroupNorm reduces across channels-per-group and cannot be fused into the GEMM tile.\n- For GroupNorm with C=8192, G=256, CPG=32: each program handles a tiny 32-element reduction. Restructure to one program per (batch_row), with BLOCK_C=CPG inner and looping over G groups, or pack multiple groups per program \u2014 current 1024*256=262144 programs is too many tiny launches. Alternative: one program per batch row, vectorized over all groups using 2D tile.\n- If correctness keeps failing due to TF32, redesign the GEMM kernel to explicitly use `input_precision='ieee'` in `tl.dot`, or split-K with fp32 accumulation; this is the standard fix when reference uses cuBLAS fp32.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 31,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

@@ -1,0 +1,27 @@
+{
+    "node_id": 1,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (avg diff ~3e-4) likely comes from BN being applied in eval mode in the benchmark: the running_mean/running_var have been updated by training-mode forwards, but the eval path uses these stats to normalize while the reference `nn.BatchNorm1d` uses the same. Verify: the issue is more likely that `gemm_scaled` returns fp32 but bias/scale are applied before BN \u2014 confirm scale is applied on the post-bias activation (matches reference `gemm(x) * scale`). Double-check the eval-path formula: out = (y - mean) * inv * gamma + beta uses running stats; current `scale2 = gamma * inv`, `shift = beta - mean * scale2`, `out = y*scale2+shift` is correct. The discrepancy is more likely numerical: switching the BN stats reduction to use a Welford or two-pass with double accumulation, or simply computing mean/var in fp64-ish via Kahan, may help. Try BLOCK_M=2048 and accumulate sum/sum_sq separately with explicit fp32, then compute var = max(s2/M - mean*mean, 0).\n- Add autotune to `bn_apply_kernel` (BLOCK 1024/2048/4096, num_warps 4/8) and have the apply kernel load `mean/var/gamma/beta` once per tile by tiling along M with N-contiguous rows so the per-channel constants are reused.\n- The `bn_stats_kernel` strides through column N with stride_xn=1 per program \u2014 each program reads one column of a row-major tensor, which is fully strided. Switch to one program per channel but iterate in `BLOCK_M` chunks reading `[BLOCK_M]` contiguous-along-N is impossible; instead, transpose the GEMM output to NxM (or store directly as `[N, M]`) so each BN program reads contiguously.",
+    "large_guidance": "- Fuse the entire pipeline into two kernels: (1) tiled GEMM that writes y = (x@W^T + b) * scale AND simultaneously accumulates per-column partial sum and sum-of-squares into atomic-add'd workspace buffers of length N (one tile contributes via tl.atomic_add on a small N-sized scratch). (2) a finalize+apply kernel that reads partial sums, computes mean/var, and applies BN in one pass, fused with running-stat updates. This removes the separate stats pass entirely.\n- Alternatively, since M=16384 and N=4096 are huge, do a two-stage stats reduction: GEMM kernel writes y AND per-(tile_m, n) partial sums into a `[num_tiles_m, N]` buffer; a small second kernel reduces along tile_m to produce mean/var; then apply. Avoids atomics and keeps the GEMM clean.\n- Ensure BN stats reduction is column-major friendly: either store y as `[N, M]` (transposed) so each BN-channel program reads contiguous memory, or keep `[M, N]` but use 2D tiles `[BLOCK_M, BLOCK_N]` in the stats kernel with `tl.sum(axis=0)` per tile and atomic-add into an N-length accumulator (much better DRAM access than the current per-column strided loop).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 2,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

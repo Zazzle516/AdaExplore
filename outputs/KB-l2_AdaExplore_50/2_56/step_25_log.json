@@ -1,0 +1,30 @@
+{
+    "node_id": 25,
+    "parent_node_id": 24,
+    "context_node_ids": [
+        23,
+        24
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The atomic_add accumulates float32 partial row sums across N-tiles; this is correct in principle but the correctness mismatch (~500k diff) suggests `out` is being read as fp32 zeros but multiple programs along N race-add into the same row. The issue is likely that with BLOCK_N=256 and N=32768, you get 128 N-tiles per row racing \u2014 atomic_add should still be correct, but the masking `tl.where(..., sig, 0.0)` is fine. Re-check: the actual bug is likely that `self._wT` is captured at init on cuda but `self.linear.weight` is not used; if the test harness moves the model to cuda after init or reseeds weights, `_wT` becomes stale. Recompute `_wT` from `self.linear.weight` inside forward (or register as buffer and update lazily by checking data_ptr).\n- Alternatively, drop the pre-transpose and load W with `stride_wk = N, stride_wn = 1` directly from `self.linear.weight` (which is (N, K)); pass weight strides so the kernel reads the live parameter every call.\n- Once correctness is fixed, add configs with BLOCK_M=128, BLOCK_N=128, BLOCK_K=32 num_warps=4 \u2014 M=128 fits exactly one M-tile, removing atomic contention along M and letting the row reduction stay register-resident.",
+    "large_guidance": "- Restructure as a split-K / row-parallel reduction: grid = (M, num_n_tiles), each program computes its (1-row-tile, N-tile) GEMM slab, applies sigmoid, reduces along N within the tile to a scalar, and atomic_adds into `out[m]`. With M=128, K=N=32768, one program per (row-block-of-16, N-tile-of-512) gives plenty of parallelism without needing BLOCK_M as a GEMM tile width.\n- Better: a persistent kernel where each program owns a contiguous slab of rows, streams K in BLOCK_K chunks, and accumulates `sum_n sigmoid(x@W + b)` with no atomics \u2014 since the reduction is over N (the GEMM output dim), you can tile N inside the kernel and keep a per-row scalar accumulator in registers, eliminating the atomic_add entirely.\n- Make sure the kernel reads `self.linear.weight` directly each call (pass its data_ptr and strides) so changes to the parameter (e.g. by the test harness) are reflected; the cached `_wT` at __init__ is a likely source of the current correctness failure.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 26,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

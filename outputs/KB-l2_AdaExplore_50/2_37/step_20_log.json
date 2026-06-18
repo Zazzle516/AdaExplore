@@ -1,0 +1,27 @@
+{
+    "node_id": 20,
+    "parent_node_id": 19,
+    "context_node_ids": [],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure likely stems from group reduction being incomplete: with BLOCK_N=128 and GROUP_SIZE=64, GROUPS_PER_TILE=2, so each (pid_m,pid_n) tile writes 2 full groups \u2014 that's fine, but BLOCK_M=64 means rows are tiled and each tile writes only its own rows' sums (which is correct). However, `tl.reshape(acc, (BLOCK_M, GROUPS_PER_TILE, GROUP_SIZE))` requires acc to be laid out contiguously along N; verify the layout assumption and assert N % BLOCK_N == 0 / M % BLOCK_M == 0. Also `mask_n` zero-fills masked lanes \u2014 if N isn't multiple of BLOCK_N, sumsq is polluted. Add explicit N-multiple assertions or mask the reduction by setting acc lanes outside mask_n to 0 before reshape.\n- Add autotune over BLOCK_M \u2208 {64,128} and BLOCK_N \u2208 {64,128,256} (constrained so BLOCK_N is a multiple of GROUP_SIZE=64). Also add a GROUP_M block-swizzle (GROUP_M=8) for L2 reuse since M=32768, N=4096 is a large GEMM.\n- Pre-transpose weight to (K, N) once in `__init__` so the inner load is contiguous along K for both A and B (currently weight is loaded as (N,K) and transposed in-kernel via `tl.trans`, which is fine but expose it via autotune).",
+    "large_guidance": "- Restructure as a persistent split-K-free GEMM where each program computes a full row-group block: pick BLOCK_N == GROUP_SIZE (=64) so each tile owns exactly one group, eliminating the partial-sum buffer and the second kernel. Compute mean/var inline from `acc` via `tl.sum(acc, axis=1)` and `tl.sum(acc*acc, axis=1)`, then normalize and store in the same kernel \u2014 fully fused, single launch, no intermediate Y/sum/sumsq tensors.\n- Alternatively, keep two kernels but make the second one a proper per-row GroupNorm kernel that re-reads Y and computes stats from Y directly (one program per (row, group)), avoiding the partial-sum staging entirely. This is simpler and less error-prone than the current partial-sum reduction.\n- For M=32768, N=4096, K=1024 the GEMM is the dominant cost (~270 GFLOPs); ensure tile sizes 128\u00d7128\u00d732 with num_warps=8, num_stages=3-4, and consider splitK only if occupancy is low. The norm epilogue is cheap once fused.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 21,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

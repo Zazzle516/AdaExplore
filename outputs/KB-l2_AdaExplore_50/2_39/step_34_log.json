@@ -1,0 +1,30 @@
+{
+    "node_id": 34,
+    "parent_node_id": 15,
+    "context_node_ids": [
+        14,
+        15
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4796975968013468,
+    "max_reward": 0.4796975968013468,
+    "avg_reward": 0.4796975968013468,
+    "score": [
+        1,
+        1,
+        0.757505173611111
+    ],
+    "small_guidance": "- The matmul (16384\u00d74096\u00d74096) dominates runtime; `torch.addmm` is already cuBLAS but the scale+BN epilogue requires re-reading/writing 256MB of fp32. Try fusing the scale and BN-apply into the GEMM epilogue (custom Triton GEMM) so the GEMM output is consumed in-register.\n- For the stats kernel, increase `BLOCK_N` to 256 and `TILE_M` to 64-128 to amortize the column-pointer arithmetic and improve L2 reuse; try `num_warps=4` since each program now handles wider columns. Also consider a 2D grid (split M across programs) with an atomic-add or two-stage reduction since M=16384 is large.\n- For `fused_scale_bn_apply_kernel`, replace the `tl.static_range` inner loop with a single `BLOCK_M=64, BLOCK_N=256` tile (one tile per program) and tune `num_warps=8, num_stages=2`; the current 256\u00d7128 with inner unroll spills registers and limits occupancy.",
+    "large_guidance": "- Replace `torch.addmm` with a custom Triton GEMM (M=16384, N=4096, K=4096) whose epilogue multiplies by `scale[n]` and writes to Y; in training, also accumulate per-N column `sum` and `sumsq` via a second pass or split-K-style atomic accumulation. This eliminates one full read of the 256MB Y tensor between addmm and the stats kernel.\n- Consider a two-kernel design: (1) custom GEMM with epilogue producing scaled-Y plus per-tile partial sum/sumsq written to a `(num_m_tiles, N)` workspace; (2) reduction+apply kernel that finalizes mean/invstd from the workspace and applies the affine to Y in-place. This collapses three passes over Y into roughly two.\n- Tile shapes for the GEMM on RTX 4090: `BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8, num_warps=8, num_stages=3` is a strong starting point; ensure W is pre-transposed once outside the hot loop so the K-loop loads are contiguous.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 35,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.7791481785714286
+    ]
+}

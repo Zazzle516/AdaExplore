@@ -1,0 +1,29 @@
+{
+    "node_id": 23,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM uses `allow_tf32=False` which is forcing fp32 mma on a 4090 \u2014 flip to `allow_tf32=True` (inputs are fp32 with values in [0,1], so the 5e-2 tolerance easily absorbs TF32 error) to roughly halve the matmul cost.\n- Add a `GROUP_M=8` block-swizzle to the GEMM and broaden the autotune list with `BLOCK_M=128, BLOCK_N=256, BLOCK_K=32/64, num_warps=8, num_stages=3-4`; current configs top out at 64x256 which under-utilizes the SM for M=1024, N=8192.\n- Avoid the `Wt = W.t().contiguous()` transpose on every forward \u2014 cache the transposed weight once in `__init__` (or strided-load B directly with `stride_bk=1, stride_bn=K`); the transpose alloc+copy of an 8192\u00d78192 fp32 tensor is non-trivial overhead per call.",
+    "large_guidance": "- Restructure the GEMM epilogue to also perform the GroupNorm reduction: with `num_groups=256, C=8192`, each group is only 32 channels \u2014 choose `BLOCK_N = CG * k` (e.g. 256 = 8 groups per tile) so each program owns whole groups along N, then after computing hardtanh+mish on the tile, do an in-tile reduction per group and write normalized outputs. This removes the full read/write round-trip through `y` (8M elements) between GEMM and GroupNorm.\n- Alternatively, keep GEMM separate but make the GroupNorm kernel persistent over rows: one program per group reads its 32-wide slice for many rows, since CG=32 is tiny and current launch grid `M*G = 262144` is launch-overhead heavy. Pack multiple (row, group) pairs per program and use `num_warps=1` or `2`.\n- Store the GEMM output in fp16/bf16 (cast in the epilogue) to halve the intermediate-tensor bandwidth feeding GroupNorm, then cast back to fp32 inside GroupNorm \u2014 the tolerance allows it and bandwidth is the bottleneck for the second kernel.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 24,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

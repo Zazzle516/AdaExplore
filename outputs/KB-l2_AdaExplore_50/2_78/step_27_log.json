@@ -1,0 +1,30 @@
+{
+    "node_id": 27,
+    "parent_node_id": 25,
+    "context_node_ids": [
+        2,
+        21
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5029678464899782,
+    "max_reward": 0.5029678464899782,
+    "avg_reward": 0.5029678464899782,
+    "score": [
+        1,
+        1,
+        0.9494847335423198
+    ],
+    "small_guidance": "- The fused pool+sum kernel is already cheap; the ConvTranspose3d dominates the 11ms runtime. Tuning BLOCK_C/num_warps on the pool kernel will not close the gap to baseline. If staying small, try `num_warps=4` and consider tiling multiple output points per program to amortize index math, but expected gains are <5%.\n- Verify that `channels_last_3d` actually accelerates `nn.ConvTranspose3d` on this shape \u2014 cuDNN often falls back to NCDHW for transposed conv; if so drop the layout conversion overhead.\n- Pre-allocate the output once and reuse, and ensure the input to the pool kernel is contiguous in NCDHW (already done) so the channel stride is large and the inner-most spatial loop coalesces.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)`, computing the `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` outer product and scatter-adding into the output grid at `(d*stride - pad + kd, ...)`. This is the heavy operator (\u224810ms of 11ms) and has the most headroom.\n- Better: fuse the entire pipeline. Since the final result is a sum over OC after two maxpools (combined window=6), and the conv output spatial is 60\u00b3 \u2192 pooled to 10\u00b3, you can structure one program per `(N, output_pool_tile)` that computes a 6\u00b3 window of conv-transpose outputs across all OC channels, takes the max in registers per OC, then sums across OC. This avoids ever materializing the 16\u00d764\u00d760\u00b3 conv output (\u224855MB) and collapses three kernels into one. Use im2col-style gather over input/weight inside.\n- Alternatively, fold bias into weight, run the conv-transpose as a GEMM (input reshaped as [N*D*H*W, IC] \u00d7 weight [IC, OC*kd*kh*kw] then scatter), and fuse the pool+sum epilogue. Autotune BLOCK_M/N/K = {64,128}\u00d7{64,128}\u00d7{16,32} with num_warps\u2208{4,8}.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 28,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.9494847335423198
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 7,
+    "parent_node_id": 2,
+    "context_node_ids": [
+        2
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4181423308523835,
+    "max_reward": 0.4181423308523835,
+    "avg_reward": 0.4181423308523835,
+    "score": [
+        1,
+        1,
+        0.24967422953216373
+    ],
+    "small_guidance": "- The current gather kernel iterates kh*kw*ceil(IC/BLOCK_K) tl.dot calls with BLOCK_K=32/64 and IC=64 \u2014 that's tiny K per dot. Increase BLOCK_K to 64 (full IC in one shot) and drop the inner IC loop entirely; also try BLOCK_M=128/BLOCK_N=128 with num_warps=8, num_stages=2 as the primary config.\n- Most (h_in, w_in) combinations are invalid because of the stride==2 modulus check \u2014 the entire tl.dot still runs with zeros. Hoist the stride-modulus test outside the dot by indexing on h_out%STRIDE / w_out%STRIDE so each program only visits the (kh, kw) pairs that match its phase (KH/STRIDE * KW/STRIDE = 4 iterations instead of 16).\n- Switch the output store to write contiguous (N, H_out, W_out, OC) tiles (channels-last out) or transpose offs_n to the inner contiguous dim so the store coalesces; currently offs_n strides by H_out*W_out which is non-coalesced.",
+    "large_guidance": "- Rewrite as a scatter-add ConvTranspose: one program per (N, IC tile, H_in tile, W_in tile), load the input tile and the full (OC, KH, KW) weight slice, compute the input\u00d7weight outer product, and atomically (or via deterministic accumulation into a per-program output region with no overlap because stride==KH/2 means kernels do overlap \u2014 use atomics or split by kh%stride, kw%stride phase). This matches the natural data flow of transposed conv and avoids the modulus-gated gather where 3/4 of the work is wasted.\n- Alternatively, since stride==2 and kernel==4 partition cleanly, implement as 4 separate \"phase\" GEMMs: for each (ph, pw) in {0,1}\u00d7{0,1}, the output pixels with (h_out%2, w_out%2)==(ph,pw) are produced by a dense GEMM of shape (N*H_in*W_in, OC) with K=IC*(KH/2)*(KW/2)=IC*4. This eliminates all masking inside the dot and turns the problem into 4 clean GEMMs of K=256, which Triton handles very well.\n- Use channels-last (NHWC) layout for both input and output so the IC and OC axes are contiguous; this lets the GEMM-K and GEMM-N loads coalesce and removes the strided output store that currently bottlenecks the kernel.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 8,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.5888868034482758
+    ]
+}

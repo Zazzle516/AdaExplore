@@ -1,0 +1,29 @@
+{
+    "node_id": 34,
+    "parent_node_id": 31,
+    "context_node_ids": [
+        31
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4302693657365737,
+    "max_reward": 0.4302693657365737,
+    "avg_reward": 0.4302693657365737,
+    "score": [
+        1,
+        1,
+        0.34972226732673267
+    ],
+    "small_guidance": "- The epilogue kernel is already trivially memory-bound and fused; further BLOCK_SIZE/num_warps sweeps won't move the needle since `conv_transpose3d` dominates runtime (~10s vs 3.5s baseline). Skip tail tuning.\n- If keeping the epilogue, drop the divide for `c_idx` by launching a 2D grid `(N*C, ceil(S/BLOCK))` so the channel index is `pid // (...))` -free and bias is loaded once per program via `tl.load(bias_ptr + c)` scalar broadcast.\n- Ensure conv output is in `channels_last_3d` (`memory_format=torch.channels_last_3d`) so the bias broadcast and the eventual custom conv share a coalesced channel-contiguous layout.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)`, computing the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and `atomic_add`-ing into the output grid at `(n, oc, d*stride+kd-pad, ...)`. Handle `output_padding` by sizing the output tensor accordingly; mask out-of-bounds scatters.\n- Alternatively, implement as a gather-style GEMM: for each output voxel `(od,oh,ow)`, enumerate which `(id,ih,iw,kd,kh,kw)` triples map to it under stride/padding (only those where `(od+pad-kd) % stride == 0`), and compute a tiled matmul over `IC * (kd*kh*kw filtered)` into `OC`. Avoids atomics and is friendlier on Ampere.\n- Fuse the entire epilogue `(2x+b)*x + x` into the conv-transpose kernel's epilogue, eliminating the separate read/write pass over the 16\u00d764\u00d732\u00d764\u00d764 output tensor. Bake `bias` as a per-OC scalar loaded once per program.\n- Fold the bias broadcast into the conv weight bias at init (`conv_transpose.bias += self.bias.view(-1)` is **not** valid since the bias participates in the multiplicative term \u2014 keep the algebraic form `(2x+b)*x + x` as the epilogue).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 35,
+    "global_best_node_id": 30,
+    "global_best_score": [
+        1,
+        1,
+        0.7022256262425447
+    ]
+}

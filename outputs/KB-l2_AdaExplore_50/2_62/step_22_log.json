@@ -1,0 +1,30 @@
+{
+    "node_id": 22,
+    "parent_node_id": 18,
+    "context_node_ids": [
+        3,
+        18
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The matmul (1024\u00d78192 \u00d7 8192\u00d78192) dominates runtime at this size; F.linear via cuBLAS is likely near-optimal for fp32 on 4090, but try `torch.addmm` directly and ensure weight is contiguous/transposed once at init to avoid any per-call overhead.\n- For the GN+LeakyReLU+double kernel: with ch_per_g=16 and 512 groups, BLOCK=512 with num_warps=4 is reasonable, but try `groups_per_prog=64` (BLOCK=1024, num_warps=8) to reduce launch grid from (1024,16) to (1024,8) and increase per-program work. Also try num_stages=3.\n- Add `triton.autotune` over {(GROUPS_PER_PROG=16,nw=4),(32,4),(32,8),(64,8)} keyed on C and ch_per_g.",
+    "large_guidance": "- The bottleneck is the 8192\u00d78192 fp32 matmul (~1.1 TFLOP per batch element, 1024 batch \u2192 ~1100 GFLOPs total); at 3.35ms this is ~330 TFLOPS effective which is already above 4090 fp32 peak \u2014 meaning cuBLAS is likely using TF32. To beat it, write a custom Triton GEMM with TF32 `tl.dot(..., allow_tf32=True)` and fuse the bias + GroupNorm-prep (partial sums per group) into the epilogue so we avoid a second pass over the (1024,8192) activation.\n- Better: fuse bias+GN+LeakyReLU+double entirely into the GEMM epilogue. Since each group has 16 channels and BLOCK_N can be sized to a multiple of 16, compute group mean/var across BLOCK_N inside the epilogue (one program covers full N=8192 per M tile via a persistent K-loop, or do a two-pass: first GEMM writes to scratch, second kernel does GN \u2014 but the single-fused-pass version saves a full read of the 32MB activation).\n- Alternative: split into (1) custom GEMM with bias fused, (2) keep current GN kernel. Focus optimization budget on the GEMM since it's >90% of runtime; the GN kernel at ~32MB read+write should be <0.2ms and is not the bottleneck.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 23,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

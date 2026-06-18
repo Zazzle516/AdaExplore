@@ -1,0 +1,29 @@
+{
+    "node_id": 14,
+    "parent_node_id": 12,
+    "context_node_ids": [
+        12
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.49955492862404915,
+    "max_reward": 0.49955492862404915,
+    "avg_reward": 0.49955492862404915,
+    "score": [
+        1,
+        1,
+        0.9213281611484051
+    ],
+    "small_guidance": "- The Conv3d now dominates runtime (post-conv kernel is already fused). Tuning BLOCK_S further won't break 0.81s \u2014 focus tuning effort on a custom conv. For the existing post kernel, try `BLOCK_S` \u2208 {8192, 16384} with `num_warps=8/16, num_stages=2` since S=14*30*30=12600 fits in one tile and would eliminate the two-pass loop overhead.\n- With BLOCK_S large enough to cover S in one shot, collapse pass 1 and pass 2 by keeping `y = x*m` resident in registers across both passes (single load), saving the second global read of the conv output.\n- Add `tl.multiple_of` / `tl.max_contiguous` hints on the `s_offs` index to improve vectorized loads of the contiguous S axis.",
+    "large_guidance": "- Replace `nn.Conv3d` with a custom Triton im2col-style GEMM kernel: one program per `(N, OC_tile, output-spatial tile)` with implicit im2col gather over the 3\u00d73\u00d73\u00d73 window (IC*kD*kH*kW = 81 K-dim). Output spatial = 14\u00b730\u00b730 = 12600 per (N,OC); tile e.g. BLOCK_M=64 (OC\u226416, so M small \u2014 use BLOCK_M=16), BLOCK_N=128 over spatial, BLOCK_K=32.\n- Fuse the entire post-conv chain (multiplier, InstanceNorm, clamp, multiplier, max over C) into the conv epilogue so the conv output is never written to global memory. Since OC=16 is tiny, make one program produce the full C dimension for a spatial tile, accumulate sum/sumsq in registers across spatial tiles in a persistent loop per (N, spatial-block), then second pass normalizes+reduces \u2014 avoids the round trip entirely.\n- Alternatively, since C=16 is small, use a per-N persistent kernel: compute conv directly into registers/SMEM for all 16 channels of a spatial tile, then immediately do the IN reduction across spatial. This requires two spatial sweeps (stats + apply) but keeps everything fused without materializing the conv output tensor.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 15,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.9527247729854249
+    ]
+}

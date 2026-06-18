@@ -1,0 +1,27 @@
+{
+    "node_id": 26,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4286495468445927,
+    "max_reward": 0.4286495468445927,
+    "avg_reward": 0.4286495468445927,
+    "score": [
+        1,
+        1,
+        0.3363587614678899
+    ],
+    "small_guidance": "- The clamp/div epilogue is already trivially fast; further tuning of it won't help. The 76 ms runtime is dominated by `nn.ConvTranspose3d`. Tuning block size / num_warps on the elementwise kernel cannot close the gap to baseline 25.6 ms.\n- If staying small, at least fuse clamp+div into the conv output write (requires writing the conv kernel itself), or try `channels_last_3d` memory format on the conv input/weight to let cuDNN pick a faster algo.\n- Increase `BLOCK_SIZE` to 4096 and `num_warps=8` for the elementwise tail, but expected gain is <1%.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)` computing the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and `tl.atomic_add`-ing into the output grid at `(n, oc, d*stride+kd-pad, h*stride+kh-pad, w*stride+kw-pad)`. Fuse bias add, clamp, and divide into the final write (non-atomic separate epilogue pass over the dense output once all atomics are done \u2014 or fold bias/clamp/div into a follow-up elementwise kernel).\n- Alternative gather formulation: one program per `(N, OC tile, output-spatial tile)`; for each output voxel iterate over `(ic, kd, kh, kw)`, check `(o + pad - kd) % stride == 0`, gather the corresponding input voxel, accumulate into a register tile, then apply bias/clamp/div in the epilogue and store. This avoids atomics and matches the im2col-GEMM skill recommendation; OC=128, kernel=3\u00b3=27, IC=64 \u2192 K=1728 GEMM-K is well-sized for a tiled matmul.\n- Use channels-last (NDHWC) layout for both input and output so the IC/OC dimension is contiguous, enabling vectorized loads along GEMM-K. Autotune `BLOCK_OC \u2208 {32,64,128}`, `BLOCK_SPATIAL \u2208 {32,64,128}`, `BLOCK_K \u2208 {32,64}`, `num_warps \u2208 {4,8}`, `num_stages \u2208 {2,3}`.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 27,
+    "global_best_node_id": 21,
+    "global_best_score": [
+        1,
+        1,
+        0.6530324045801528
+    ]
+}

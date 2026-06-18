@@ -1,0 +1,29 @@
+{
+    "node_id": 50,
+    "parent_node_id": 40,
+    "context_node_ids": [
+        40
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.45314131708142885,
+    "max_reward": 0.45314131708142885,
+    "avg_reward": 0.45314131708142885,
+    "score": [
+        1,
+        1,
+        0.5384158659217877
+    ],
+    "small_guidance": "- The Conv3d now dominates runtime (GN fusion is already done but fast_p~0.54 means conv is the bottleneck). Tuning the GN kernel further won't move the needle; only minor wins available by switching loop order to channel-outer (load w,b once per channel, sweep S inside) so weight/bias loads are hoisted out of the spatial loop.\n- Add larger BLOCK_S configs (16384) and num_warps=16 since S = 14*62*62 \u2248 53792 per (N, group) and each group has CPG=2 channels \u2014 a persistent single-block-per-row layout could keep stats in registers.\n- Consider folding the second min/clamp pair: since min_value=0 and the op is min(x, 0) then clamp(0,1), this reduces to clamp(x, 0, 0) ... actually min(x,0) then clamp(0,1) = 0 always when min_value=max_value=0/1. But min_value=0, so min(x,0) \u2264 0, then clamp(0,1) \u2192 0. Output is identically zero, then dropout. Don't exploit this algebraically (safety), but the elementwise tail is trivially cheap regardless.",
+    "large_guidance": "- The Conv3d is the heavy op (~85% of runtime). Replace `nn.Conv3d` with a custom Triton im2col-style GEMM kernel: one program per (N, OC tile, output-spatial tile), with implicit im2col gather. Input shape (128,3,16,64,64), kernel 3\u00d73\u00d73, output (128,16,14,62,62). GEMM dims: M=OC=16, N=output_spatial=53816, K=IC*kd*kh*kw=81. Small M/K makes this a tall-skinny GEMM \u2014 use BLOCK_M=16, BLOCK_N=128/256, BLOCK_K=81 (fits as constexpr, fully unroll the reduction).\n- Fuse the GN epilogue directly into the conv kernel's writeback: accumulate conv output per (N, group) into a separate stats buffer using atomics, then a second small kernel applies normalize+affine+min+clamp. Or do a two-pass conv: first pass computes conv + per-group sum/sum_sq into scratch; second pass recomputes conv (cheap given K=81) and applies GN. This avoids materializing a full pre-norm tensor twice.\n- Use channels-last (NDHWC) layout for the conv output so the GN reduction over (CPG, S) has the channel axis contiguous within each group, enabling vectorized loads and better coalescing in the fused epilogue.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 51,
+    "global_best_node_id": 20,
+    "global_best_score": [
+        1,
+        1,
+        0.83563387283237
+    ]
+}

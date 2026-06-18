@@ -1,0 +1,30 @@
+{
+    "node_id": 25,
+    "parent_node_id": 24,
+    "context_node_ids": [
+        23,
+        24
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM (1024x8192 @ 8192x8192) dominates runtime; F.linear via cuBLAS is fine but try `torch.addmm` with TF32 disabled check, or fuse the bias into a custom Triton GEMM with epilogue computing GN stats incrementally \u2014 but first verify GEMM time vs GN+min time by profiling.\n- For `gn_min_kernel`: N=8192 with `tl.arange(0, N)` is huge (32KB per row in regs). Try `num_warps=32` and `num_stages=1`, or split into two passes (load once, compute group stats, second load for normalize+min) using BLOCK_N tiling instead of full-row materialization.\n- The `add_bias_kernel` output layout `[N, M]` then `.view(1, N, M, 1)` is fine, but try `BLOCK_N=64, BLOCK_M=256, num_warps=4` and swap the grid order so consecutive programs hit consecutive `out_ptr` rows for better L2.",
+    "large_guidance": "- Replace `F.linear` with a custom tiled Triton GEMM that fuses the bias add and writes output already grouped so the GN reduction can start in the epilogue: each program tile produces a `(BLOCK_M, GROUP_SIZE)` chunk and atomically/locally accumulates group sum and sum-of-squares to a scratch buffer, removing one full read of the 1024\u00d78192 activation.\n- Alternatively, since `num_groups=512` and `out_features=8192` \u2192 `group_size=16` (very small), fuse GN+min into the GEMM epilogue directly: after computing a `(BLOCK_M, BLOCK_N=group_size*k)` tile, compute per-group mean/var in-register, normalize, apply affine, and reduce min across the BLOCK_N tile, then do a final cross-tile min reduction. This eliminates the intermediate `y` tensor (256MB) entirely.\n- The final bias add produces a `[1, 8192, 1024, 1]` tensor (32MB) from a `[1024]` min vector broadcast against `[8192]` bias \u2014 this is pure memory write. Fuse it into the min kernel's store path by having each row's min value broadcast-stored, or keep output as `[M, N]` and reshape lazily to avoid the transpose.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 26,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

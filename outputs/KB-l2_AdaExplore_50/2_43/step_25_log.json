@@ -1,0 +1,29 @@
+{
+    "node_id": 25,
+    "parent_node_id": 22,
+    "context_node_ids": [
+        22
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4263470142989201,
+    "max_reward": 0.4263470142989201,
+    "avg_reward": 0.4263470142989201,
+    "score": [
+        1,
+        1,
+        0.31736286796609037
+    ],
+    "small_guidance": "- Increase TILE to 8 or 16 and try BLOCK_C=64 (exact match for C=64) with num_warps=4; the current TILE=4 with num_warps=2 launches too many tiny programs for a 4\u00d716\u00d764\u00d764 = 262144 output tensor.\n- Add a `triton.autotune` over (TILE \u2208 {4,8,16,32}, num_warps \u2208 {2,4,8}, num_stages \u2208 {2,3}) keyed on (N,C,Do,Ho,Wo) so the pool/LSE kernel can pick the best config; the kernel itself is cheap so the bottleneck is launch + cudnn conv.\n- Most of the 21ms is the Conv3d itself \u2014 verify channels_last_3d actually selects a fast cudnn algo (try toggling `torch.backends.cudnn.allow_tf32=True` and benchmark=True at module import; possibly fall back to NCHW if channels_last_3d is slower for this shape on Ada).",
+    "large_guidance": "- The Conv3d (4\u00d732\u00d732\u00d7128\u00d7128 \u2192 4\u00d764\u00d732\u00d7128\u00d7128, k=3, p=1) dominates runtime; replace it with a custom Triton implicit-GEMM conv3d kernel: one program per (N, OC tile, output-spatial tile), with BLOCK_M=64 (OC), BLOCK_N=64-128 (spatial), BLOCK_K=32 over IC*kd*kh*kw=864, computing input offsets implicitly (no im2col materialization) and using channels-last layout so the K loop is contiguous.\n- Fuse the bias add directly into the conv epilogue, then fuse the 2\u00d72\u00d72 maxpool + channel-LSE + ReLU into the same kernel by having each program produce a tile of pooled outputs (gather 8 conv outputs per pooled voxel from registers/shared memory if the spatial tile is sized to the pool window) \u2014 eliminates the full 4\u00d764\u00d732\u00d7128\u00d7128 intermediate write/read (\u224864MB).\n- If full fusion is too complex, at minimum write conv3d as a standalone Triton kernel and keep the existing pool-LSE-ReLU kernel; the conv alone is the >10\u00d7 headroom item, and tuning the already-fast tail kernel cannot close the gap to baseline 6.7ms.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 26,
+    "global_best_node_id": 21,
+    "global_best_score": [
+        1,
+        1,
+        1.1686486062974706
+    ]
+}

@@ -1,0 +1,27 @@
+{
+    "node_id": 8,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure is in `fused_post_kernel`: InstanceNorm2d with `track_running_stats` and `affine=False` on a (B,C,1,1) tensor produces 0 only if eps\u21920, but actually `(x-mean)/sqrt(var+eps)` = `0/sqrt(eps)` = 0 still \u2014 however the `instance_norm.train()` mode updates running stats and uses batch stats; here C=out_features and spatial=1, so per (n,c) mean=x, var=0, normalized=0. But the avg_difference of ~0.4 matches `mean(y*y) - mean((x+y)*y)`, suggesting the reference is NOT normalizing to 0. Actually InstanceNorm2d treats dim as (N,C,H,W) reducing over H,W; with H=W=1 it does give 0. The issue is the model uses `unsqueeze(1).unsqueeze(1)` giving shape (B,1,1,F) not (B,F,1,1) \u2014 so C=1 and spatial=(1,F), reduction is over the full feature dim! Fix the fused kernel to do per-row (per-batch) mean/var reduction across the feature dimension.\n- Implement `fused_post_kernel` as one program per batch row, BLOCK_SIZE covering out_features (8192), two-pass mean+var reduction, then `(x-mean)*rsqrt(var+eps) + y) * y` fused. Use `num_warps=8`, `num_stages=2`.\n- Keep GEMM autotune as-is; consider adding `GROUP_M=8` swizzle and a `BLOCK_M=128, BLOCK_N=128, BLOCK_K=64` config for M=N=1024/8192.",
+    "large_guidance": "- Redesign post-process as a single persistent per-row kernel: each program handles one batch row of length F=8192, loads x and y in tiles, computes mean and mean-of-squares in one pass (or two-pass for stability), then writes `((x-mean)*rsqrt(var+eps) + y) * y`. This matches the actual InstanceNorm semantics implied by the `unsqueeze(1).unsqueeze(1)` reshape (channels=1, spatial=1\u00d7F, reduction over F).\n- Add a block-swizzle (GROUP_M) to the GEMM and consider splitK only if M*N tiles underfill the SMs; here M=1024,N=8192 with 128x128 tiles gives 512 tiles which is plenty \u2014 splitK not needed.\n- Optionally fuse the bias+residual+mul tail into the GEMM epilogue only if InstanceNorm reduction is removed; otherwise keep GEMM and norm separate but make the norm kernel persistent per row.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 9,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.8111310929684835
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 27,
+    "parent_node_id": 26,
+    "context_node_ids": [
+        15
+    ],
+    "depth": 6,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.0,
+    "max_reward": 0.0,
+    "avg_reward": 0.0,
+    "score": [
+        0,
+        0,
+        0
+    ],
+    "small_guidance": "- The current kernel still calls `F.conv3d` which dominates runtime; the post-conv fusion is fine but tuning it further won't help. If keeping this structure, at minimum reduce `BLOCK_PW` to a tighter power of two (PW=32 here, so BLOCK_PW=32 exactly) and add `num_warps=1` config since the per-program work is tiny (32 lanes \u00d7 8\u00d78 static loop).\n- The subprocess timeout suggests the autotune key `(D_out, H_out, W_out)` is recompiling many variants or the kernel is hanging on a launch; drop autotune and pin a single `num_warps=4, num_stages=2` config to rule out tuning overhead.\n- Ensure `y` from `F.conv3d` is contiguous before the kernel (it should be, but assert), and consider launching with a 1D grid `(N*OC,)` to reduce launch overhead.",
+    "large_guidance": "- Replace `F.conv3d` with a custom Triton conv3d kernel \u2014 this is the dominant cost (batch=128, 8\u219216 channels, 16\u00d764\u00d764, 3\u00d73\u00d73). Implement as im2col-style GEMM: one program per `(N, OC_tile, D_out*H_out*W_out tile)`, with implicit gather of the 3\u00d73\u00d73\u00d7IC patch. Fold the divisor, max-pool, global-avg-pool, bias-add, and sum-over-channel into the epilogue so the only tensor written is the final `(N,1,1,1)` output.\n- Better: since pool_size=2 and output is global-avg-pooled then summed over channels, fuse the entire pipeline into one kernel. One program per `(N, pooled-spatial tile)` computes conv outputs for all OC at that location, applies divide+maxpool over the 2\u00d72\u00d72 window during the conv accumulation, then reduces over OC (with bias) and over spatial to produce a single scalar per N. This avoids ever materializing the conv output tensor (~128\u00b716\u00b714\u00b762\u00b762\u00b74B \u2248 800MB).\n- If full fusion is too complex, at least fuse conv + divide + maxpool into one kernel writing the pooled tensor `(N, OC, PD, PH, PW)`, then a tiny second kernel does avg-pool + bias + sum. The pooled tensor is ~50\u00d7 smaller than the conv output.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 28,
+    "global_best_node_id": 15,
+    "global_best_score": [
+        1,
+        1,
+        0.8067704998582633
+    ]
+}

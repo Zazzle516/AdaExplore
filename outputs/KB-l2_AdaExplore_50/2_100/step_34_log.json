@@ -1,0 +1,29 @@
+{
+    "node_id": 34,
+    "parent_node_id": 8,
+    "context_node_ids": [
+        9
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.43296297496706193,
+    "max_reward": 0.43296297496706193,
+    "avg_reward": 0.43296297496706193,
+    "score": [
+        1,
+        1,
+        0.3719445434782609
+    ],
+    "small_guidance": "- The torch ConvTranspose3d dominates runtime (~69ms vs ~25ms baseline); tuning the tail bias+clamp+div kernel won't help. If staying small, at minimum try folding bias into `conv_transpose.bias` and using `F.conv_transpose3d` directly, then fuse only clamp+div with a vectorized kernel (BLOCK_SIZE=4096, num_warps=8, num_stages=3) since bias add is cheap inside cuDNN.\n- The current bias kernel computes `(offsets // channel_stride) % n_channels` per element \u2014 expensive integer divs. Launch a 2D grid `(N*C, spatial_tiles)` so channel index is a `program_id` and bias is a scalar load per program.\n- Make sure `out` reuses `x` (in-place) to avoid an extra DRAM write of a 16\u00d7128\u00d747\u00d795\u00d795 tensor.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)` reads the input block, multiplies by the (OC, kh*kw*kd) weight slice, and `tl.atomic_add`s the outer product into the output grid at positions `(d*stride - pad + kd, h*stride - pad + kh, w*stride - pad + kw)`. Fuse bias add + clamp + divide as a second small kernel over the output (or as a post-pass once all scatters complete).\n- Alternative (often faster on Ampere): formulate transposed conv as a gather GEMM \u2014 one program per `(N, OC tile, output-spatial tile)`, iterate over `(IC, kd, kh, kw)` and gather the contributing input voxel (masking the stride-divisibility condition) into a `BLOCK_M \u00d7 BLOCK_K` tile, then `tl.dot` against the weight. This avoids atomics entirely. Use channels_last_3d layout so IC is the contiguous GEMM-K axis.\n- Bake `stride=2, padding=1, kernel=3, min_value=-1.0, inv_divisor=0.5` as `tl.constexpr` so index math and the epilogue collapse to constants. Autotune over BLOCK_M\u2208{32,64,128}, BLOCK_N\u2208{32,64,128}, BLOCK_K\u2208{16,32,64}, num_warps\u2208{4,8}, num_stages\u2208{2,3,4}.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 35,
+    "global_best_node_id": 21,
+    "global_best_score": [
+        1,
+        1,
+        0.6530324045801528
+    ]
+}

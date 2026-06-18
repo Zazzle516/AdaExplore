@@ -1,0 +1,29 @@
+{
+    "node_id": 28,
+    "parent_node_id": 25,
+    "context_node_ids": [
+        25
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The shared-memory blowup comes from materializing `acc` of shape `[BLOCK_M, PK_TOTAL] = [BLOCK_M, BLOCK_P*POOL_K]` (e.g. 64\u00d7512 = 128 KB just for the accumulator). Drop `BLOCK_P` to 8 or even 4, and remove the largest `BLOCK_M=128` / `BLOCK_K=256` configs; keep `BLOCK_M \u2264 64`, `BLOCK_K \u2264 64`, `BLOCK_P \u2264 8`, `num_stages=2`.\n- Add smaller autotune configs like `{BLOCK_M:32, BLOCK_K:32, BLOCK_P:4, num_warps:4, num_stages:2}` and `{BLOCK_M:64, BLOCK_K:64, BLOCK_P:8, num_warps:8, num_stages:2}` so the tuner has feasible candidates under 100 KB SMEM.\n- Since `POOL_K=16` and `BLOCK_P*POOL_K` is the inner GEMM-N tile, prefer `BLOCK_P=8` (N=128) which is a sweet spot for `tl.dot` and keeps SMEM in check.",
+    "large_guidance": "- Restructure the fusion so the GEMM tile size is decoupled from the pool tile: do a standard `[BLOCK_M, BLOCK_N]` GEMM tile (e.g. 64\u00d7128) with `BLOCK_N` a multiple of `POOL_K`, then in the epilogue reshape to `[BLOCK_M, BLOCK_N/POOL_K, POOL_K]`, average, GELU, scale, take per-tile max, and combine into a running max across N tiles. This avoids holding `BLOCK_M \u00d7 POOLED_LEN` worth of accumulators and lets you keep large K-tiles for compute throughput.\n- Make the kernel two-dimensional in the grid: `(M_tiles, N_tiles)` with an atomic-max into `out[B]`, OR keep persistent over N inside one program but iterate `N` as the outer loop and `K` as the inner loop reusing x-tiles via shared memory across N iterations only when feasible. Given B=1024, OUT=8192, a 2D grid + per-tile partial max combined with `atomicMax` (on int-reinterpreted floats, since values are non-negative after GELU+scale they're not strictly \u22650, but you can initialize out to -inf and use `tl.atomic_max`) is simpler and exposes more parallelism than a single program per row-block.\n- Keep weight pre-transposed at init (already done) and consider storing it in fp16/bf16 only if accuracy permits; otherwise stay fp32 but ensure the inner `tl.dot` uses `BLOCK_K=32 or 64` with `num_stages=3` to overlap K-loop loads \u2014 that's where the time actually goes (8192\u00d78192 matmul dominates).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 29,
+    "global_best_node_id": 15,
+    "global_best_score": [
+        1,
+        1,
+        1.7535136642010192
+    ]
+}

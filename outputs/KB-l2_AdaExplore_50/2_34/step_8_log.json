@@ -1,0 +1,29 @@
+{
+    "node_id": 8,
+    "parent_node_id": 7,
+    "context_node_ids": [
+        2
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness bug: LayerNorm is over `out_channels` (the last dim after permute), so reduction width is C=64. Current kernel looks correct for that \u2014 but check the store: `tl.store(out_ptr + base + offs, out)` with no mask is fine when BLOCK_C==C. Verify weight/bias dtype matches and that input is truly contiguous after permute. The mean/var math looks right; the issue may be that `x` was loaded without `.to(tl.float32)` casting affecting accuracy \u2014 already cast. Try adding explicit mask `offs < C` and double-check that `permute(0,2,3,4,1).contiguous()` produces NDHWC where last dim stride=1.\n- Add `@triton.autotune` over `num_warps \u2208 {2,4,8}` and `num_stages \u2208 {2,3}` keyed on C; for C=64 a single warp with vectorized loads is often fastest.\n- Fuse the two permutes away by writing the kernel to read NCDHW directly with stride-aware addressing (one program per spatial voxel, gather C channels with stride D*H*W), and write back NCDHW \u2014 saves two full-tensor copies.",
+    "large_guidance": "- The torch `ConvTranspose3d` dominates runtime here (output is 32\u00d764\u00d731\u00d763\u00d763 \u2248 250M elements with kernel 4\u00b3). Replace it with a custom Triton scatter-add kernel: one program per `(N, IC-tile, input-spatial-tile)` computes `input \u00d7 weight` outer product and scatter-adds into the output grid, with stride=2, padding=1, output_padding=0 handled in index math. Fuse bias add, LayerNorm (over OC), GELU, and scaling into the epilogue \u2014 but note LN requires a full reduction over OC per output voxel, so a two-pass strategy (pass 1: conv-transpose + bias \u2192 write; pass 2: LN+GELU+scale fused) is cleanest.\n- Use channels-last (NDHWC) end-to-end so the OC axis is contiguous for both the GEMM-N of the conv-transpose and the LN reduction; this eliminates the two `.contiguous()` permutes.\n- For the conv-transpose kernel, autotune small tiles first: `(BM,BN,BK) \u2208 {(32,32,16),(64,32,16),(32,64,16)}` at `num_warps=4, num_stages=2`, keyed on `(OC, N*D'*H'*W', IC*KD*KH*KW)`. Treat it as a gather-style implicit GEMM where each output voxel sums contributions from input voxels that map to it under the transposed-conv index relation `(od+pad - kd) % stride == 0`.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 9,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.22965490364583332
+    ]
+}

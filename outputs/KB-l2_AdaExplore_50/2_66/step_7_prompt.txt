@@ -1,0 +1,593 @@
+## Problem Statement
+
+You tune the custom Triton kernels in the given architecture to get better performance. The architecture is the reference architecture, and the custom kernels are the previous kernels you have generated. Follow the Optimization Skills below — focus on low-level kernel tuning and fusion, and do not introduce graph-level algebraic shortcuts that eliminate a heavy operator.
+
+# Safety contract
+
+These two rules apply to every kernel you write, regardless of which
+operators appear in the reference and regardless of whether you are
+designing from scratch or tuning an existing kernel.
+
+1. **No graph-level algebraic shortcuts.** Every operator in the reference
+   forward must execute at runtime on the actual input tensor. Do **not**
+   collapse a heavy op into a downstream reduction at init time (for example,
+   precomputing a column/row sum of a weight so that forward runs a matvec
+   instead of the full operator). These rewrites pass the loose
+   `atol=rtol=5e-2` correctness check but are not the optimization target —
+   the comparison baseline runs the graph as written.
+
+2. **Custom kernels are authorized.** Any `nn.*` operator in the reference is
+   a valid replacement target. You may rewrite it with a Triton kernel or a
+   CUDA C++ extension (`torch.utils.cpp_extension`). Do not assume any op is
+   the immovable part of the graph — the heaviest op usually has the most
+   headroom.
+
+3. **Triton Grammer.** Any Python-float reference parameter that becomes a
+   kernel input must be passed as `tl.constexpr` (preferred — it lets Triton
+   bake the value into PTX) or as a 0-d CUDA tensor. Never pass it as an
+   untyped positional arg — Triton's launcher specialization for raw Python
+   floats is fragile and can fail at the gcc launcher build stage
+   (`subprocess.CalledProcessError` building `__triton_launcher.*.so`) even
+   when the kernel itself is logically correct.
+
+- Sweep tile shapes `BLOCK_M` / `BLOCK_N` / `BLOCK_K` for `tl.dot` (common:
+  128/128/32, 64/64/32, 128/64/64) sized to the actual `(M, N, K)`.
+- Add a `GROUP_M` block-swizzle (e.g. 8) so program scheduling reuses L2
+  across the N tiles of a row group.
+- Tune `num_warps` (4 or 8) and `num_stages` (3-4 for large K to overlap the
+  K-loop loads) and expose them via `triton.autotune`.
+- Keep the contiguous operand axis on the inner load; transpose B once up
+  front rather than strided-loading it in the hot loop.
+
+- Tune `BLOCK_SIZE` over the reduction axis (powers of two); for a reduction
+  dim that fits, use a persistent kernel that keeps the row resident.
+- Size `num_warps` to the reduction width (4 for short, 8 for wide rows) and
+  keep `num_stages` 2-3.
+- Lay the reduction axis out contiguously so the strided combine is avoided;
+  one program per output element keeps the grid simple and coalesced.
+
+- Sweep `BLOCK_SIZE` (and per-axis `BLOCK_*` tiles) over powers of two; match
+  the tile to the contiguous axis so loads coalesce.
+- Tune `num_warps` (4 or 8 are the common sweet spots) and `num_stages` (2-4)
+  for the dominant kernel; wrap the launch in `triton.autotune` over a short
+  config list.
+- Make the innermost loaded axis the contiguous one; insert `.contiguous()` or
+  a `channels_last` layout only when it removes a strided load in the hot loop.
+- Vectorize loads (process `BLOCK_SIZE` elements per program with
+  `tl.constexpr` bounds) and mask the tail instead of branching.## Common Pitfalls (from previous optimization attempts)
+
+The following are frequently observed failure patterns from prior kernel optimization runs. **Avoid** these patterns in your implementation:
+
+You cannot reference the name PADDING_LEFT when it is not defined.
+You cannot call the compiled Triton kernel without providing the required positional 'meta' argument.
+You cannot call tl.load(x_ptr + x_addrs, mask=mask_x, other=0.0) inside the Triton kernel.
+You cannot have an `else:` at line 223 of the module source (SyntaxError: invalid syntax).
+You cannot access triton.language.math.tanh.
+You cannot use the 'continue' statement in a Triton kernel.
+You cannot call tl.float32 as a function inside a Triton kernel.
+You cannot pass a callable constexpr for the Triton kernel constexpr parameter BLOCK_M.
+You cannot use k_mask & (offs_n[None, :] < N) as the mask argument to tl.load in this Triton kernel when k_mask and (offs_n[None, :] < N) have incompatible dimensions 32 and 128.
+You cannot access W.shape when W is an int.
+You cannot call tl.arange(0, BLOCK) inside the Triton kernel _mean_invstd_kernel.
+You cannot pass the keyword argument 'num_warps' to triton.jit.
+You cannot use Triton builder operations that require a `_builder` argument outside of functions compiled with @triton.jit.
+You cannot index a Triton tensor with an int32[] tensor index inside a Triton kernel during compilation.
+You cannot pass multiple values for the 'BLOCK' argument when launching the Triton kernel.
+You cannot access the .dtype attribute of a dict object.
+You cannot call triton.language.log1p.
+You cannot index a Triton tensor with a constexpr index inside a Triton kernel at compile time.
+You cannot call the Triton kernel without providing the required constexpr positional arguments 'BLOCK_C' and 'BLOCK_L'.
+You cannot specify the keyword argument meta when launching this Triton kernel.
+You cannot access the global variable BLOCK_L from within an @jit'ed Triton kernel.
+You cannot call the Triton kernel without passing the required constexpr parameter 'BLOCK'.
+You cannot call torch.cuda.reset().
+You cannot call .reshape(-1) inside a Triton kernel.
+You cannot access triton.language.div.
+You cannot call float() on a tensor (kernel_vol) inside the Triton kernel.
+You cannot pass an integer as the grid parameter when launching the Triton kernel.
+You cannot call len() on an int.
+You cannot access the attribute 'dropout3d' on a ModelNew object.
+You cannot call a function that requires a `_builder` argument from inside a Triton jitted function.
+You cannot index tl.zeros((1,), dtype=tl.float32) with [0] inside a Triton @jit kernel.
+You cannot pass a dict as an argument when launching a Triton kernel.
+You cannot use triton.language.pow.
+You cannot have an unexpected indent at line 23 (the '@staticmethod' decorator) in the loaded Python module.
+You cannot call tensor.view with a size argument that contains a torch.nn.Parameter.
+You cannot access the local variable 'W' in ModelNew.forward before it is assigned.
+You cannot call out.view(N * C_, S) when the tensor's size and stride make that view incompatible.
+You cannot use triton.language.full_like.
+You cannot call tl.dot(x, x) inside the Triton kernel shown.
+You cannot compile the Triton kernel.
+You cannot call a function decorated with @triton.jit outside the scope of a kernel.
+You cannot call the .sum() method on the expression vals.to(tl.float32) inside a Triton @triton.jit kernel.
+You cannot use the break statement inside a Triton kernel.
+You cannot use the variable neg_inf as the other argument to tl.load inside the Triton kernel.
+You cannot reference the name 'EMBED' when instantiating ModelNew.
+You cannot call triton.language.any.
+You cannot perform the assignment out_ptr[row * pooled_len + pidx] = acc in the Triton kernel (AssertionError during compilation).
+You cannot access the attribute 'ones' on module triton.language.
+You cannot call ModelNew.__init__ with 6 positional arguments.
+You cannot use chained boolean operators (e.g., A or B or C) inside a Triton kernel.
+You cannot pass a size tuple to torch.nn.functional.interpolate that contains a torch.nn.parameter.Parameter as one of its elements.
+You cannot index a Triton tensor using a non-constexpr integer variable inside a Triton kernel (e.g., w_vals[:, c_inner]).
+You cannot use tl.load(inp_ptr + in_index) in this Triton kernel.
+You cannot pass a dtype keyword argument to tl.sum inside a Triton kernel.
+You cannot call int() on a tensor inside a Triton kernel.
+You cannot pass an indices tensor with float elements to torch.nn.functional.max_unpool3d.
+You cannot compare a pointer<fp32> (e.g., a kernel pointer argument like weight_ptr) to the integer 0 inside a Triton kernel.
+You cannot require more shared memory than the device's hardware limit when launching the Triton kernel.
+You cannot access triton.language.constant (i.e., call tl.constant).
+You cannot use chained/simultaneous multiple comparisons like "0 <= dd < D" inside a Triton kernel.
+You cannot define class ModelNew that inherits from the name 'Model' when 'Model' is not defined.
+You cannot reassign a loop-carried variable that is initially a scalar fp32 to a vector of shape [256] fp32 inside a Triton kernel loop.
+You cannot omit the @triton.jit decorator on a Triton kernel function.
+You cannot call tl.max with arguments max_val and m in this Triton kernel.
+You cannot call tl.arange(0, BLOCK_C) inside the Triton kernel _softmax_channelwise_kernel.
+You cannot pass a torch.cuda.FloatTensor as the indices (argument #1) to torch.embedding_bag.
+You cannot add the Python loop variable l_start to the result of tl.arange(0, BLOCK_L) inside the Triton jitted kernel.
+You cannot call tl.arange(0, D) where D is provided as a Triton kernel argument inside the kernel.
+You cannot call the method new_empty_like on a Tensor object (e.g., x.new_empty_like(x_flat)).
+You cannot call torch.mul with an out=... argument when one of the arguments requires grad.
+You cannot reference the name 'Model' inside ModelNew.__init__.
+You cannot create an attribute named 'encoder_weight' when an attribute with that name already exists.
+You cannot access the attribute 'tanh' on module 'triton.language'.
+You cannot compile this Triton kernel when it contains the call tl.load(x_ptrs, mask=mask, other=0.0).
+You cannot call tl.load(..., mask=mask) without supplying an 'other' argument inside this Triton kernel during compilation.
+You cannot use the expression tl.program_id(3) < 1024 inside a Triton kernel.
+You cannot reference the name 'math' in _init_params.
+You cannot call F.avg_pool1d when F is an int.
+
+## Hardware Information
+
+Here is some information about the underlying hardware that you should keep in mind:
+
+- The GPU that will run the kernel is NVIDIA RTX-4090-D, Ampere architecture.
+
+## Task Instruction
+
+You are given the following architecture:
+
+```python
+import torch
+import torch.nn as nn
+
+class Model(nn.Module):
+    """
+    A model that performs matrix multiplication, applies dropout, and then applies softmax.
+    """
+    def __init__(self, in_features, out_features, dropout_p):
+        super(Model, self).__init__()
+        self.matmul = nn.Linear(in_features, out_features)
+        self.dropout = nn.Dropout(dropout_p)
+
+    def forward(self, x):
+        """
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch_size, in_features).
+
+        Returns:
+            torch.Tensor: Output tensor of shape (batch_size, out_features).
+        """
+        x = self.matmul(x)
+        x = self.dropout(x)
+        x = torch.softmax(x, dim=1)  # Softmax over features
+        return x
+
+batch_size = 128
+in_features = 16384
+out_features = 16384
+dropout_p = 0.2
+
+def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
+    return [torch.rand(batch_size, in_features)]
+
+def get_init_inputs():
+    return [in_features, out_features, dropout_p]
+
+```
+
+The input shapes can be found in the input of the architecture, and the dtype is fp32.
+
+The tuning metrics contain the following information:
+
+* **Compiled**: whether the kernel is compiled successfully
+* **Error Message**: the compilation or runtime error encountered by the kernel (if any)
+* **Correctness**: whether the kernel is correct
+* **Runtime**: the runtime of the kernel
+* **Fast_p**: compared with the standard PyTorch implementation, how much speedup the customized kernel achieves, calculated as *standard time / custom time*.
+
+### Test Conditions
+
+* **Correctness Test:**
+  First, verify the correctness of the custom kernels by running each kernel with the specified input shapes and data types.
+
+* **Warm-up Phase:**
+  Warm up the kernel by running it three times with the same input shapes and data types.
+  The runtime during the warm-up phase is **not** included in the final runtime, so you may include auto-tuning code as part of this phase.
+
+* **Performance Test:**
+  Finally, test the performance of the custom kernels by running each kernel 100 times with the same input shapes and data types.
+  The runtime from these test runs **is included** in the final performance measurement.
+
+### Goal
+
+- Perform small, localized updates to code in the last version of the custom kernels with the str_replace command to correct the correctness errors or improve the performance of the custom kernels. Keep the overall model interface unchanged. Apply the Optimization Skills above — do not introduce algebraic shortcuts that eliminate the reference's heavy operators.
+When making edits:
+   - Ensure the edit results in idiomatic, correct code
+   - Do not leave the code in a broken state
+
+CRITICAL REQUIREMENTS FOR USING THIS TOOL:
+
+1. EXACT MATCHING: The `old_str` parameter must match EXACTLY one or more consecutive lines from the file, including all whitespace and indentation. 
+- You should ensure the `old_str` matches exactly with the file content, otherwise the str_replace tool will fail.
+
+2. UNIQUENESS: The `old_str` must uniquely identify a single instance in the file:
+   - Include sufficient context before and after the change point (3-5 lines recommended)
+   - If not unique, the replacement will not be performed
+
+3. REPLACEMENT: The `new_str` parameter should contain the edited lines that replace the `old_str`. Both strings must be different.
+
+Remember: You should prefer to send all edits in a single message with multiple calls rather than multiple messages with a single call each.
+
+#### **Output Format**:
+
+You should output all the edits in a single message with multiple call. Each call should be a single edit as follows with id `1` to `n`. 
+- For each edit, you should provide the reasoning for the edit in the <reasoning_i> block, followed by the old code block in the <old_str_i> block, followed by the new code block in the <new_str_i> block.
+- You should ensure the `old_str_i` matches exactly with the file content, otherwise the str_replace tool will fail.
+
+Example output format:
+
+<reasoning_1>
+// reasoning for the edit 1
+...
+</reasoning_1>
+<old_str_1>
+// old code block (must match exactly)
+...
+</old_str_1>
+<new_str_1>
+// new code block
+...
+</new_str_1>
+
+...
+
+<reasoning_n>
+// reasoning for the edit n
+...
+</reasoning_n>
+<old_str_n>
+// old code block (must match exactly)
+...
+</old_str_n>
+<new_str_n>
+// new code block
+...
+</new_str_n>
+
+#### **Previous Kernels and Metrics:**
+
+Previously, you have generated the following custom kernels and got the following runtime metrics:
+
+<Previous Kernels and Metrics>
+
+### 0-th attempt: 
+
+```python
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import triton
+import triton.language as tl
+
+
+@triton.autotune(
+    configs=[
+        triton.Config({'BLOCK_M': 32, 'BLOCK_N': 128, 'BLOCK_K': 32}, num_warps=4, num_stages=3),
+        triton.Config({'BLOCK_M': 64, 'BLOCK_N': 128, 'BLOCK_K': 32}, num_warps=4, num_stages=3),
+        triton.Config({'BLOCK_M': 32, 'BLOCK_N': 256, 'BLOCK_K': 32}, num_warps=8, num_stages=3),
+        triton.Config({'BLOCK_M': 64, 'BLOCK_N': 256, 'BLOCK_K': 32}, num_warps=8, num_stages=3),
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 128, 'BLOCK_K': 32}, num_warps=8, num_stages=3),
+    ],
+    key=['M', 'N', 'K'],
+)
+@triton.jit
+def linear_kernel(
+    x_ptr, w_ptr, b_ptr, out_ptr,
+    M, N, K,
+    stride_xm, stride_xk,
+    stride_wn, stride_wk,
+    stride_om, stride_on,
+    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
+):
+    pid_m = tl.program_id(0)
+    pid_n = tl.program_id(1)
+
+    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    offs_k = tl.arange(0, BLOCK_K)
+
+    x_ptrs = x_ptr + (offs_m[:, None] * stride_xm + offs_k[None, :] * stride_xk)
+    w_ptrs = w_ptr + (offs_n[None, :] * stride_wn + offs_k[:, None] * stride_wk)
+
+    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+
+    for k in range(0, K, BLOCK_K):
+        k_mask = offs_k[None, :] < (K - k)
+        x = tl.load(x_ptrs, mask=(offs_m[:, None] < M) & k_mask, other=0.0)
+        w = tl.load(w_ptrs, mask=(offs_n[None, :] < N) & (offs_k[:, None] < (K - k)), other=0.0)
+        acc += tl.dot(x, w)
+        x_ptrs += BLOCK_K * stride_xk
+        w_ptrs += BLOCK_K * stride_wk
+
+    b = tl.load(b_ptr + offs_n, mask=offs_n < N, other=0.0)
+    acc += b[None, :]
+
+    out_ptrs = out_ptr + offs_m[:, None] * stride_om + offs_n[None, :] * stride_on
+    mask = (offs_m[:, None] < M) & (offs_n[None, :] < N)
+    tl.store(out_ptrs, acc, mask=mask)
+
+
+@triton.jit
+def softmax_kernel(
+    inp_ptr, out_ptr, n_cols,
+    stride_im, stride_om,
+    BLOCK_SIZE: tl.constexpr,
+):
+    row = tl.program_id(0)
+    inp_row = inp_ptr + row * stride_im
+    out_row = out_ptr + row * stride_om
+
+    # First pass: max
+    max_val = -float('inf')
+    for start in range(0, n_cols, BLOCK_SIZE):
+        offs = start + tl.arange(0, BLOCK_SIZE)
+        mask = offs < n_cols
+        vals = tl.load(inp_row + offs, mask=mask, other=-float('inf'))
+        block_max = tl.max(vals, axis=0)
+        max_val = tl.maximum(max_val, block_max)
+
+    # Second pass: sum exp
+    sum_exp = 0.0
+    for start in range(0, n_cols, BLOCK_SIZE):
+        offs = start + tl.arange(0, BLOCK_SIZE)
+        mask = offs < n_cols
+        vals = tl.load(inp_row + offs, mask=mask, other=-float('inf'))
+        ex = tl.exp(vals - max_val)
+        ex = tl.where(mask, ex, 0.0)
+        sum_exp += tl.sum(ex, axis=0)
+
+    inv = 1.0 / sum_exp
+
+    # Third pass: write
+    for start in range(0, n_cols, BLOCK_SIZE):
+        offs = start + tl.arange(0, BLOCK_SIZE)
+        mask = offs < n_cols
+        vals = tl.load(inp_row + offs, mask=mask, other=-float('inf'))
+        ex = tl.exp(vals - max_val) * inv
+        tl.store(out_row + offs, ex, mask=mask)
+
+
+def triton_linear(x, weight, bias):
+    M, K = x.shape
+    N, K2 = weight.shape
+    assert K == K2
+    out = torch.empty((M, N), device=x.device, dtype=x.dtype)
+    grid = lambda meta: (triton.cdiv(M, meta['BLOCK_M']), triton.cdiv(N, meta['BLOCK_N']))
+    linear_kernel[grid](
+        x, weight, bias, out,
+        M, N, K,
+        x.stride(0), x.stride(1),
+        weight.stride(0), weight.stride(1),
+        out.stride(0), out.stride(1),
+    )
+    return out
+
+
+def triton_softmax(x):
+    M, N = x.shape
+    out = torch.empty_like(x)
+    BLOCK = 1024
+    grid = (M,)
+    softmax_kernel[grid](
+        x, out, N,
+        x.stride(0), out.stride(0),
+        BLOCK_SIZE=BLOCK,
+        num_warps=8,
+    )
+    return out
+
+
+class ModelNew(nn.Module):
+    def __init__(self, in_features, out_features, dropout_p):
+        super().__init__()
+        self.matmul = nn.Linear(in_features, out_features)
+        self.dropout = nn.Dropout(dropout_p)
+        self.in_features = in_features
+        self.out_features = out_features
+
+    def forward(self, x):
+        x = x.contiguous().cuda()
+        w = self.matmul.weight.contiguous().cuda()
+        b = self.matmul.bias.contiguous().cuda()
+        y = triton_linear(x, w, b)
+        # dropout in eval mode is identity; in training, apply standard dropout
+        if self.training:
+            y = self.dropout(y)
+        out = triton_softmax(y)
+        return out
+```
+
+### 0-th Runtime Metrics:
+compiled=True correctness=True metadata={'hardware': 'NVIDIA GeForce RTX 4090', 'device': '0', 'correctness_trials': '(5 / 5)'} runtime=1.23 runtime_stats={'mean': 1.23, 'std': 0.00315, 'min': 1.23, 'max': 1.24, 'num_trials': 90, 'hardware': 'NVIDIA GeForce RTX 4090', 'device': '0', 'fast_p': 0.0, 'baseline_time': 0.0, 'baseline_type': 'recorded'}
+
+### 1-th attempt: 
+
+```python
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import triton
+import triton.language as tl
+
+
+@triton.autotune(
+    configs=[
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 64, 'BLOCK_K': 32, 'GROUP_M': 8}, num_warps=4, num_stages=4),
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 64, 'BLOCK_K': 64, 'GROUP_M': 8}, num_warps=4, num_stages=4),
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 128, 'BLOCK_K': 32, 'GROUP_M': 8}, num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 128, 'BLOCK_K': 64, 'GROUP_M': 8}, num_warps=8, num_stages=3),
+        triton.Config({'BLOCK_M': 64, 'BLOCK_N': 128, 'BLOCK_K': 64, 'GROUP_M': 8}, num_warps=4, num_stages=4),
+        triton.Config({'BLOCK_M': 64, 'BLOCK_N': 256, 'BLOCK_K': 32, 'GROUP_M': 8}, num_warps=8, num_stages=3),
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 256, 'BLOCK_K': 32, 'GROUP_M': 8}, num_warps=8, num_stages=3),
+    ],
+    key=['M', 'N', 'K'],
+)
+@triton.jit
+def linear_kernel(
+    x_ptr, w_ptr, b_ptr, out_ptr,
+    M, N, K,
+    stride_xm, stride_xk,
+    stride_wn, stride_wk,
+    stride_om, stride_on,
+    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
+    GROUP_M: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    num_pid_m = tl.cdiv(M, BLOCK_M)
+    num_pid_n = tl.cdiv(N, BLOCK_N)
+    num_pid_in_group = GROUP_M * num_pid_n
+    group_id = pid // num_pid_in_group
+    first_pid_m = group_id * GROUP_M
+    group_size_m = min(num_pid_m - first_pid_m, GROUP_M)
+    pid_m = first_pid_m + ((pid % num_pid_in_group) % group_size_m)
+    pid_n = (pid % num_pid_in_group) // group_size_m
+
+    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    offs_k = tl.arange(0, BLOCK_K)
+
+    x_ptrs = x_ptr + (offs_m[:, None] * stride_xm + offs_k[None, :] * stride_xk)
+    w_ptrs = w_ptr + (offs_n[None, :] * stride_wn + offs_k[:, None] * stride_wk)
+
+    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+
+    for k in range(0, K, BLOCK_K):
+        k_mask = offs_k[None, :] < (K - k)
+        x = tl.load(x_ptrs, mask=(offs_m[:, None] < M) & k_mask, other=0.0)
+        w = tl.load(w_ptrs, mask=(offs_n[None, :] < N) & (offs_k[:, None] < (K - k)), other=0.0)
+        acc += tl.dot(x, w)
+        x_ptrs += BLOCK_K * stride_xk
+        w_ptrs += BLOCK_K * stride_wk
+
+    b = tl.load(b_ptr + offs_n, mask=offs_n < N, other=0.0)
+    acc += b[None, :]
+
+    out_ptrs = out_ptr + offs_m[:, None] * stride_om + offs_n[None, :] * stride_on
+    mask = (offs_m[:, None] < M) & (offs_n[None, :] < N)
+    tl.store(out_ptrs, acc, mask=mask)
+
+
+@triton.jit
+def softmax_kernel(
+    inp_ptr, out_ptr, n_cols,
+    stride_im, stride_om,
+    BLOCK_SIZE: tl.constexpr,
+):
+    row = tl.program_id(0)
+    inp_row = inp_ptr + row * stride_im
+    out_row = out_ptr + row * stride_om
+
+    # Online softmax: 1st pass computes running max and sum
+    max_val = -float('inf')
+    sum_exp = 0.0
+    for start in range(0, n_cols, BLOCK_SIZE):
+        offs = start + tl.arange(0, BLOCK_SIZE)
+        mask = offs < n_cols
+        vals = tl.load(inp_row + offs, mask=mask, other=-float('inf'))
+        block_max = tl.max(vals, axis=0)
+        new_max = tl.maximum(max_val, block_max)
+        # rescale previous sum
+        sum_exp = sum_exp * tl.exp(max_val - new_max)
+        ex = tl.exp(vals - new_max)
+        ex = tl.where(mask, ex, 0.0)
+        sum_exp += tl.sum(ex, axis=0)
+        max_val = new_max
+
+    inv = 1.0 / sum_exp
+
+    # 2nd pass: write
+    for start in range(0, n_cols, BLOCK_SIZE):
+        offs = start + tl.arange(0, BLOCK_SIZE)
+        mask = offs < n_cols
+        vals = tl.load(inp_row + offs, mask=mask, other=-float('inf'))
+        ex = tl.exp(vals - max_val) * inv
+        tl.store(out_row + offs, ex, mask=mask)
+
+
+def triton_linear(x, weight, bias):
+    M, K = x.shape
+    N, K2 = weight.shape
+    assert K == K2
+    out = torch.empty((M, N), device=x.device, dtype=x.dtype)
+    grid = lambda meta: (triton.cdiv(M, meta['BLOCK_M']) * triton.cdiv(N, meta['BLOCK_N']),)
+    linear_kernel[grid](
+        x, weight, bias, out,
+        M, N, K,
+        x.stride(0), x.stride(1),
+        weight.stride(0), weight.stride(1),
+        out.stride(0), out.stride(1),
+    )
+    return out
+
+
+def triton_softmax(x):
+    M, N = x.shape
+    out = torch.empty_like(x)
+    BLOCK = 4096
+    grid = (M,)
+    softmax_kernel[grid](
+        x, out, N,
+        x.stride(0), out.stride(0),
+        BLOCK_SIZE=BLOCK,
+        num_warps=8,
+        num_stages=2,
+    )
+    return out
+
+
+class ModelNew(nn.Module):
+    def __init__(self, in_features, out_features, dropout_p):
+        super().__init__()
+        self.matmul = nn.Linear(in_features, out_features)
+        self.dropout = nn.Dropout(dropout_p)
+        self.in_features = in_features
+        self.out_features = out_features
+
+    def forward(self, x):
+        x = x.contiguous().cuda()
+        w = self.matmul.weight.contiguous().cuda()
+        b = self.matmul.bias.contiguous().cuda()
+        y = triton_linear(x, w, b)
+        # dropout in eval mode is identity; in training, apply standard dropout
+        if self.training:
+            y = self.dropout(y)
+        out = triton_softmax(y)
+        return out
+```
+
+### 1-th Runtime Metrics:
+compiled=True correctness=True metadata={'hardware': 'NVIDIA GeForce RTX 4090', 'device': '0', 'correctness_trials': '(5 / 5)'} runtime=1.24 runtime_stats={'mean': 1.24, 'std': 0.00458, 'min': 1.23, 'max': 1.25, 'num_trials': 90, 'hardware': 'NVIDIA GeForce RTX 4090', 'device': '0', 'fast_p': 0.0, 'baseline_time': 0.0, 'baseline_type': 'recorded'}
+</Previous Kernels and Metrics>
+
+#### **Guidance from Evaluator Agent:**
+
+- An evaluator agent has provided a guidance to you on how to correct or improve the performance of your lastgenerated custom kernels, please tune the custom kernels based on the guidance in the unified diff format. Reminder to keep the name of `ModelNew` unchanged.
+
+<Tuning Guidance>
+- The GEMM is M=128, N=16384, K=16384 — M is tiny (one BLOCK_M=128 covers all rows). Add autotune configs with BLOCK_M=128, BLOCK_N in {128,256}, BLOCK_K in {32,64}, num_warps=8, num_stages=3-4, and drop GROUP_M swizzle (set GROUP_M=1) since there is only one row group anyway; this removes wasted swizzle math.
+- Softmax over 16384 cols with BLOCK_SIZE=4096 forces 4 sequential chunks plus a 2nd pass re-reading from HBM. Increase BLOCK_SIZE to 16384 (single-pass, row fits) with num_warps=16 and num_stages=2, eliminating the second load pass entirely.
+- In the GEMM K-loop, replace the per-iteration K-tail mask with a peeled tail (full-tile loads when k+BLOCK_K<=K, masked load only on the last iteration) so the hot loop has unmasked `tl.load`s — this lets Triton issue wider cp.async on Ada.
+</Tuning Guidance>
+

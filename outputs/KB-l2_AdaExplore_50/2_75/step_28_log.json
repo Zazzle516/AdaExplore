@@ -1,0 +1,29 @@
+{
+    "node_id": 28,
+    "parent_node_id": 25,
+    "context_node_ids": [
+        24
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The dominant cost is the `F.linear` GEMM (M=1024, N=8192, K=8192 \u2248 137 GFLOPs). Replace it with a custom Triton tiled GEMM (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8, num_warps=8, num_stages=3-4) and fuse the linear bias into the epilogue.\n- The current `add_bias_kernel` writes an N\u00d7M tensor (8192\u00d71024 = 32MB) just to broadcast a scalar-per-row plus a vector bias; this is pure memory traffic. Skip materializing it \u2014 return min_out + bias via a broadcast view, or fuse the bias add into a single store with output shape (1, N, M, 1) directly contiguous in the natural layout (M outer, N inner) to avoid the transpose.\n- In `gn_min_kernel`, N=8192 per row is large for one program; consider increasing num_warps to 16 or splitting the row into a two-stage reduction. Also load gn_w/gn_b once and reuse, and store min_val with a fused bias add if output layout permits.",
+    "large_guidance": "- Redesign with the GEMM as the centerpiece: write a tiled `tl.dot` GEMM kernel for y = x @ W^T + b_linear. This op alone is ~95% of runtime; everything else (GN + min + bias) is sub-millisecond. Without replacing the cuBLAS call, no tuning of GN/min will move the needle.\n- Fuse GN + min into the GEMM epilogue when possible: have each GEMM program compute a full row tile of N (BLOCK_N == out_features=8192 is too large, so instead use a two-pass design \u2014 first pass GEMM writes y, second pass kernel does GN+min+bias in one launch). Since out_features fits in shared memory at fp32 only marginally (32KB), prefer a split-K or persistent GEMM that produces full rows, followed by a fused GN+min+broadcast-bias kernel that writes the final (1, N, M, 1) output directly without the intermediate min_out tensor.\n- Choose the final output layout carefully: output is (1, 8192, 1024, 1) so contiguous storage has N as the slow axis and M as the fast axis. Make the fused epilogue kernel iterate (n_tile, m_tile) and store directly in this layout, broadcasting the per-row min and adding per-channel bias in registers \u2014 eliminates the separate `add_bias_kernel` launch and its 32MB write.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 29,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

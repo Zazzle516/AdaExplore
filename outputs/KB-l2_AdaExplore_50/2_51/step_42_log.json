@@ -1,0 +1,29 @@
+{
+    "node_id": 42,
+    "parent_node_id": 41,
+    "context_node_ids": [
+        41
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure is from `tl.atomic_add` accumulating into `RowSum` across N-tiles combined with non-deterministic FP rounding plus a likely bug: `RowSum` is allocated fresh per call but the kernel result depends on order \u2014 more importantly, check that `mean_gelu_kernel`'s computation matches the reference. Reference does `mean(dim=1)` -> scalar per row, then `logsumexp` over a size-1 dim (identity), then GELU. That part is correct. The actual bug is likely numerical: atomic_add on fp32 accumulates rounding error across many tiles (N=8192 / BLOCK_N=128 = 64 atomics per row). Switch to a two-stage reduction: have the GEMM kernel write per-tile partial sums into a `[num_n_tiles, M]` buffer, then reduce in a second kernel \u2014 avoids atomics entirely.\n- Alternatively, since only the per-row sum of `(X@W^T + b - sub)` is needed, restructure so each program handles a full row slab (BLOCK_M rows, all N) and reduces N internally \u2014 no atomics, exact result. With M=2048, N=8192, K=8192 this is a standard GEMM-reduce pattern.\n- Tune autotune configs around BLOCK_M=64/128, BLOCK_N=128/256, BLOCK_K=32/64, num_warps=8, num_stages=3-4 once correctness is fixed.",
+    "large_guidance": "- Redesign as a \"GEMV-equivalent\" fused kernel: since the only downstream consumer of the [M,N] gemm result is `sum over N` per row, fold the N-reduction into the GEMM. One program per row-tile (BLOCK_M rows) loops over K in BLOCK_K chunks and over N in BLOCK_N chunks, accumulating `sum_n (X@W^T + b - sub)` directly into a [BLOCK_M] register vector. This eliminates the [M,N] materialization and the atomic_add correctness hazard. Note: this is *not* an algebraic shortcut at init time \u2014 W, b, sub are all read at runtime and every multiply-add is performed; we just fuse the reduction. To stay safe per the contract, ensure the kernel still performs the full K\u00d7N work per row (it does: BLOCK_M \u00d7 N \u00d7 K MACs total).\n- Second kernel: fused mean / GELU / residual-add in one pass \u2014 load row scalar from rowsum buffer, compute `gelu(rowsum/N)`, then write `original_x[m,k] + scalar` over the full [M, K] output. This collapses the current 2-kernel tail into one.\n- Consider keeping W transposed (pre-permuted to [K, N]) in a buffer at init so inner-loop loads on the contiguous axis are coalesced without strided access.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 43,
+    "global_best_node_id": 36,
+    "global_best_score": [
+        1,
+        1,
+        1.66307092995426
+    ]
+}

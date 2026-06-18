@@ -1,0 +1,29 @@
+{
+    "node_id": 35,
+    "parent_node_id": 9,
+    "context_node_ids": [
+        9
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5922376861186995,
+    "max_reward": 0.5922376861186995,
+    "avg_reward": 0.5922376861186995,
+    "score": [
+        1,
+        1,
+        1.6859609104792708
+    ],
+    "small_guidance": "- For max_dim=1, the entire post-GEMM chain produces zeros (max keepdim=True over dim=1 then subtract its own mean over dim=1 = 0, then GELU(0)=0). Since this is what the reference computes, you can skip the GEMM entirely when max_dim==1 \u2014 but that would violate the safety contract. Instead, keep the GEMM (it must execute) but fuse the row-max directly into the GEMM epilogue using a split-K-free single-pass kernel: each program computes a full row tile of Y, reduces to a partial row-max in registers, and atomically maxes into a global (M,) buffer. This eliminates the separate row_max_kernel pass.\n- Add larger autotune configs targeting the M=1024, N=8192, K=8192 shape: try BLOCK_M=128/BLOCK_N=256/BLOCK_K=32 num_warps=8 stages=3, and BLOCK_M=64/BLOCK_N=256/BLOCK_K=64. Also try a persistent GEMM with `tl.dot(..., out_dtype=tl.float32)` and fp32 accumulation.\n- Pre-transpose `w` once at init (store W^T contiguous as (K, N)) so the inner K-loop of the GEMM does contiguous loads along N instead of strided (N, K) loads.",
+    "large_guidance": "- The kernel is GEMM-bound (1024\u00d78192\u00d78192 fp32 \u2248 137 GFLOPs); current 1.64 ms \u2248 84 TFLOPs which is far above fp32 peak on a 4090, suggesting tensor-core / TF32 is already in use via `tl.dot`. To push further, redesign as a split-K GEMM where each program handles a (BLOCK_M, BLOCK_N) tile but partitions K across the grid z-dim, accumulating partial sums via atomic-add or a second reduction pass; this exposes more parallelism for the small M=1024 dimension.\n- Fuse the row-max into the GEMM epilogue: instead of writing Y to global memory and re-reading it for the row reduction, accumulate Y tile in registers, take row-max within the tile, then atomic-max into a per-row global scratch. The full Y tensor never needs to be materialized \u2014 only the (M,) row-max vector \u2014 saving an 8192\u00d71024 fp32 write+read (~64 MB of bandwidth).\n- After fusion, the post-max work ((M,1) \u2212 its own dim-1 mean \u2192 GELU) is trivially zero analytically, but must still execute on the actual row_max tensor at runtime; implement it as a single tiny kernel taking row_max and producing the (M,1) output via the real formula (no precomputation of the zero result).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 36,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        1.7954388916792234
+    ]
+}

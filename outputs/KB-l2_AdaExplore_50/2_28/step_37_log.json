@@ -1,0 +1,27 @@
+{
+    "node_id": 37,
+    "parent_node_id": 31,
+    "context_node_ids": [],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The kernel is incorrect: it assumed InstanceNorm2d on a (N,C,1,1) tensor produces zeros and shortcut the output to y*y. This violates the safety contract. Must actually compute Linear(x) \u2192 InstanceNorm \u2192 +y \u2192 *y. Note: InstanceNorm2d on a single spatial element gives (x-x)/sqrt(0+eps) = 0, but the contract still requires executing the op; however the larger issue is that `out = 0 + y; out = out * y = y*y` \u2014 this part is mathematically what reference computes, but doing it via shortcut is invalid per contract.\n- Even structurally: fuse bias-add, then the InstanceNorm reduction (trivial here), then `+y` and `*y` into the GEMM epilogue rather than launching a separate kernel.\n- Tune autotune configs for M=N=K=8192: include BLOCK_M=128, BLOCK_N=256, BLOCK_K=64 num_warps=8 num_stages=3, which usually wins on 4090 for large square GEMMs.",
+    "large_guidance": "- Redesign as a single fused GEMM kernel: compute `acc = x @ W^T + bias` in tiles with `tl.dot`, then in the epilogue load the corresponding `y` tile and write `(acc_normalized + y) * y` where acc_normalized = (acc - mean)/sqrt(var+eps) computed per-row. Since spatial size is 1, mean=acc itself and var=0, but compute it explicitly using the loaded value to honor the contract (result becomes `y*y` but via real arithmetic).\n- Alternatively: launch the GEMM kernel producing `gemm_out` to memory, then a second fused epilogue kernel that loads gemm_out, performs the InstanceNorm reduction over the spatial dim (size 1), adds y, multiplies y, and stores. Don't shortcut the InstanceNorm away.\n- Transpose W once in __init__ (store W^T as a buffer) to avoid the `.t().contiguous()` cost on every forward.",
+    "evaluator_direction": "large",
+    "evaluator_valid": false,
+    "total_nodes": 38,
+    "global_best_node_id": 28,
+    "global_best_score": [
+        1,
+        1,
+        0.8257900886245404
+    ]
+}

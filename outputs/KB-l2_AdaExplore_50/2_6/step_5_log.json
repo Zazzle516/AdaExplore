@@ -1,0 +1,30 @@
+{
+    "node_id": 5,
+    "parent_node_id": 2,
+    "context_node_ids": [
+        1,
+        2
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4770830865898972,
+    "max_reward": 0.4770830865898972,
+    "avg_reward": 0.4770830865898972,
+    "score": [
+        1,
+        1,
+        0.7359354643666512
+    ],
+    "small_guidance": "- The conv (torch cuDNN Conv3d) is now the dominant cost since the fused softmax+pool is already compact; further tuning of fused_softmax_pool_kernel has limited headroom. Still, try adding configs with BLOCK_OW=16/32 + num_warps=2 and explicitly setting BLOCK_C=16 (C=16 exact) so the compiler skips C-mask branches; also try a 2D grid (n*OD, OH*ow_blocks) for better L2 locality.\n- Fold the Conv3d bias into the softmax kernel by passing the post-conv tensor unchanged but using `tl.exp(vals - m)` already does this \u2014 instead, fuse the conv bias add by reading conv output without bias and adding bias inside the softmax-pool kernel; remove the extra `x.contiguous()` if conv output is already contiguous.\n- Combine pool1+pool2 (already done as POOL=4) \u2014 but note kernel iterates 4\u00d74\u00d74=64 spatial points per output with full softmax recompute at each; consider caching softmax per (d,h,w) by computing softmax once over C for the entire D\u00d7H\u00d7W tile and then maxpooling, since each input point is currently visited once per output (no overlap), so this is optimal as-is.",
+    "large_guidance": "- The Conv3d dominates runtime (fast_p \u2248 0.74 with the tail already fused). Replace nn.Conv3d with a custom Triton im2col-style GEMM kernel: one program per (N, OC_tile, output-spatial tile), implicit im2col gather over (IC*kD*kH*kW) as the K dim. Shape is small (OC=16, IC*27=81, N*OD*OH*OW=128*14*30*30\u22481.6M), so tile (BLOCK_M=16 for OC, BLOCK_N=64-128 spatial, BLOCK_K=32 or full 81). Fuse bias add directly in the epilogue.\n- Go further and fuse the entire pipeline (conv + bias + softmax + 4\u00d74\u00d74 maxpool) into a single kernel: one program per (N, OD_tile, OH_tile, OW_tile) of the *pooled* output. For each pooled output, loop over the 4\u00d74\u00d74 input window, compute conv output for all OC channels at that point (small GEMV: 81\u219216), softmax across OC, and reduce max across the window. This eliminates writing/reading the (N,16,14,30,30) intermediate entirely.\n- Use channels_last (NDHWC) layout for the conv input/weight so the IC*kD*kH*kW gather is contiguous, and store the weight as (OC, kD*kH*kW*IC) reshaped once at init for coalesced K-axis loads.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 6,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.7539510204098986
+    ]
+}

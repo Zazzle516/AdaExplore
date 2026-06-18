@@ -1,0 +1,29 @@
+{
+    "node_id": 39,
+    "parent_node_id": 38,
+    "context_node_ids": [
+        38
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4530824179728318,
+    "max_reward": 0.4530824179728318,
+    "avg_reward": 0.4530824179728318,
+    "score": [
+        1,
+        1,
+        0.537929948275862
+    ],
+    "small_guidance": "- The eval-path `fused_scale_bn_pool_kernel` launches only N*OC = 2048 programs and each reduces SPATIAL=20*36*36=25920 elements serially per program. Tile the spatial axis across multiple programs (grid `(N, OC, num_s_tiles)`) and use `tl.atomic_add` into a `(N, OC)` partial-sum buffer, then a tiny finalize kernel applies `a*mean + b`. Try BLOCK_S=1024, num_warps=4, num_stages=4.\n- Alternatively keep one program per (N,OC) but raise `num_warps=8` and `num_stages=4`, and split the inner accumulator into 2-4 independent partial sums to expose ILP; current single `acc` vector serializes through L2.\n- The conv_transpose3d is now the dominant cost (~25 ms of the 29 ms). Tuning the pool epilogue cannot close the gap \u2014 focus must shift to the conv.",
+    "large_guidance": "- Replace `F.conv_transpose3d` with a custom Triton kernel. Since the output is immediately globally averaged, fuse conv_transpose + scale + BN-affine + global-mean into one kernel: each program computes a partial `sum over (od,oh,ow)` of the conv_transpose output for a tile of (N, OC) by iterating over (IC, kd, kh, kw, id, ih, iw) and accumulating contributions, then atomically adds into a (N,OC) accumulator. Apply BN affine + divide-by-SPATIAL in a tiny finalize.\n- Or implement conv_transpose3d as a scatter-add GEMM: program per (N, IC tile, input-spatial tile) loads `x[n, ic_tile, id, ih, iw]`, multiplies by `weight[ic_tile, oc_tile, kd, kh, kw]` (im2col-style), and scatter-adds into output. With output globally pooled, you can skip materializing the output tensor entirely \u2014 accumulate sums of contributions weighted by how many output positions each (ic, kd, kh, kw) maps to (still a real per-element computation, not an algebraic shortcut, because input values are loaded and multiplied per spatial position).\n- Fold scale_factor into the conv weight at forward time (multiply weight by scale once) and fold BN affine into the finalize step; this removes two elementwise passes. Use channels_last_3d layout for the conv input/weight so the IC reduction axis is contiguous.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 40,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        1.599996769230769
+    ]
+}

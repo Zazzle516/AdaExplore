@@ -1,0 +1,29 @@
+{
+    "node_id": 22,
+    "parent_node_id": 5,
+    "context_node_ids": [
+        5
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4752266510126543,
+    "max_reward": 0.4752266510126543,
+    "avg_reward": 0.4752266510126543,
+    "score": [
+        1,
+        1,
+        0.720619870854398
+    ],
+    "small_guidance": "- The kernel is doing the right work but the eval-path uses cached BN folding, which is an algebraic fold of BatchNorm parameters at inference. That's legal (BN at eval truly is an affine), but consider also handling training path with a fused kernel \u2014 currently training falls back to PyTorch entirely. For inference tuning, add larger-K configs (BLOCK_K=128) and try BLOCK_M=64,BLOCK_N=64 with num_stages=5 since K=8192 is huge and pipelining the K-loop dominates.\n- Add a `tl.max_contiguous`/`tl.multiple_of` hint on offs and ensure `wT` is stored row-major contiguous (already is) \u2014 but try keeping W in its original (N,K) layout and using `tl.dot(x, w.T)` semantics by swapping loads, avoiding the t().contiguous() copy cost on first call (cache amortizes, but still). Also try `BLOCK_M=256,BLOCK_N=256,BLOCK_K=32` num_warps=8 num_stages=3 for this large square (1024\u00d78192\u00d78192) shape.\n- Increase `GROUP_M` to 16 for better L2 reuse over the very wide N=8192 row groups, and prune small-tile configs (64\u00d7128, 128\u00d764) from autotune since M=1024,N=8192 strongly favors large tiles.",
+    "large_guidance": "- The dominant cost is a 1024\u00d78192\u00d78192 GEMM (~137 GFLOPs). A from-scratch rewrite should target a split-K or stream-K GEMM: with M=1024 only, there are just 8 row-tiles of BLOCK_M=128, leaving the 4090's 128 SMs underutilized. Stream-K or split-K (with a small atomic-add or a second reduction kernel) would expose far more parallelism on the K=8192 axis.\n- Alternatively, since divide_value=1.0 and bias_shape=(1,), the epilogue is just `(acc*scale + shift)` followed by swish \u2014 keep that fused but consider using `tl.dot` with the `out_dtype=tl.float32` and an FP16/BF16 input path if accuracy permits (5e-2 tol allows it), nearly doubling throughput on Ada tensor cores.\n- Consider a persistent kernel: launch exactly num_SMs programs, each looping over an assigned tile list, to amortize launch and improve scheduling for this fixed-shape workload.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 23,
+    "global_best_node_id": 16,
+    "global_best_score": [
+        1,
+        1,
+        1.306364364810914
+    ]
+}

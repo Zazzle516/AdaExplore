@@ -1,0 +1,29 @@
+{
+    "node_id": 29,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        4
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4754850766432279,
+    "max_reward": 0.4754850766432279,
+    "avg_reward": 0.4754850766432279,
+    "score": [
+        1,
+        1,
+        0.72275188230663
+    ],
+    "small_guidance": "- The matmul (1024\u00d78192\u00d78192) dominates runtime; addmm via cuBLAS is already strong but the epilogue kernel is launched separately. Try fusing scale/shift/bias/swish into the matmul epilogue via a Triton GEMM with autotuned tiles (BLOCK_M=128, BLOCK_N=128/256, BLOCK_K=32/64, GROUP_M=8, num_warps=8, num_stages=3-4) so the (M,N) output is written once with the activation already applied.\n- For the col_stats reduction, use a 2D tile (BLOCK_M \u00d7 BLOCK_N) with multiple programs per column-group and atomic accumulation, or split-K style two-pass; current single-program-per-column with BLOCK_M=1024 over M=1024 is fine but `num_warps=8` for a single 1024-element reduction is wasteful \u2014 try `num_warps=4`, and load with vectorized contiguous rows since stride_yn=1 means the per-column load is strided (bad). Reduce along rows after transposing access pattern, or compute stats per-tile and reduce.\n- In `fused_bn_swish_kernel`, you load `bias_ptr` (a scalar) and `scale/shift` indexed by `col=offs%N`; with N=8192 and BLOCK=4096 every program touches 8192 distinct cols \u2014 fine, but bumping BLOCK to 8192 with num_warps=8, num_stages=2 and using `tl.load(bias_ptr)` once outside the masked path (no mask on scalar) reduces overhead.",
+    "large_guidance": "- Replace the separate addmm + epilogue with a single fused Triton GEMM that computes `Y = X @ W^T + b_linear`, then applies `(y - mean) * scale + shift + bias`, divides, and applies swish in the accumulator before storing. Since training-mode BN needs the batch mean/var, do a two-pass design: pass 1 computes Y into a scratch buffer and per-column sum/sumsq via split-K atomics or a tiled reduction; pass 2 is a fused GEMM-like elementwise that reads Y once and writes the activated output. This eliminates the redundant Y read in the current epilogue.\n- Alternative single-pass design for eval mode (running stats are constant): fuse everything into one tiled GEMM kernel with epilogue `swish((acc + b_linear - mean) * scale_const + shift_const + bias) / div`, completely eliminating the scratch Y tensor and the second kernel launch. Detect `self.training` at the Python level and dispatch to the two-pass vs single-pass kernel.\n- For the training-mode reduction, prefer a tiled column-reduction kernel with one program per (column-tile \u00d7 row-tile) using atomic adds into mean/sumsq buffers, or a parallel split followed by a second small reduction kernel \u2014 this gets bandwidth on the M=1024, N=8192 stats pass (currently strided loads down columns hurt coalescing).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 30,
+    "global_best_node_id": 16,
+    "global_best_score": [
+        1,
+        1,
+        1.306364364810914
+    ]
+}

@@ -1,0 +1,31 @@
+{
+    "node_id": 33,
+    "parent_node_id": 32,
+    "context_node_ids": [
+        16,
+        31,
+        32
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.480990819462228,
+    "max_reward": 0.480990819462228,
+    "avg_reward": 0.480990819462228,
+    "score": [
+        1,
+        1,
+        0.7681742605633803
+    ],
+    "small_guidance": "- The current kernel uses `torch.addmm` for the 16384\u00d74096\u00d74096 GEMM, which dominates runtime. Tuning the post-GEMM fused scale+BN apply kernel further (it's already memory-bound at ~256MB) will give marginal gains; instead focus tuning the stats kernel: try `BLOCK_M=1024, BLOCK_N=64, NUM_M_CHUNKS=8, num_warps=4` to reduce launch overhead and increase per-program work, and consider fusing the partial-reduction sum (`sum_buf.sum(dim=0)`) into the finalize kernel by using `tl.atomic_add` on a single `(N,)` accumulator instead of an `(NUM_M_CHUNKS, N)` buffer.\n- Fuse the scale+BN apply epilogue directly into a custom GEMM kernel rather than running addmm + a separate apply pass \u2014 this removes one full read/write of the 16384\u00d74096 = 256MB activation tensor.\n- Drop the GROUP_M swizzle from the apply kernel (it's pure elementwise, swizzling provides no L2 reuse benefit) and switch to a simple 1D grid with `BLOCK_M=1, BLOCK_N=4096` (one row per program) using vectorized loads, num_warps=8.",
+    "large_guidance": "- The GEMM (16384\u00d74096 @ 4096\u00d74096) is the dominant cost (~550 GFLOPs). Replace `torch.addmm` with a custom Triton tiled GEMM using `tl.dot`, tile shape 128\u00d7128\u00d732 with GROUP_M=8 swizzle, and fuse the bias add + scale multiply directly into the accumulator epilogue. This removes both the bias-add launch and the subsequent scale pass, and lets the GEMM write only once.\n- For BatchNorm stats, do a two-pass approach: pass 1 = fused GEMM+bias+scale that also accumulates partial `(sum, sumsq)` per N-tile via `tl.atomic_add` into a single `(N,)` buffer (or per-column-group buffer reduced in finalize). Pass 2 = elementwise `(y - mean) * invstd * gamma + beta` reading the already-materialized scaled-GEMM output. This achieves one GEMM + one elementwise read/write rather than GEMM + scale-read-write + stats-read + apply-read-write.\n- Alternatively, since the BN normalization axis is per-column (N=4096) and M=16384, consider a persistent-column reduction kernel where each program owns a contiguous BLOCK_N=64 column slice across all M rows, computing sum/sumsq in registers in a single pass \u2014 avoids the intermediate `(NUM_M_CHUNKS, N)` buffer entirely.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 34,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.7791481785714286
+    ]
+}

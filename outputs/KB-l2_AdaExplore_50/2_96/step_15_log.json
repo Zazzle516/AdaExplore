@@ -1,0 +1,29 @@
+{
+    "node_id": 15,
+    "parent_node_id": 13,
+    "context_node_ids": [
+        13
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4444273092053943,
+    "max_reward": 0.4444273092053943,
+    "avg_reward": 0.4444273092053943,
+    "score": [
+        1,
+        1,
+        0.4665253009445028
+    ],
+    "small_guidance": "- Add `triton.autotune` over `BLOCK_W \u2208 {16, 32, 64}`, `num_warps \u2208 {2, 4, 8}`, `num_stages \u2208 {2, 3}` keyed on `(PD, PH, PW)`. Current single config (BLOCK_W=16, num_warps=4) likely under-utilizes the SM since each program only processes one (n, oc) pair (2048 programs total \u2014 fine for 4090, but tune warps).\n- Launch with a 2D grid `(N, OC)` and consider tiling multiple `oc` per program (e.g. BLOCK_OC=4) so each program reads contiguous channel data and amortizes the pd/ph loop overhead.\n- The conv_transpose itself dominates (~9ms baseline \u2192 19.4ms total); the fused pool tail is already cheap. Tuning the pool further has limited headroom.",
+    "large_guidance": "- The torch ConvTranspose3d is the dominant cost and the kernel currently leaves it to cuDNN. Replace it with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)` computing the input\u00d7weight outer product and atomically scatter-adding into the output grid with `stride=2, padding=1, output_padding=0`. Fold the bias add and the `*scale` multiply into the same kernel so the output of conv_transpose is already scaled.\n- Alternatively, since the entire downstream is `maxpool(2)\u2192global_avg\u2192clamp`, fuse everything into one kernel: each program owns one `(n, oc)` and iterates over the output spatial grid implicitly by computing only the needed conv_transpose outputs (gather form: for each output voxel, sum over `(ic, kd, kh, kw)` where `(id, ih, iw)` is integer). This avoids materializing the (N, 16, 31, 63, 63) intermediate (~250 MB) and converts the workload into a compute-bound GEMM-like reduction.\n- Use channels_last_3d layout for the input so the IC reduction axis is contiguous; precompute valid `(id, ih, iw)` ranges per output voxel at host time and pass as constexpr where shapes allow.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 16,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.46894253048307527
+    ]
+}

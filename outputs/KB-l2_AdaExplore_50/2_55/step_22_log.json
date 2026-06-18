@@ -1,0 +1,29 @@
+{
+    "node_id": 22,
+    "parent_node_id": 21,
+    "context_node_ids": [
+        20
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The kernel is extremely slow (276ms) because each of B=128 programs loads the entire weight matrix W (32768\u00d732768 fp32 = 4GB) on its own \u2014 total DRAM traffic is B\u00d7W = ~512GB. Increase K_SPLITS dramatically (e.g. 16-64) and also split N across programs so the grid is (B, N_tiles, K_tiles) \u2014 this lets many SMs share the weight loads via L2 reuse and parallelizes the work that currently serializes inside one program.\n- Replace the scalar/row-vector accumulation pattern with a proper `tl.dot`-based GEMM tile: load X as a [BLOCK_M, BLOCK_K] tile across multiple batch rows (BLOCK_M=16 or 32, since B=128) so W tiles are reused across M. Currently each program does a matvec, getting zero W-reuse.\n- Add autotune configs with BLOCK_M \u2208 {16,32,64}, BLOCK_N \u2208 {64,128}, BLOCK_K \u2208 {32,64}, num_warps 4/8, num_stages 3/4, keyed on shapes.",
+    "large_guidance": "- Redesign as a tiled GEMM-then-reduce: program grid = (ceil(B/BLOCK_M), ceil(N/BLOCK_N)). Each program computes a [BLOCK_M, BLOCK_N] tile of (X @ W^T + b) with `tl.dot` accumulating over K in BLOCK_K chunks, then fuses pool+sum on the BLOCK_N axis (reshape to [BLOCK_M, BLOCK_N/2, 2], max over last dim, sum over middle) and atomic-adds the per-row partial scalar into out[b]. Final scale can be fused if only one N-tile per row, else a tiny scale kernel.\n- Store W transposed once at init (shape [IN_FEATURES, OUT_FEATURES]) so the inner K-loop loads W contiguously along N \u2014 this is the standard GEMM layout and unlocks `tl.dot` efficiency on Ada.\n- Consider a split-K strategy with atomics on out[b] given that K=32768 is large; combined with M-tiling this gives high SM occupancy (B=128 alone underfills 128 SMs once you also tile N).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 23,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

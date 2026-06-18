@@ -1,0 +1,29 @@
+{
+    "node_id": 24,
+    "parent_node_id": 13,
+    "context_node_ids": [
+        13
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4145216885088404,
+    "max_reward": 0.4145216885088404,
+    "avg_reward": 0.4145216885088404,
+    "score": [
+        1,
+        1,
+        0.2198039301979331
+    ],
+    "small_guidance": "- The current kernel walks a 4\u00d74\u00d74 output tile per program with deeply nested static_range loops; this serializes work across BLOCK_OC=16/32 only. Switch the parallelization so each program handles one output voxel (or a 2\u00d72\u00d72 tile) but ALL OC at once with BLOCK_OC=OC=16, and parallelize across N*PD_OD*PD_OH*PD_OW*tiles. This dramatically increases occupancy.\n- Move IC into a `tl.arange(0, IC)` vector (IC=3, pad to 4) and use `tl.sum` over IC*KD*KH*KW dims with masking, instead of nested static_range over ic \u2014 lets the compiler vectorize loads from the weight tensor.\n- Add autotune configs with smaller per-program work: e.g. one output voxel per program with `num_warps=1`, `num_stages=3`; the current 26ms vs 5.8ms baseline shows severe under-parallelism (only N*PD_OD*PD_OH*PD_OW = 64*8*8*8 = 32768 programs each doing 64 outputs \u00d7 27 kernel taps \u00d7 3 IC).",
+    "large_guidance": "- Restructure as a scatter-add ConvTranspose3d kernel: one program per `(N, IC, ID, IH, IW)` input voxel (or tile), broadcast-multiply by the full `weight[ic, :, kd, kh, kw]` slice (OC=16 fits in registers), and `tl.atomic_add` into the conv-transpose output buffer. Then run a separate fused BN+avgpool(2)+avgpool(2) kernel that reads 4\u00d74\u00d74 windows. This matches the natural data-flow of ConvTranspose and avoids the gather-side modular-arithmetic checks that currently dominate.\n- Alternative: implement ConvTranspose3d as an im2col-style GEMM where M=OC, N=N*OD*OH*OW (output spatial), K=IC*KD*KH*KW, with implicit indexing. Then fuse BN scale/shift and the 4\u00d74\u00d74 average-pool reduction in the epilogue by having each program own a 4\u00d74\u00d74 output block and emit only the reduced (pooled) value. This gives proper GEMM throughput which the current per-voxel-loop kernel cannot.\n- Use channels-last layout for both input and weight so the IC dimension (the GEMM-K) is contiguous; this lets `tl.dot` consume the IC*KD*KH*KW reduction efficiently rather than the current strided scalar loads.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 25,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        0.36042383585251137
+    ]
+}

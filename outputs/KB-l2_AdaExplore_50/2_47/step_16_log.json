@@ -1,0 +1,30 @@
+{
+    "node_id": 16,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        3,
+        4
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4979806953253465,
+    "max_reward": 0.4979806953253465,
+    "avg_reward": 0.4979806953253465,
+    "score": [
+        1,
+        1,
+        0.9083407364341085
+    ],
+    "small_guidance": "- Add autotune configs that tile the GEMM-K (IC=32) explicitly and increase BLOCK_OW to 128 with BLOCK_OC=64, num_warps=8, num_stages=3 \u2014 current configs leave the 4090's tensor pipeline underused since IC=32 fits in one K-step and BLOCK_OW\u226464 caps mma throughput.\n- Reorder the program grid so pid_ow is the fastest-varying (swap pid0/pid1) or use a 2D launch over (oc_tile, ow_tile) with N*OD*OH as pid2 in row-major to improve L2 reuse of the weight tile across adjacent (oh, od) rows; also try persistent-K loop over kw as the innermost contiguous-IW dim so x reads stride by IC only.\n- Drop the final `.permute(0,4,1,2,3).contiguous()` by writing the kernel output directly into an NCDHW buffer (one store per (oc,ow) tile with strided OC index) \u2014 that permute is a full tensor copy on a ~16\u00b764\u00b730\u00b762\u00b762 fp32 output and is likely a few hundred \u00b5s of pure overhead.",
+    "large_guidance": "- Rewrite as an implicit-GEMM where M=OC, N=N*OD*OH*OW, K=IC*KD*KH*KW, with one program per (BLOCK_M, BLOCK_N) tile and a K-loop that gathers x via precomputed (kd,kh,kw,ic) decomposition; this exposes a true 64\u00d7128\u00d732 mma tile and lets Triton's tensor cores run at full rate, instead of the current per-(oh,od,n) outer loop that launches N*OD*OH\u224830k programs each doing only KD*KH*KW=27 small dots.\n- Store output directly in NCDHW by having each program write a (BLOCK_M=oc, BLOCK_N=spatial) tile into the contiguous (oc, n*od*oh*ow) view, eliminating the NHWC\u2192NCDHW permute copy entirely; the input permute to NDHWC can also be skipped by indexing NCDHW directly (channel stride = D*H*W) since IC=32 loads still coalesce within a warp on the K dimension.\n- Fuse the mish+tanh epilogue on the accumulator (already done) but also consider fp16/bf16 accumulation-in-fp32 with weight cast at load time \u2014 weight is 64\u00b732\u00b727=55k elements, trivially cacheable, and halving x bandwidth would directly drop the memory-bound portion.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 17,
+    "global_best_node_id": 15,
+    "global_best_score": [
+        1,
+        1,
+        1.0594570976491862
+    ]
+}

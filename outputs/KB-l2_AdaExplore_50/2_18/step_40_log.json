@@ -1,0 +1,29 @@
+{
+    "node_id": 40,
+    "parent_node_id": 22,
+    "context_node_ids": [
+        6
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The atomic_add accumulator is fp32 but multiple pid_n tiles for the same row race correctly via atomics; correctness failure (max diff ~9642) suggests the bias is being added once per pid_n tile (it is added whenever pid_k==0, for every pid_n) \u2014 fix by adding bias only at pid_n==0 AND pid_k==0, or precompute bias row-sum once and add separately, then re-tune SPLIT_K (try 1, 2, 4, 8) and tile shapes.\n- After fixing the bias double-count, keep the split-K but use a single atomic per (pid_m, pid_k) by reducing across BLOCK_N inside the kernel first; this is already done \u2014 instead drop SPLIT_K to 1 since M=1024, N=8192 already gives enough tiles, eliminating atomics entirely.\n- Expand autotune with BLOCK_M=128/BLOCK_N=256/BLOCK_K=64 num_warps=8 num_stages=4 for K=8192 throughput.",
+    "large_guidance": "- The downstream chain (sum\u2192max\u2192mean\u2192logsumexp\u2192logsumexp) over a singleton dim is identity on a (M,1) tensor, so the real work is just `linear` followed by row-sum. Rewrite as: compute `v = W.sum(dim=1)` is forbidden (algebraic shortcut), so instead implement a single fused GEMM-then-row-reduce kernel where each program owns a full row tile (BLOCK_M rows \u00d7 full K), iterates N in blocks accumulating `dot(x_tile, W_tile^T)` into a (BLOCK_M, BLOCK_N) tile and immediately reduces along N into a (BLOCK_M,) register accumulator plus bias-sum \u2014 no atomics, no split-K.\n- Alternatively, since we only need `sum_n( x @ W^T + b )[m] = x[m] @ W.sum(0) + b.sum()`, but this is the forbidden algebraic shortcut. Keep the full GEMM; the fusion boundary should be \"GEMM tile \u2192 immediate axis-1 reduce in-kernel \u2192 single store per row\" with one program per (row-tile) sweeping all N tiles.\n- Avoid atomic_add entirely: launch grid = (cdiv(M, BLOCK_M),), each program loops over N in chunks of BLOCK_N, performs tl.dot for each K-block within, accumulates row-sum into a (BLOCK_M,) vector, then one non-atomic store.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 41,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        0.8826896197781255
+    ]
+}

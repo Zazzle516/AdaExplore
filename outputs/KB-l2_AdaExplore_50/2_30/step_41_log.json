@@ -1,0 +1,29 @@
+{
+    "node_id": 41,
+    "parent_node_id": 24,
+    "context_node_ids": [
+        24
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing with avg diff ~2e-4 \u2014 likely the group-norm kernel uses `1.0 / tl.sqrt(var + EPS)` with TF32/low-precision; switch to `tl.rsqrt(var + EPS)` and ensure `EPS` matches PyTorch's default (1e-5 is correct but verify the GEMM accumulator isn't losing precision \u2014 try `allow_tf32=False` or check that CPG=512 reduction is done in fp32 throughout).\n- The GEMM bias kernel uses `% M` / `% N` for the load offsets but masks only on store \u2014 for K=8192, M=N=1024 this is fine, but the bias mask `mask_n` should also gate the accumulator add; more importantly, sweep larger tiles like `BLOCK_M=256, BLOCK_N=128, BLOCK_K=64` with `num_stages=4` since K=8192 is large and benefits from deeper pipelining.\n- For the group-norm kernel, CPG = 8192/16 = 512, so `BLOCK=512` fits easily \u2014 bump `num_warps=8` for better throughput on the 512-wide reduction, and load gamma/beta once outside if possible (already once per program, fine).",
+    "large_guidance": "- The dominant cost is the 1024\u00d78192\u00d78192 GEMM (~137 GFLOPs). Consider a split-K or stream-K GEMM design since M=1024 is modest relative to K=8192; a persistent stream-K kernel can better saturate the 4090's SMs.\n- Fuse the group-norm's first reduction pass into the GEMM epilogue: each GEMM output tile of shape (BLOCK_M, BLOCK_N) where BLOCK_N divides CPG=512 could atomically accumulate partial sum and sum-of-squares per (row, group) into a scratch buffer, then a second small kernel computes mean/rstd and applies normalization+hardtanh. This removes a full read/write pass over the 1024\u00d78192 activation.\n- Alternatively, since out_features=8192 and num_groups=16 \u21d2 CPG=512, design a single fused kernel that for each row computes 16 group-stats inline after the GEMM by tiling N along group boundaries (BLOCK_N=512 = one full group), keeping the row's group output in registers/SMEM for in-place normalization.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 42,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

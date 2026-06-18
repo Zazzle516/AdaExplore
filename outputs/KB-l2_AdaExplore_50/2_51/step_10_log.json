@@ -1,0 +1,29 @@
+{
+    "node_id": 10,
+    "parent_node_id": 7,
+    "context_node_ids": [
+        7
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5809110794731116,
+    "max_reward": 0.5809110794731116,
+    "avg_reward": 0.5809110794731116,
+    "score": [
+        1,
+        1,
+        1.5925164056531704
+    ],
+    "small_guidance": "- The GEMM output is reduced along N before the residual add, so allocating a full (B, N) accumulator is unnecessary. In the fused kernel, accumulate per-row partial sums into registers (already done) but write directly to a (grid_m, B) layout where pid_n is the column and use `tl.atomic_add` into `rowsum[B]` to skip the second reduction kernel \u2014 or keep partials but pick `BLOCK_N` larger (256\u2013512) to shrink `grid_n` and the reduce pass.\n- Add larger-N autotune configs (e.g. BLOCK_M=64/BLOCK_N=512/BLOCK_K=32, BLOCK_M=256/BLOCK_N=128/BLOCK_K=32) and a num_stages=4 variant for K=8192; current best is likely 128x256x32, but K=8192 benefits from deeper pipelining.\n- The residual-add kernel is bandwidth-bound on a 2048\u00d78192 tensor (~64MB R+W). Increase BLOCK to 2048 or 4096 and num_warps=8 to better saturate HBM; a single 1-D grid over (B*F)/BLOCK with coalesced loads may be faster than the 2-D grid.",
+    "large_guidance": "- The whole pipeline (after GEMM+bias-sub) collapses to a single scalar per row: mean over N then logsumexp over a length-1 dim = the mean itself, then GELU. So the only outputs of the heavy path needed are `rowsum_n(XW + bs)` per row. Rewrite as a single split-K persistent GEMM-reduce kernel: each program owns a row tile, streams K and N in tiles, accumulates `XW` row-sums directly into registers (one fp32 per row), atomics into a `(B,)` buffer across K-split programs. This eliminates the (B, grid_n) scratch and the second reduction kernel entirely.\n- Fuse the GELU(scalar) + residual add into the same kernel that finishes the row-sum: once a program's atomic_add completes the row, broadcast the scalar across the input row `x[b, :]` and write `out = x + gelu(mean)`. Alternatively keep them split but make the epilogue kernel read x and write out in one streaming pass with vectorized 128-bit loads.\n- Consider an entirely-different formulation: compute `s_b = (sum_n(W[n,:]) \u00b7 x_b + sum(bs)) / N` per row \u2014 this is a length-K dot product per row instead of a full GEMM. **However this is exactly the \"fold heavy op into a reduction\" pattern forbidden by the safety contract**, so do not take this path; keep the full (B,N,K) GEMM work executing.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 11,
+    "global_best_node_id": 10,
+    "global_best_score": [
+        1,
+        1,
+        1.5925164056531704
+    ]
+}

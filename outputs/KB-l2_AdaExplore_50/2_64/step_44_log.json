@@ -1,0 +1,27 @@
+{
+    "node_id": 44,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.591575154803616,
+    "max_reward": 0.591575154803616,
+    "avg_reward": 0.591575154803616,
+    "score": [
+        1,
+        1,
+        1.6804950271298316
+    ],
+    "small_guidance": "- Enable autotune on the GEMM-LSE kernel with configs sized for M=1024, N=K=8192 (try BLOCK_M=128/BLOCK_N=128/BLOCK_K=64 num_warps=8 num_stages=4, plus BLOCK_M=64/BLOCK_N=256/BLOCK_K=32 num_warps=8) and add a GROUP_M=8 swizzle so N-tiles of a row-group share L2 on the weight matrix.\n- Drop the mask in the inner K loop: K=8192 is divisible by BLOCK_K, so use unmasked `tl.load` (pass K as a constant via constexpr or just elide the per-k mask) to cut predicate overhead in the dominant loop.\n- Use `tl.max(acc, axis=1)` then `tl.exp2((acc-row_max)*log2(e))` instead of `tl.exp` for faster epilogue, and skip the `mask_n` -inf trick by zeroing the sumexp contribution via mask (saves a `tl.where` on the full BLOCK_M\u00d7BLOCK_N tile).",
+    "large_guidance": "- Restructure as a single-pass split-K LSE: launch grid (num_m_blocks, num_n_blocks), each program computes a [BLOCK_M, BLOCK_N] GEMM tile and produces (row_max, row_sumexp) partials, then a tiny finalize kernel combines across n-blocks. This is the current shape but make the GEMM tile larger (BLOCK_M=128, BLOCK_N=256) to reduce the number of partials and better amortize the weight loads \u2014 the LSE reduction across only ~32 partials per row is essentially free.\n- Alternatively, since output is just [M,1], try a row-persistent kernel: one program per row (or small row tile), streaming the full N=8192 in BLOCK_N chunks while doing online LSE (running max + rescaled sum). This eliminates the partial buffer + finalize launch and lets the activation chain fuse directly into the per-row epilogue. With M=1024 and persistent programs, you saturate the SMs while each program reuses x[row,:] across the K dimension cleanly.\n- Consider converting weights to fp16/bf16 for the matmul (accumulate fp32) \u2014 N*K=64M fp32 weights = 256MB of memory traffic dominates; halving weight bandwidth could roughly halve kernel time on this bandwidth-bound shape.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 45,
+    "global_best_node_id": 40,
+    "global_best_score": [
+        1,
+        1,
+        3.2794665909810385
+    ]
+}

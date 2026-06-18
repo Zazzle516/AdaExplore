@@ -1,0 +1,30 @@
+{
+    "node_id": 33,
+    "parent_node_id": 13,
+    "context_node_ids": [
+        1,
+        13
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure stems from misunderstanding InstanceNorm2d semantics: input is `(M,1,1,N)` so `N_batch=M, C=1, H=1, W=N`; normalization is over `H*W=N` per (batch,channel). That part is correct, BUT InstanceNorm2d with default `affine=False` is fine. The real bug is likely that `InstanceNorm2d(num_features=out_features)` in reference expects C=out_features but actual C=1 \u2014 PyTorch still normalizes over spatial dims regardless. Verify by computing exactly `(x - mean)/sqrt(var+eps)` with `var` using biased estimator (divide by N, not N-1) \u2014 current code does this. Re-check by comparing against `F.instance_norm` directly on a small case; the small max_diff (~0.0014) suggests a numerical precision issue, not a semantic one. Try computing mean/var in fp32 with a two-pass that reloads x rather than masking xm with `tl.where` (mask=0 contributes 0 to variance correctly, but ensure `mean = s / N` uses fp32 division).\n- The atol is 5e-2 so max_diff 0.0014 should pass \u2014 the correctness=False with 0/5 trials suggests something else, possibly a shape/stride mismatch when inputs aren't already on CUDA, or `Bt = W.t().contiguous()` being re-done every forward (slow but not wrong). Inspect whether `correctness_issue: Output mismatch` is reproducible \u2014 the diffs are well under tol, so this may be a harness issue with `runtime=-1.0`. Add a sanity assert comparing to `F.instance_norm(C.unsqueeze(1).unsqueeze(1))` once.\n- Move `Bt = W.t().contiguous()` into `__init__` (precompute the transposed weight) so the hot path doesn't pay an 8192\u00d78192 transpose+copy every forward. Also drop the `.cuda()` calls in forward and move the module to cuda in `__init__`.",
+    "large_guidance": "- Keep the two-kernel structure (GEMM+bias, then fused norm+residual+mul) \u2014 it's the right decomposition. For the norm kernel, since N=8192 is large, use BLOCK_N=1024 or 2048 with a tiled two-pass reduction (loop over tiles for mean, loop again for var, loop again to write output) instead of requiring BLOCK_N=8192 which wastes registers/SMEM and limits occupancy.\n- For the GEMM with M=1024, N=8192, K=8192, add larger-K configs (BLOCK_K=64, 128) with num_stages=4 to better overlap K-loop loads; also try BLOCK_M=64/BLOCK_N=256 since N\u226bM. Consider splitK if a single GEMM tile is underutilizing SMs.\n- Precompute and store the transposed weight `Bt` as a persistent buffer in `__init__` (registered as a non-parameter buffer derived from `self.bmm.weight` lazily on first forward) so per-call overhead disappears. Ensure bias broadcast and the entire epilogue (bias add) stay fused in the GEMM kernel as they already are.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 34,
+    "global_best_node_id": 28,
+    "global_best_score": [
+        1,
+        1,
+        0.8257900886245404
+    ]
+}

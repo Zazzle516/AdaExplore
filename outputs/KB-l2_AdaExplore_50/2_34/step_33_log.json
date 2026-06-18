@@ -1,0 +1,29 @@
+{
+    "node_id": 33,
+    "parent_node_id": 32,
+    "context_node_ids": [
+        32
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.41571574589646465,
+    "max_reward": 0.41571574589646465,
+    "avg_reward": 0.41571574589646465,
+    "score": [
+        1,
+        1,
+        0.22965490364583332
+    ],
+    "small_guidance": "- The kernel runs LN over a non-contiguous channel axis (input is NCDHW so channels are strided by D*H*W). Permute to channels-last (N,D,H,W,C) before the LN kernel so the C-axis loads coalesce; with C=64 use BLOCK_C=64, num_warps=2, num_stages=2. This alone should drop the LN kernel cost dramatically.\n- Since the conv_transpose dominates (\u22488.8 ms baseline vs 38.4 ms now), tuning LN further won't reach fast_p\u22651; focus must shift to replacing the ConvTranspose3d.\n- If keeping the LN kernel, fuse the scaling_factor multiply into gamma/beta at init (\u03b3'=\u03b3\u00b7s, \u03b2'=\u03b2\u00b7s) so the epilogue is just GELU\u00b7(precomputed scale), saving one multiply.",
+    "large_guidance": "- Replace nn.ConvTranspose3d with a custom Triton scatter-add (or input-stationary gather) kernel that materializes the full (N,OC,D',H',W') output and fuses bias + LN + GELU + scale in the epilogue. ConvTranspose3d in cuDNN at these shapes is the bottleneck; a direct Triton implementation that writes output in channels-last layout lets the subsequent LN reduction be contiguous along C.\n- Structure the conv-transpose as a GEMM: for each output tile (N, oD, oH, oW tile, OC tile), iterate over (ic, kd, kh, kw) gathering the corresponding input voxel (with stride/padding index math; skip invalid taps via mask, no `continue`). Tile sizes BLOCK_OC=32, BLOCK_SPATIAL=32, BLOCK_K=16 fit SMEM comfortably; wrap in @triton.autotune over a few safe configs.\n- Because LN normalizes across OC=64 only, do the LN reduction inside the same kernel by having one program own a full (n,d,h,w) point with all OC channels in registers (OC=64 is tiny). That fuses ConvT3d \u2192 bias \u2192 LN \u2192 GELU \u2192 scale into a single pass with no intermediate writes.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 34,
+    "global_best_node_id": 15,
+    "global_best_score": [
+        1,
+        1,
+        0.7944818288288288
+    ]
+}

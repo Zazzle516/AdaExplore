@@ -1,0 +1,30 @@
+{
+    "node_id": 33,
+    "parent_node_id": 31,
+    "context_node_ids": [
+        28,
+        31
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4145216885088404,
+    "max_reward": 0.4145216885088404,
+    "avg_reward": 0.4145216885088404,
+    "score": [
+        1,
+        1,
+        0.2198039301979331
+    ],
+    "small_guidance": "- The current kernel uses a gather-style ConvTranspose where each output point loops over the full kernel and IC; with stride=2 only ~1/8 of (kd,kh,kw) combinations are valid per output, wasting work. At minimum, swap the output tile from 4\u00d74\u00d74 to a smaller (2\u00d72\u00d72) tile per program so more programs run in parallel (currently only N\u00b7OC\u00b7OD2\u00b7OH2\u00b7OW2 = 64\u00b716\u00b78\u00b78\u00b78 = ~524K programs is fine, but each does 64\u00d727\u00d7IC work \u2014 increase parallelism by tiling OC instead, e.g. BLOCK_OC=4 with vectorized weight loads).\n- Increase `num_warps` to 4 and try `num_stages=3`; the inner reduction is tiny (IC=3 padded to 4) so a wider warp helps amortize the 64 output-point loop. Also hoist the scale/shift/bias loads outside the spatial loop (already at end, but precompute once per program).\n- Add `@triton.autotune` over `{(num_warps=2,4,8), (num_stages=2,3)}` keyed on (OC, OD2*OH2*OW2).",
+    "large_guidance": "- Rewrite as a scatter-add ConvTranspose: one program per (N, IC tile, input-spatial tile) loads `x[n,ic,id,ih,iw]`, multiplies by the full `weight[ic,:,:,:,:]` outer product, and scatter-adds into the OC\u00d7KD\u00d7KH\u00d7KW output positions. This matches ConvTranspose's natural data flow (every input contributes to exactly KD\u00b7KH\u00b7KW outputs, all valid) and eliminates the 7/8 wasted iterations of the current gather form. Then fuse the avg_pool(2)\u2218avg_pool(2)=avg over 4\u00d74\u00d74 directly in the scatter by atomically adding into the pooled output grid scaled by 1/64, and apply BN scale/shift in a tiny epilogue kernel.\n- Alternatively, implement as an explicit im2col\u2192GEMM: build (N\u00b7OD\u00b7OH\u00b7OW, IC\u00b7KD\u00b7KH\u00b7KW) implicit-gather and (IC\u00b7KD\u00b7KH\u00b7KW, OC) weight, run a tiled GEMM with BLOCK_M=64, BLOCK_N=16 (OC is only 16, so don't tile OC), BLOCK_K=32, then fuse the 4\u00d74\u00d74 average pool + BN affine in the epilogue by having each program emit one pooled output (accumulating 64 GEMM rows in registers).\n- Use channels_last (NDHWC) layout for the output so the OC=16 axis is contiguous and the BN affine + pool reduction are coalesced; convert weight to (KD,KH,KW,IC,OC) once at init.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 34,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        0.36042383585251137
+    ]
+}

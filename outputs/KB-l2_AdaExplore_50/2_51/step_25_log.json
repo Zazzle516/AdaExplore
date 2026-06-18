@@ -1,0 +1,31 @@
+{
+    "node_id": 25,
+    "parent_node_id": 24,
+    "context_node_ids": [
+        1,
+        23,
+        24
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5850944418296449,
+    "max_reward": 0.5850944418296449,
+    "avg_reward": 0.5850944418296449,
+    "score": [
+        1,
+        1,
+        1.6270291450945702
+    ],
+    "small_guidance": "- The GEMM produces a scalar per row (sum over N then /N), so materializing full BLOCK_M\u00d7BLOCK_N tiles is wasteful \u2014 try larger BLOCK_M (256) and smaller BLOCK_N (32 or 64) since the N-dim is reduced immediately; this lowers register pressure and lets you raise SPLIT_K to 32 for better SM occupancy on the M=2048 grid.\n- In `finalize_and_add_kernel`, the residual add `out = x + s_val` is a memory-bound copy of the entire 2048\u00d78192 tensor (~64MB write + 64MB read). Tune BLOCK_K up to 8192 with num_warps=8 (one program per row) so a row stays in registers, and consider writing in-place to skip an allocation.\n- Add autotune configs with BLOCK_M=256, BLOCK_N=32, BLOCK_K=64, num_warps=8 and BLOCK_M=128, BLOCK_N=32, BLOCK_K=128 \u2014 the K=8192 dim benefits from larger BLOCK_K to amortize the loop overhead since N-tile work is minimal.",
+    "large_guidance": "- Restructure as a single fused kernel: one program per batch row that streams the full GEMM K-loop while accumulating only the row-sum scalar (acc_n[BLOCK_N] reduced per chunk). Since the output is `mean_n(x@W^T + b - sub)` = `(1/N) * (x \u00b7 sum_n(W) + sum(b) - sum(sub))` is forbidden by the safety contract, instead keep N as the inner reduction: tile (BLOCK_N, BLOCK_K), do `tl.dot(x_row_tile, W_tile)` producing BLOCK_N partial outputs, add bias-sub, sum to scalar, accumulate across N \u2014 eliminates the partial buffer entirely.\n- Fuse the residual add into the same kernel: after computing the scalar `s = GELU(mean)`, the kernel already has the row index, so loop over K and emit `x[m,k] + s` in the same launch. Single kernel = one read of x for GEMM + one read of x for residual + one write of out. Use persistent kernel with one program per row (grid = M).\n- Alternative: split into two kernels but make kernel-1 emit the scalar `s` per row (M floats) instead of partials, and kernel-2 do the residual add. This avoids the SPLIT_K reduction overhead. With M=2048, one program per row \u00d7 tiled K loop with BLOCK_K=128, BLOCK_N=64, num_warps=8, num_stages=4 gives plenty of work per program.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 26,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        1.6320820306383421
+    ]
+}

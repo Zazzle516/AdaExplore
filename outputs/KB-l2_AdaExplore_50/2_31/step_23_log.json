@@ -1,0 +1,29 @@
+{
+    "node_id": 23,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure is the weight layout: you compute `w_offs = k_idx * N_dim + offs_n` with `k_idx = kh*KW*IC + kw*IC + ic` (KH-major, then KW, then IC), but build `w_perm = weight.permute(2,3,1,0)` which is also (KH,KW,IC,OC) \u2014 double-check by re-deriving: `weight` is (OC,IC,KH,KW); `permute(2,3,1,0)` gives (KH,KW,IC,OC). That matches, so the bug is elsewhere \u2014 likely the average ~0.0003 mismatch indicates an off-by-one in `ih/iw` only when padding/stride differ. Actually with no padding and stride 1, `ih = oh + kh` is correct. Re-examine: `tl.minimum(acc, constant_value)` is applied before `+ extra_bias`, matching the reference. The small (~2e-3) max diff with avg 3e-4 suggests fp32 accumulation precision differences from a different K-reduction order \u2014 likely tolerable. Verify the test tolerance; if it's too tight, switch the dot to `tl.dot(x_tile, w_tile, allow_tf32=False)` to force IEEE fp32 accumulation.\n- Add `allow_tf32=False` (or set the kernel's matmul precision) \u2014 TF32 on Ampere truncates mantissa and produces exactly this ~1e-3 relative error pattern; the reference cuDNN conv uses fp32 here.\n- Once correct, prune autotune configs to the two that win on (M=N\u00b7OH\u00b7OW=2097152, N_dim=128, K=576): `(BLOCK_M=128, BLOCK_N=64, BLOCK_K=32, warps=4, stages=2)` and `(64,128,32)`; drop the 128x128 config (SMEM borderline) and the small ones.",
+    "large_guidance": "- If forcing fp32 (no TF32) costs too much throughput, keep TF32 but split-K accumulate in fp32 with a small correction, or perform the dot in fp32 by promoting operands explicitly; alternatively pre-cast to fp32 before `tl.dot` and disable tf32.\n- Consider writing output directly in NCHW: skip the trailing `permute(0,3,1,2).contiguous()` by parameterizing the store with NCHW strides \u2014 saves a full output-tensor copy on every forward.\n- For OC=128 and KH*KW*IC=576, a persistent kernel that holds the full OC tile (BLOCK_N=128) and streams over output spatial tiles per program would let you load the weight tile once per program, amortizing weight traffic; pair with channels-last input and BLOCK_M=128, BLOCK_K=64.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 24,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.686288845766129
+    ]
+}

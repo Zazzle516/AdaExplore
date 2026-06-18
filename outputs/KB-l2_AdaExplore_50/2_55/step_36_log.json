@@ -1,0 +1,30 @@
+{
+    "node_id": 36,
+    "parent_node_id": 35,
+    "context_node_ids": [
+        9,
+        35
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The output buffer is initialized to zeros and accumulated via `tl.atomic_add`, but `out` is `torch.zeros` only on the first call \u2014 this is fine. The correctness bug is elsewhere: when `BLOCK_N` is not a multiple of `KERNEL_SIZE * something` aligned to true N tile, tail tiles past N still execute without an `offs_n < N` mask on the W load and bias load, producing garbage that gets max-pooled and summed. Add `mask_n = offs_n < N` to both the `tl.load(w_ptrs)` and `tl.load(B_ptr + offs_n)`, and use `other=-inf` for the W load contributions feeding into max-pool \u2014 or better, restrict autotune configs so `N % BLOCK_N == 0` (N=32768 divides cleanly by 64/128/256, so this is actually safe; the real issue is likely the K mask).\n- Add a K-tail mask: `mask_k = (k0 + offs_k) < K` on both x and w loads with `other=0.0`. K=32768 divides by all BLOCK_K in configs, so this is also fine \u2014 recheck.\n- The actual bug: `tl.atomic_add` accumulates across repeated invocations because `out` is created fresh each forward, but if `forward` is called multiple times in the correctness harness with different inputs and `out` is freshly zeroed each call, this is OK. However max-pool followed by sum is **not** distributive across N-tiles only if `KERNEL_SIZE` straddles tile boundaries. With `BLOCK_N=64,128,256` all multiples of `KERNEL_SIZE=2`, pools never straddle \u2014 so this is safe. The real correctness issue is likely uninitialized `acc` rows for `M=128 < BLOCK_M=128` (equal, fine). Investigate whether `mask_m[:, None]` on x-load combined with unmasked w-load produces NaN\u00d70 issues \u2014 switch w-load to also use `other=0.0` explicitly and guard `offs_n` with `mask_n`.",
+    "large_guidance": "- Drop atomic-add entirely. With M=128 and N=32768, launch a single program per row (or per (row, N-tile)) and have each program reduce its own pooled-summed contribution into a register, then do a final cross-tile reduction via a tiny second kernel or via `tl.atomic_add` only at the end of a fully-accumulated tile. Cleaner: persistent kernel with grid `(M,)`, each program loops over all N-tiles, accumulating `sum(max(acc + bias))` in a scalar register, then writes once.\n- Alternative: split the work as one program per `(M-row, N-tile)` with grid `(M, cdiv(N, BLOCK_N))`, each writing one partial scalar to a `[M, num_n_tiles]` scratch buffer, then a trivial second-pass reduction sums along the tile axis and applies `scale_factor`. This avoids atomics and avoids the silent correctness pitfall when atomics race with non-zero initialization.\n- Since K=32768 is huge and M=128 is small, this is heavily K-bound per row. Consider transposing W once at init into K-major (`[K, N]`) layout so W loads are contiguous along K in the inner loop, and use `BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, num_stages=4, num_warps=8` as the primary config.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 37,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

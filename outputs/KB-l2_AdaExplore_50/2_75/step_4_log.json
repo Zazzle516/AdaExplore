@@ -1,0 +1,29 @@
+{
+    "node_id": 4,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM is M=1024, N=8192, K=8192 \u2014 dominant cost. Add larger autotune configs better suited to this shape: `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3/4` and `BLOCK_M=256, BLOCK_N=128, BLOCK_K=32/64`. Also try `BLOCK_M=64, BLOCK_N=256, BLOCK_K=32, num_warps=8`. Drop the small-K variants.\n- Remove the `mask_m`/`mask_n`/`k_remaining` masking in the inner loop since M, N, K are all multiples of large powers of two for this shape \u2014 use unmasked loads to cut the K-loop overhead, fall back to masked stores only.\n- In `gn_min_kernel`, C_PER_G=16 is tiny so per-row loop of 512 groups is serial. Process multiple groups per program (e.g. tile 8 or 16 groups at once with a 2D `[GROUPS_PER_BLOCK, C_PER_G]` load) and reduce min across the tile, then across groups \u2014 drastically fewer loop iterations and better warp utilization.",
+    "large_guidance": "- Fuse GEMM epilogue with GroupNorm + min: after computing a `(BLOCK_M, BLOCK_N)` GEMM tile that spans whole groups along N (choose BLOCK_N as a multiple of C_PER_G=16, e.g. 256 = 16 groups), perform per-group mean/var/normalize/affine and per-row min reduction in registers, then atomic-min into a per-row scratch. Eliminates the full y=(1024,8192) writeback (256 MB) and re-read \u2014 currently the biggest non-GEMM cost.\n- Alternatively, since num_groups=512 and C_PER_G=16 (very small), a split-K GEMM that produces normalized output directly per group is feasible: one program per `(row_tile, group)` computes the 16-wide GEMM output for that group, normalizes in-register, takes min, and atomically reduces into the row min. Avoids materializing y entirely.\n- Final bias-add output is shape `(1, 8192, 1024, 1)` \u2014 a 32 MB broadcast. Fuse it into the min-finalization kernel and write directly in the desired strided layout to skip the implicit PyTorch broadcast-add launch.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 5,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

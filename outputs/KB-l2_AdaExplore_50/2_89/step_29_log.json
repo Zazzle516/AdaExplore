@@ -1,0 +1,29 @@
+{
+    "node_id": 29,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        21
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.48960583472609104,
+    "max_reward": 0.48960583472609104,
+    "avg_reward": 0.48960583472609104,
+    "score": [
+        1,
+        1,
+        0.8392481364902508
+    ],
+    "small_guidance": "- The ConvTranspose3d kernel has the IC loop as the innermost reduction with a separate weight load per `ic`; hoist the `ic` loop one level up (or unroll with `tl.static_range` since IC=3) and consider loading the full weight tile `[BLOCK_OC, IC]` once per (kd,kh,kw) and reusing across the spatial tile via `tl.dot`.\n- Add larger autotune configs for the conv kernel \u2014 sweep `BLOCK_SP` \u2208 {128, 256, 512} with `num_warps` \u2208 {4, 8} and `num_stages` \u2208 {2, 3, 4}; current best may be under-occupied since OC=16 (BLOCK_OC=16) gives only a 16\u00d7BLOCK_SP tile.\n- In `conv_transpose3d_kernel`, precompute `valid = valid_d & valid_h & valid_w` once outside the `ic` loop and use it as the mask; current code recomputes it but it's fine \u2014 the bigger win is reducing redundant `tl.load` of weights by using `tl.static_range` over IC (IC=3) so the compiler can keep weights in registers.",
+    "large_guidance": "- Redesign the ConvTranspose3d as a **scatter-add (input-stationary)** kernel: one program per `(N, IC tile, input-spatial tile)` reads `input[n, ic, id, ih, iw]`, computes the outer product with `weight[ic, :, kd, kh, kw]`, and scatter-accumulates into the output grid using `tl.atomic_add`. Since `stride=2, padding=1, output_padding=1` makes the gather form load with stride-2 holes (every other output position is valid per kernel tap), the scatter form does dense work per input element and avoids the divisibility checks.\n- Alternatively, fuse the conv-transpose epilogue directly with maxpool: since pool kernel = stride = 2 aligns perfectly with the conv's stride-2 output pattern, each pooled output corresponds to a 2\u00d72\u00d72 conv-transpose output window \u2014 write a single kernel that produces pooled values directly, never materializing the full conv-transpose output (saves a 32\u00d764\u00d764\u00d7OC write+read).\n- Consider an im2col GEMM where the K dimension is `IC*KD*KH*KW = 3*27 = 81` (small), tile `(OC=16, output-spatial)` and use `tl.dot` with `BLOCK_M=16, BLOCK_N=128, BLOCK_K=16` (pad K to 96) \u2014 this gets tensor-core throughput which the current scalar FMA loop does not.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 30,
+    "global_best_node_id": 22,
+    "global_best_score": [
+        1,
+        1,
+        6.9103229587155965
+    ]
+}

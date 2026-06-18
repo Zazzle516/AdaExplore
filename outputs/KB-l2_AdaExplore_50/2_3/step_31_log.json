@@ -1,0 +1,31 @@
+{
+    "node_id": 31,
+    "parent_node_id": 28,
+    "context_node_ids": [
+        23,
+        26,
+        27
+    ],
+    "depth": 5,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.514132971151028,
+    "max_reward": 0.514132971151028,
+    "avg_reward": 0.514132971151028,
+    "score": [
+        1,
+        1,
+        1.0415970119959803
+    ],
+    "small_guidance": "- The conv_transpose3d call now dominates runtime (fast_p\u22481.04 means the post-kernel is already much faster than the conv); further tuning of `fused_post_kernel` (NH_PER_PROG, num_warps) won't move the needle. Try only minor wins: switch the conv to channels_last_3d (`x.to(memory_format=torch.channels_last_3d)` and same for the conv weights at init) so cuDNN picks a faster algo, and pre-bake `sum_w` into `self.norm.bias` add path to skip the `.item()` host sync each call.\n- Cache `sum_w = float(self.sum_weight.detach())` once at init/eval (or read it via `self.sum_weight.item()` only when it changes) \u2014 `.item()` per forward forces a D2H sync that can stall the kernel launch pipeline.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)`, accumulating `x[n,ic,d,h,w] * W[ic,oc,kd,kh,kw]` into the output grid with stride/padding/output_padding index math. This is the heavy op (\u224864\u00b732\u00b716\u00b732\u00b732 input \u00d7 27 kernel taps \u00d7 stride-2 scatter) and is the only path to a meaningful speedup since the post-conv tail is already <1 ms.\n- Fuse the +sum_weight, LayerNorm-over-W, 2\u00d72\u00d72 avg-pool, and GELU directly into the conv-transpose epilogue: have each program produce a tile of conv-transpose output, immediately reduce along W for mean/var, normalize, pool the 2\u00d72\u00d72 window in registers, GELU, and store the pooled result. This eliminates the full conv-transpose output materialization (N\u00b7C\u00b7D\u00b7H\u00b7W = 32\u00b764\u00b716\u00b732\u00b732\u00b74B \u2248 16 MB write+read) entirely.\n- If a full fused conv-transpose is too complex, alternative: write the conv-transpose as an im2col-style gather into a GEMM (treat output positions as M, IC\u00b7KD\u00b7KH\u00b7KW as K, OC as N), tile with (BM=64, BN=32, BK=16, num_warps=4, num_stages=2) to stay under the 132 KB SMEM bound, and fuse the same epilogue.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 32,
+    "global_best_node_id": 26,
+    "global_best_score": [
+        1,
+        1,
+        1.0415970119959803
+    ]
+}

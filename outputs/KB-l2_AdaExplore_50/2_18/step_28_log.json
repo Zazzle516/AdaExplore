@@ -1,0 +1,27 @@
+{
+    "node_id": 28,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (~0.05 max diff, ~0.013 avg) is from fp32 accumulation precision on a K=8192 reduction; ensure `tl.dot` uses `allow_tf32=False` (or pass `out_dtype=tl.float32`) since fp32 inputs on Ada default to TF32 and lose ~3 bits \u2014 that matches the observed error magnitude.\n- Increase `BLOCK_K` to 128 or 256 and `BLOCK_M`/`BLOCK_N` to 64/128 with `num_warps=8`, `num_stages=3`; the current 32/64/64 tiling under-uses the SM for an 8192\u00d78192 GEMM.\n- Add a `triton.autotune` decorator sweeping (BLOCK_M, BLOCK_N, BLOCK_K) \u2208 {(64,128,64),(128,128,32),(64,64,128)} keyed on M,N,K.",
+    "large_guidance": "- Since the downstream chain (sum\u2192max\u2192mean\u2192logsumexp\u2192logsumexp on a singleton dim) collapses to just the per-row sum of the linear output, the kernel only needs `out[m] = sum_k x[m,k] * (sum_n W[n,k]) + sum_n b[n]`. But per the safety contract, do NOT precompute `sum_n W` at init; instead structure as a tiled GEMM that materializes the (M,N) linear output tile and reduces along N inside the epilogue at runtime, with a final scalar bias-sum added per row.\n- Rewrite as a 2D-grid GEMM (pid_m, pid_n) writing partial row sums to a (grid_n, M) scratch buffer, then a tiny second kernel reduces along grid_n \u2014 this exposes far more parallelism than the current single-program-per-M-row design which serializes all 128 N-tiles on one CTA.\n- Use `allow_tf32=False` in `tl.dot` for fp32 correctness, or upcast accumulator handling carefully; the current kernel is numerically off by ~5e-2 which exceeds typical TF32 tolerance only because the K=8192 reduction amplifies it.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 29,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        0.8826896197781255
+    ]
+}

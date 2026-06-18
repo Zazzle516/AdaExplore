@@ -1,0 +1,29 @@
+{
+    "node_id": 36,
+    "parent_node_id": 12,
+    "context_node_ids": [
+        12
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5894631430247588,
+    "max_reward": 0.5894631430247588,
+    "avg_reward": 0.5894631430247588,
+    "score": [
+        1,
+        1,
+        1.66307092995426
+    ],
+    "small_guidance": "- The GEMM output is reduced to a single scalar per row, so allocate `BLOCK_N` as large as possible (256) and skip writing the full `(M,N)` accumulator \u2014 current code already does row-partials, but the partial buffer is `(num_n, B)` in column-major-ish layout; switch to `(B, num_n)` contiguous so the reduce kernel does coalesced loads along N.\n- Add autotune configs with larger `BLOCK_K` (128) and `num_stages=4` since K=8192 is huge and the K-loop dominates; also try `BLOCK_M=256, BLOCK_N=256, BLOCK_K=32, num_warps=8`.\n- Fuse the partial-reduction into the GEMM via `tl.atomic_add` to a `(B,)` rowsum buffer (one atomic per (pid_m,pid_n) tile, contributing `BLOCK_M` values) \u2014 eliminates the second kernel and the partial-buffer write/read of ~256KB.",
+    "large_guidance": "- The reference reduces the GEMM output to a single scalar per row (mean \u2192 logsumexp of a length-1 vector is identity \u2192 GELU scalar) then broadcasts back to `(B, IN_F)`. Restructure as: one persistent program per row-block computes `sum_n(W[n,:] \u00b7 x[m,:] + bs[n])` directly as `x[m,:] \u00b7 (sum_n W[n,:]) + sum(bs)` \u2014 but that violates the safety contract. Instead, split-K GEMM with atomic-add into a `(B,)` rowsum, so the only output materialized is the `(B,)` scalar plus the final `(B, IN_F)` residual write.\n- The final GELU-add kernel reads/writes `B*IN_F = 64M` floats (256MB) \u2014 this is pure bandwidth. Ensure it runs at peak HBM: `BLOCK=4096`, `num_warps=8`, grid `(B*IN_F/BLOCK,)` flat instead of 2D, and load x as the original input (already on device, no copy).\n- Consider a single fused mega-kernel: persistent across rows, each program computes its row's GEMM-reduction with split-K via atomics, then a grid-sync-free epilogue writes `x + GELU(rowsum/N)` \u2014 but simpler is two kernels: (1) split-K GEMM\u2192rowsum with atomic_add, (2) bandwidth-optimal residual-add+GELU.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 37,
+    "global_best_node_id": 36,
+    "global_best_score": [
+        1,
+        1,
+        1.66307092995426
+    ]
+}

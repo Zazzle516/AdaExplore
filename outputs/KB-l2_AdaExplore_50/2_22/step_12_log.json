@@ -1,0 +1,30 @@
+{
+    "node_id": 12,
+    "parent_node_id": 11,
+    "context_node_ids": [
+        10,
+        11
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.6061186402290966,
+    "max_reward": 0.6061186402290966,
+    "avg_reward": 0.6061186402290966,
+    "score": [
+        1,
+        1,
+        1.8004787818900467
+    ],
+    "small_guidance": "- The GEMM dominates (M=1024, N=8192, K=8192). Add larger tiles to the autotune list \u2014 `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64` and `BLOCK_M=256, BLOCK_N=128, BLOCK_K=32/64` with `num_warps=8, num_stages=3-4` \u2014 and add a `GROUP_M=8` swizzle for L2 reuse across the wide N dimension.\n- Pre-transpose W once in `__init__` to `(K, N)` contiguous so the inner K-loop loads B with stride-1 along K; current `w_ptrs` uses `stride_wn` on the N axis and `stride_wk=1` on K but indexed as `[:,None]`, forcing strided B loads. A contiguous (K,N) layout lets `tl.dot` use the optimal vectorized path.\n- Since `x = x*scale + x*scale` simplifies to `acc*(2*scale)` (already done as SCALE2) \u2014 keep as-is, but also consider fusing logsumexp into the GEMM epilogue via a per-row atomic max+sum is too complex; instead, drop the intermediate write to fp32 and store fp16/bf16 if precision allows (it doesn't here since clamp range is \u00b110 and exp will be fine, but tolerance is 5e-2 \u2014 worth trying bf16 intermediate to halve bandwidth).",
+    "large_guidance": "- The full intermediate (1024\u00d78192 fp32 = 32 MB) is written then re-read for logsumexp. Redesign as a **split-K / two-pass fused** scheme: pass 1 computes per-row partial max over column tiles directly in the GEMM epilogue (atomic max into a per-row scratch, or use a persistent kernel that holds an entire row's worth of N tiles per program). Pass 2 recomputes the GEMM tile and accumulates `exp(val - max)` into a per-row sum (also atomic). This avoids materializing the 32 MB intermediate entirely. Cost is 2\u00d7 GEMM compute, but at K=8192 the GEMM is compute-bound and the memory savings + kernel-fusion win can dominate.\n- Alternatively, make the GEMM **persistent along N** with one program per row tile (`BLOCK_M`) that iterates over all N tiles serially, maintaining a running `max` and `sum_exp` in registers across N tiles using the online-softmax update rule. This avoids the intermediate buffer and the second kernel launch entirely; logsumexp + Mish becomes a tiny epilogue after the last N tile.\n- For the N=8192, M=1024 shape, consider a Split-N persistent GEMM where each SM owns a contiguous block of rows and streams through all of N in one kernel, producing the final scalar per row directly.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 13,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.8922229236424055
+    ]
+}

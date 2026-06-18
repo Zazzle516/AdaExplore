@@ -1,0 +1,29 @@
+{
+    "node_id": 38,
+    "parent_node_id": 19,
+    "context_node_ids": [
+        18
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.40641436100796935,
+    "max_reward": 0.40641436100796935,
+    "avg_reward": 0.40641436100796935,
+    "score": [
+        1,
+        1,
+        0.15291847831574695
+    ],
+    "small_guidance": "- The pool+sum kernel is already cheap; runtime is dominated by `nn.ConvTranspose3d`. Tuning BLOCK_C / num_warps here will not move fast_p meaningfully \u2014 defer small tuning until conv is replaced.\n- If staying with the current pool kernel, try BLOCK_C=32 with num_warps=2 (window is only 6\u00b3=216 elems, tiny per program) and add an autotune over {BLOCK_C: 16,32,64} \u00d7 {num_warps: 2,4}.\n- Combine the two MaxPool3d (k=2 then k=3) into a single k=6 stride-6 pool (already done) \u2014 good; ensure the conv output is allocated channels_last_3d to make C-axis reduction coalesced.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC_tile, in_spatial_tile)`, computing the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and atomically scattering into output positions `(d*stride - pad + kd, ...)`. This is where ~all 68ms is spent.\n- Better: fuse the ConvTranspose3d directly with the 6\u00d76\u00d76 max-pool + channel-sum epilogue. Since output spatial is reduced by 6 in each dim and then summed over OC, you can have one program per `(N, od, oh, ow)` that loops over the 6\u00b3 output positions inside that pooling window, computes each via a gather-style transposed-conv (sum over IC, kd, kh, kw with the stride/pad index math), maxes across the 6\u00b3 window per OC, and sums across OC \u2014 never materializing the (16,64,64,64,64) conv output (~1GB).\n- Fold the conv bias into the per-OC max before the channel sum; pre-permute weight to `[OC, IC, kd, kh, kw]` contiguous in IC for coalesced K-loop loads. Use BLOCK_OC=16, BLOCK_IC=32, num_warps=8, num_stages=3.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 39,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.9494847335423198
+    ]
+}

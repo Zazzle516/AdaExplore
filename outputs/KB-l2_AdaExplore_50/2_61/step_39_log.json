@@ -1,0 +1,29 @@
+{
+    "node_id": 39,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4750695384615385,
+    "max_reward": 0.4750695384615385,
+    "avg_reward": 0.4750695384615385,
+    "score": [
+        1,
+        1,
+        0.7193236923076923
+    ],
+    "small_guidance": "- Reduce redundant work: the kernel reads x twice (stats pass + normalize pass). Cache the ReLU'd values into the output buffer on the first pass, then re-read from out_ptr (or keep in registers for small S) to avoid recomputing maximum.\n- Try BLOCK_S=4096 or 8192 with num_warps=8/16 and num_stages=2 \u2014 at S=34*34*34\u224839304 per group-channel, fewer iterations of the outer s-loop reduces loop overhead. Also try parallelizing over (N, group, channel-chunk) with a second-stage reduction since C_PER_GROUP=16 is serialized today.\n- The conv_transpose3d dominates runtime (~7ms baseline); group-norm fusion is already mostly there. Verify by profiling \u2014 if conv is >80% of time, tuning the norm kernel further yields <10% gain.",
+    "large_guidance": "- Replace nn.ConvTranspose3d with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile), computing the outer product of input \u00d7 weight[ic, :, kd, kh, kw] and atomic-adding into the output grid at (n, oc, d+kd, h+kh, w+kw). With kernel_size=3, stride=1, padding=0, the output is 34\u00b3 \u2014 manageable for atomics. This is the high-headroom move since conv_transpose is ~70%+ of runtime.\n- Alternatively, implement conv_transpose as a gather: each output element (n, oc, od, oh, ow) sums over (ic, kd, kh, kw) of input[n, ic, od-kd, oh-kh, ow-kw] * weight[ic, oc, kd, kh, kw], with bounds checks. This avoids atomics and tiles cleanly as a GEMM with K=IC*27.\n- Fuse ReLU + GroupNorm stats accumulation into the conv epilogue: emit channels-last output and have each conv program contribute partial sum_x / sum_x2 to a per-(N, group) workspace via atomics, then a tiny second kernel finalizes mean/rstd and a third applies the affine. Or split into conv\u2192relu+stats kernel and normalize kernel, eliminating the double-read of the conv output.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 40,
+    "global_best_node_id": 22,
+    "global_best_score": [
+        1,
+        1,
+        1.3618264077669902
+    ]
+}

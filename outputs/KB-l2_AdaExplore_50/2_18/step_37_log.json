@@ -1,0 +1,29 @@
+{
+    "node_id": 37,
+    "parent_node_id": 27,
+    "context_node_ids": [
+        27
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing because `tl.atomic_add` is called once per program with the full `row_acc` vector, but each program covers a distinct row tile so atomics are unnecessary \u2014 switch to `tl.store(out_ptr + offs_m, row_acc, mask=m_mask)` after allocating `out` with `torch.empty` (atomic_add into zeros may also be summing duplicates if grid launches overlap). Verify the grid is exactly `cdiv(M, BLOCK_M)` (no batch dim duplication).\n- Cast `x_tile` and `w_tile` to `tl.float32` (or use the default) consistently and ensure `tl.dot` accumulator dtype matches \u2014 large diff (~1364) suggests accumulation drift or duplicate accumulation, not tf32 noise.\n- After fixing, retune with `BLOCK_M=32` (only 1024 rows, so larger BLOCK_M underfills the SMs \u2014 1024/32=32 programs vs. 8 programs with BLOCK_M=128 on a 128-SM GPU).",
+    "large_guidance": "- The math `sum_n(x @ W.T + b)_n = x @ (sum_n W_n) + sum(b)` collapses the GEMM into a matvec \u2014 this is exactly the algebraic shortcut the safety contract forbids. Do NOT take this route. Instead, keep the full GEMM and fuse the row-sum reduction in the epilogue of a standard tiled GEMM: one program per (M_tile, N_tile), reduce along N within the tile, then atomic-add the partial row-sum into a length-M output buffer.\n- Alternatively, use a 2D grid (pid_m, pid_n) with `BLOCK_M=32, BLOCK_N=256, BLOCK_K=64` to maximize SM occupancy (M=1024 is small), and use `tl.atomic_add` only at the row-sum reduction across N-tiles. This exposes more parallelism than the current serial N-loop per row tile.\n- The downstream max/mean/logsumexp chain on a size-1 dim is identity \u2014 keep that simplification but make sure the row-sum output is correctly written; consider fusing the final `unsqueeze` by allocating output as `(M, 1)` directly.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 38,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        0.8826896197781255
+    ]
+}

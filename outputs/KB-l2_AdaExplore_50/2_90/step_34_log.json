@@ -1,0 +1,31 @@
+{
+    "node_id": 34,
+    "parent_node_id": 31,
+    "context_node_ids": [
+        11,
+        30,
+        31
+    ],
+    "depth": 5,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4838610973451328,
+    "max_reward": 0.4838610973451328,
+    "avg_reward": 0.4838610973451328,
+    "score": [
+        1,
+        1,
+        0.791854053097345
+    ],
+    "small_guidance": "- The epilogue is already memory-bound and tiny vs. the conv; further tuning of `fused_epilogue_kernel` will not move `fast_p` much. If keeping it, drop redundant masks on `sum_ptr`/`bias_ptr` loads (use `mask=mask` only where needed, or load with `c_idx & C_MASK` unmasked since `c_idx` is always valid), and try `BLOCK=8192, num_warps=8, num_stages=3`.\n- Ensure `torch.backends.cudnn.benchmark = True` is hit before timing so cuDNN picks the best 3D conv algo; consider running the conv in `channels_last_3d` (`memory_format=torch.channels_last_3d`) and updating the epilogue indexing accordingly \u2014 NHWDC tends to be faster on Ampere for Conv3d.",
+    "large_guidance": "- The cuDNN Conv3d dominates runtime (~8.9 ms baseline vs 11.3 ms here means the epilogue is even adding overhead). Replace `nn.Conv3d` with a custom Triton implicit-GEMM kernel: one program per `(N, OC_tile, D*H*W_tile)`, K-loop over `IC * kT * kH * kW`, computing input gather offsets inline (im2col-implicit). Fuse bias + LeakyReLU + sum_tensor add + clamp + GELU directly into the GEMM epilogue on the accumulator before store \u2014 eliminates the entire separate epilogue pass.\n- Use `BLOCK_M=64, BLOCK_N=64, BLOCK_K=32` as the starting tile with autotune sweeping (32/64/128) \u00d7 num_warps\u2208{4,8} \u00d7 num_stages\u2208{2,3}. Lay weights out as `[OC, IC*kT*kH*kW]` (precomputed in `__init__`) so the K-loop is a contiguous matmul-K dimension. Output tile indexes `(d,h,w)` are decoded from a linear spatial index; precompute strides as constexpr.\n- Prefer `channels_last_3d` for input so the IC dimension is contiguous across the GEMM-K accumulation, giving coalesced loads. Mask the spatial tail rather than branching; hoist all per-K constant offset math (kernel offset tables) out of the inner loop.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 35,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        1.0859163592233008
+    ]
+}

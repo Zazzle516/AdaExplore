@@ -1,0 +1,30 @@
+{
+    "node_id": 50,
+    "parent_node_id": 46,
+    "context_node_ids": [
+        45,
+        46
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4975002000095944,
+    "max_reward": 0.4975002000095944,
+    "avg_reward": 0.4975002000095944,
+    "score": [
+        1,
+        1,
+        0.9043766500791534
+    ],
+    "small_guidance": "- Conv3d dominates runtime here (output is 128\u00d724\u00d722\u00d730\u00d730 \u2248 60M elements going through cuDNN); tuning the GN+mean kernel further yields little. If staying small, add `triton.autotune` over BLOCK_S \u2208 {512,1024,2048,4096} and num_warps \u2208 {4,8} keyed on group_size, and ensure CPG \u2264 BLOCK_S so the per-channel weight/bias load is one vector op rather than masked.\n- Fold the conv bias into the GN epilogue's mean computation analytically (still executing the conv) \u2014 the current kernel already reduces post-norm cheaply, so the only remaining elementwise win is collapsing `sum_b * S` precompute to a host-side scalar passed as constexpr per group.\n- Switch grid from (N, G) to 1D (N*G) and process multiple groups per program when CPG*S is small to hide launch overhead; current N*G = 1024 programs is fine but each only reduces ~20k elements.",
+    "large_guidance": "- The conv is the bottleneck (~90%+ of runtime). Replace `nn.Conv3d` with a custom Triton im2col-GEMM kernel: one program per (N, OC_tile, output-spatial tile), implicit im2col gather, BLOCK_M=64/BLOCK_N=64/BLOCK_K=32 over (OC, D'\u00b7H'\u00b7W', IC\u00b7kD\u00b7kH\u00b7kW=81). Fuse the conv bias add into the GEMM epilogue.\n- Further fuse: write the conv output directly in a layout that the GN+mean kernel can consume in one pass (channels-last over spatial, contiguous within group), or directly accumulate per-group sum/sum\u00b2 in the conv epilogue so GN's first pass is skipped \u2014 only a second pass for normalization + mean is needed.\n- Consider a single megakernel: persistent per-(N, group) program that computes conv outputs for its CPG channels on the fly (looping over output spatial tiles), accumulates sum/sum\u00b2/sum_wv/sum_b, then a second sweep producing the normalized mean \u2014 eliminating the materialized conv tensor entirely.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 51,
+    "global_best_node_id": 41,
+    "global_best_score": [
+        1,
+        1,
+        1.3739568337740984
+    ]
+}

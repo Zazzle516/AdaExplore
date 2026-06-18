@@ -1,0 +1,29 @@
+{
+    "node_id": 39,
+    "parent_node_id": 9,
+    "context_node_ids": [
+        9
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4232396909115939,
+    "max_reward": 0.4232396909115939,
+    "avg_reward": 0.4232396909115939,
+    "score": [
+        1,
+        1,
+        0.2917274500206494
+    ],
+    "small_guidance": "- The current mean-subtract kernel is fine; the bottleneck is `nn.ConvTranspose3d` itself (~1.78ms baseline vs 6.11ms total means conv-transpose dominates). Tuning BLOCK_S/num_warps on `_scale_mean_sub_kernel` won't move the needle \u2014 fast_p < 0.3 cannot be fixed at the tail.\n- If staying small, at least fuse the BN stat computation (sum and sum-of-squares per channel) into a single custom kernel rather than calling `x.mean()` and `x.var()` separately on the eval/train paths; this saves two full passes over the conv output.\n- Ensure the output of the conv is consumed in channels-last-3d layout so the per-(N,C) reduction is contiguous; currently the (N*C) program loops S=16384 elements which is OK, but BLOCK_S=4096 with num_warps=8 may be over-provisioned \u2014 try BLOCK_S=1024, num_warps=4 to allow more concurrent programs (grid=512 only).",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)`, computing the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and scatter-adding into the output grid at strided positions `(d*stride - pad + kd, ...)`. This is the highest-headroom move since the conv is ~70% of runtime.\n- Fuse the BN affine (scale = \u03b3/\u221a(var+\u03b5), shift = \u03b2 - \u03bc\u00b7scale) and the spatial mean-subtract epilogue directly into the conv-transpose kernel output write \u2014 but note BN stats require a full pass first, so structure as: (1) custom convT writing raw output, (2) single fused kernel that computes per-(N,C) mean+var (or just mean, since BN scale is applied uniformly and commutes with mean-subtract: `scale*(x - \u03bc_BN) - mean(scale*(x - \u03bc_BN)) = scale*(x - mean_spatial(x))`), (3) apply scale*(x - spatial_mean). Actually the BN per-channel mean cancels out of the spatial-mean-subtract, so only `scale` and `spatial_mean(x)` are needed \u2014 this is already exploited and is legal (it's an epilogue identity, not a heavy-op shortcut).\n- For convT3d with stride=2, padding=1, K=3: output is 2x in each spatial dim. Use gather formulation instead: one program per output tile, gather contributing input elements (only those where `(out + pad - kd) % stride == 0` and in-bounds). Tile sizes `(BLOCK_OC=32, BLOCK_DHW=64, BLOCK_IC*K=32)` with num_warps=4, num_stages=2 fit SMEM comfortably. Autotune over a small grid keyed on `(OC, D*H*W, IC*KD*KH*KW)`.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 40,
+    "global_best_node_id": 29,
+    "global_best_score": [
+        1,
+        1,
+        0.3246729908244386
+    ]
+}

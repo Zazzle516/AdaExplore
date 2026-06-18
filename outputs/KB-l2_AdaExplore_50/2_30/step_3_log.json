@@ -1,0 +1,27 @@
+{
+    "node_id": 3,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (avg diff ~2e-4, max ~1.7e-3) is consistent with a numerical/precision issue, not a structural bug. Try casting the gamma/beta loads to fp32 explicitly and ensure the GEMM accumulator path is fp32 (it is). Double-check that the bias is loaded as fp32 and added in fp32 before storing to the fp32 output \u2014 that's already fine. The most likely culprit: the GroupNorm `eps` default is 1e-5 but PyTorch's `nn.GroupNorm` uses `eps=1e-5` too \u2014 confirm with `self.group_norm.eps` rather than hardcoding.\n- Use `self.group_norm.eps` instead of hardcoded `1e-5` to avoid any mismatch, and compute `mean`/`var` with Welford or at least ensure the masked-out lanes contribute exact zero to the sum (currently `tl.load(..., other=0.0)` then `x - mean` includes `-mean` for masked lanes in the diff before the `tl.where`, which is fine \u2014 but verify C_per_G=512 fits BLOCK_CG=512 exactly so masking is a no-op).\n- Add autotune to the GN kernel over `num_warps in {4,8,16}` with `BLOCK_CG=512` (C/G=8192/16=512) to improve the per-row reduction throughput.",
+    "large_guidance": "- Fuse GroupNorm+Hardtanh directly into the GEMM epilogue is not feasible (GN needs a per-group reduction across N), but you can fuse the GEMM output store with a second pass: write GEMM result, then launch a persistent GN kernel that processes one (row, group) per program with vectorized loads over C_per_G=512. Consider `channels_last`-style layout where each program loads a contiguous 512-element slice \u2014 already the case here.\n- For the GN kernel, consider a single-program-per-row design that computes all `num_groups=16` groups in one program with a 2D tile (G x C_per_G), reducing launch overhead from `M*G=16384` programs to `M=1024`.\n- Verify correctness first: the 2e-4 mismatch suggests possible fp32-vs-tf32 in `tl.dot`. Force `tl.dot(a, b, allow_tf32=False)` or set `input_precision='ieee'` to rule out TF32 accumulation differences on the 4090.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 4,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

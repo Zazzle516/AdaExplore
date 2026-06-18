@@ -1,0 +1,29 @@
+{
+    "node_id": 13,
+    "parent_node_id": 10,
+    "context_node_ids": [
+        10
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.45194821782726724,
+    "max_reward": 0.45194821782726724,
+    "avg_reward": 0.45194821782726724,
+    "score": [
+        1,
+        1,
+        0.5285727970749544
+    ],
+    "small_guidance": "- The conv (Conv3d on 128\u00d73\u00d716\u00d764\u00d764 \u2192 128\u00d716\u00d714\u00d762\u00d762) dominates runtime; tuning the GroupNorm kernel further won't move the needle. If staying with the current structure, at minimum fold the conv bias into the GroupNorm kernel's first reduction pass to skip one elementwise pass and reduce memory traffic.\n- For the existing GroupNorm kernel: group_size = 2 \u00d7 62 \u00d7 62 = 7688, so BLOCK_S=2048 forces 4 inner iterations. Try BLOCK_S=8192 (single-pass reduction, no loop) with num_warps=8, num_stages=3; also sweep BLOCK_S \u2208 {4096, 8192} via `triton.autotune`.\n- Hoist the per-channel weight/bias loads out of the spatial loop: load the CPG=2 weights/biases once into registers keyed by `c_local = idx // S`, instead of issuing masked gathers of weight_ptr every iteration.",
+    "large_guidance": "- Replace `nn.Conv3d` with a custom Triton im2col-style GEMM kernel: one program per (N, OC tile, output-spatial tile), with the (IC\u00b7kD\u00b7kH\u00b7kW)=81 reduction axis fully inside the kernel. With OC=16 and IC\u00b7k\u00b3=81, a single program can hold the whole K dim in registers; tile output-spatial with BLOCK_S=128 and OC tile = 16.\n- Fuse the conv epilogue directly with GroupNorm: have the conv kernel write per-(N,group) partial sums (sum, sum_sq) to a small scratch buffer in addition to the conv output, then a second small kernel finalizes mean/rstd and a third kernel applies normalize + min + clamp. Or, since the post-norm result is provably constant (min \u2264 max \u21d2 output is `min_value` everywhere before dropout), at least skip materializing intermediate conv output by streaming straight into the GN reduction.\n- Use channels_last_3d layout for the conv output so the GN reduction over (C_per_group, D, H, W) reads contiguously along the group's channels, eliminating the strided `idx // S` channel-decoding inside the inner loop.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 14,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.5528285277246654
+    ]
+}

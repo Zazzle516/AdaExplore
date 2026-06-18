@@ -1,0 +1,29 @@
+{
+    "node_id": 36,
+    "parent_node_id": 13,
+    "context_node_ids": [
+        13
+    ],
+    "depth": 5,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4816511884805502,
+    "max_reward": 0.4816511884805502,
+    "avg_reward": 0.4816511884805502,
+    "score": [
+        1,
+        1,
+        0.773622304964539
+    ],
+    "small_guidance": "- The matmul (16384x4096 @ 4096x4096) dominates runtime; torch.addmm is already cuBLAS, but try replacing with a tuned Triton GEMM that fuses the scale multiply (and even the BN affine apply) into the epilogue to avoid the extra full-tensor read/write passes. At minimum, fuse scale into the GEMM epilogue so the stats kernel reads pre-scaled `y`.\n- For the stats kernel, increase `BLOCK_N_STAT` to 128 or 256 and reduce `BLOCK_M_STAT` to 512\u20131024 so each program does a wider, shorter reduction with better L2 reuse; try `num_warps=4, num_stages=3` and add an autotune sweep.\n- For the apply kernel, try `BLOCK_M=256, BLOCK_N=128, num_warps=8, num_stages=4` (or 64x256) and ensure tensors are accessed in row-major contiguous form; also fuse the apply directly into the GEMM epilogue when training=False to drop a kernel launch entirely.",
+    "large_guidance": "- Rewrite as a fused Triton GEMM (tiled `tl.dot` over K=4096) that computes `y = x @ W^T + bias`, multiplies by `scale[n]` in the epilogue, and writes both the scaled output and per-tile partial `sum`/`sumsq` (atomic-add into N-sized buffers, or a second reduction kernel over column-tiles). This removes two full passes (scale-add + stats) over a 16384x4096 fp32 tensor (~1 GB).\n- Then a single elementwise apply kernel (or fused into a second pass) computes `out = a*y + b`. With a well-tuned GEMM (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8, num_warps=8, num_stages=3-4), the GEMM should match or beat cuBLAS on the 4090 for this square shape, and eliminating one full-tensor pass should give a clear win over baseline.\n- Alternatively, in eval/inference mode, fold scale, BN affine, and running stats into a single `(a_n, b_n)` vector at module init/forward-prologue and run one fused GEMM with `out = a_n * (x @ W^T + bias) + b_n` epilogue \u2014 but in training mode stats must be computed from the actual scaled output, so two passes are unavoidable; structure code to take the inference fast path when `not self.training`.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 37,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.7791481785714286
+    ]
+}

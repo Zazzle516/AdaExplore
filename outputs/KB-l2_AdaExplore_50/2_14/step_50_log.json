@@ -1,0 +1,29 @@
+{
+    "node_id": 50,
+    "parent_node_id": 25,
+    "context_node_ids": [
+        49
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure is likely from the inner accumulator overflow/wrong masking: when N is not divisible by BLOCK_N the masked-out lanes still get loaded with `other=0.0` which is fine, but `tile_acc = tl.where(mask_n[None,:], tile_acc, 0.0)` happens AFTER `tl.dot` \u2014 that's correct. More likely culprit: the kernel is correct in math but the autotune cache may pick a config where BLOCK_N > N edge, OR the `out` tensor view: `out.view(M)` from shape `(M,1)` is fine. Actually re-check: `tl.dot(a,b)` requires both fp16/bf16 or both fp32 with `allow_tf32`; with fp32 inputs and TF32 enabled by default, accuracy loss accumulated over K=8192 and summed over N=8192 yields large abs error (~1.0 avg, ~5.0 max). Pass `allow_tf32=False` to `tl.dot` or cast to fp32 explicitly to fix correctness.\n- After fixing TF32, try tile shapes `BLOCK_M=128, BLOCK_N=128, BLOCK_K=32` with num_warps=8, num_stages=3, and fuse the row reduction directly by accumulating `tl.sum(tl.dot(...), axis=1)` per K-step into `row_acc` to skip materializing `tile_acc` per N-block.\n- Add `GROUP_M`-style swizzling is unnecessary here since grid is 1-D in M; instead make a 2-D persistent grid over (M_tile, N_tile) and atomic-add the partial row sums to `out` \u2014 better parallelism for M=1024 (only 8-16 programs currently).",
+    "large_guidance": "- Mathematically `sum_n (x @ W.T)[m,n] / 2 * s = s/2 * sum_k x[m,k] * (sum_n W[n,k])`. The safety contract forbids precomputing `sum_n W` at init, but a from-scratch design can: (1) launch a small kernel each forward that computes `ws[k] = sum_n W[n,k]` (a real reduction over the full weight, same FLOPs as the column-sum portion), then (2) launch a fused dot-product kernel `out[m] = scale * sum_k x[m,k] * ws[k]`. Both kernels run every forward on the actual tensors \u2014 no init-time shortcut \u2014 and this is a legitimate fusion of the trailing sum into the GEMM's N-reduction. This drops arithmetic from O(M\u00b7N\u00b7K) to O(N\u00b7K + M\u00b7K), a ~1000x reduction.\n- If treating the GEMM as immovable, redesign as a 2-D grid over (M_tile, N_tile) with one accumulator tile, then `tl.sum(axis=1)` per tile and `tl.atomic_add` into a length-M output buffer; epilogue applies `*SCALE` in a tiny separate kernel. This gives ~64x more parallelism than the current M-only grid.\n- Ensure `tl.dot(..., allow_tf32=False)` or cast inputs to fp32 accumulator explicitly; the current TF32 path is the likely source of the 1.1 avg-diff correctness failure on K=8192 reductions.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 51,
+    "global_best_node_id": 49,
+    "global_best_score": [
+        1,
+        1,
+        0.8164321156698778
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 41,
+    "parent_node_id": 40,
+    "context_node_ids": [
+        40
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4675247311429513,
+    "max_reward": 0.4675247311429513,
+    "avg_reward": 0.4675247311429513,
+    "score": [
+        1,
+        1,
+        0.6570790319293478
+    ],
+    "small_guidance": "- The fused_apply kernel uses one program per (N*C, H_tile, W_tile) = 128*64*2*1 = 16384 programs with BLOCK_H=16, BLOCK_W=32 \u2014 H_out=W_out=42 (since (128-2)//4=31 actually, let me recompute: 126/4=31). Tile is way oversized vs output 31x31. Shrink to BLOCK_H=8, BLOCK_W=16 (or single tile BLOCK_H=32, BLOCK_W=32 covering whole output in one program) and drop grid dims. Try `num_warps=2` for the small tile case.\n- Add `triton.autotune` over (BLOCK_H, BLOCK_W, num_warps) \u2208 {(32,32,4),(16,16,2),(8,32,4)} keyed on H_out,W_out.\n- In `_gn_stats_kernel`, GROUP_SIZE = 4*126*126 \u2248 63504; BLOCK_SIZE=2048 with num_warps=8 is fine, but try num_warps=4 and BLOCK_SIZE=4096 to reduce loop overhead.",
+    "large_guidance": "- The conv (8\u219264, 3\u00d73 on 128\u00d7128, batch 128) is the dominant cost and is still `nn.Conv2d`. Replace it with a custom Triton im2col-GEMM kernel: one program per (N, OC tile, output-spatial tile), implicit im2col gather, and fuse the GroupNorm affine + scale + maxpool + clamp into its epilogue (using precomputed per-group mean/rstd from a small stats kernel). This is the high-headroom move.\n- Run conv in channels_last (NHWC) so the K-dim (IC*kh*kw=72) is contiguous; pad K to 128 for clean tiles. Use BLOCK_M=64 (output pixels), BLOCK_N=64 (OC), BLOCK_K=72 unrolled.\n- Alternative two-kernel design: (1) custom conv writing directly to a (N, G, CPG, H, W) buffer while accumulating per-group sum/sumsq into a workspace via atomics or a separate reduction pass; (2) a second kernel that applies normalize+scale+maxpool+clamp. This avoids reloading the full post-conv tensor twice (currently the stats kernel + apply kernel both stream 128*64*126*126*4 \u2248 520MB).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 42,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        0.9287336140344138
+    ]
+}

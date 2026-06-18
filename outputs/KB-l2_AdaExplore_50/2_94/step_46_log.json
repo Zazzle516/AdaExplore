@@ -1,0 +1,29 @@
+{
+    "node_id": 46,
+    "parent_node_id": 45,
+    "context_node_ids": [
+        45
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness fails because the GroupNorm kernel reads/writes `out` as fp32 while `groupnorm.weight/bias` are fp32 \u2014 that's fine \u2014 but the reference applies GroupNorm to fp32 too, so the mismatch likely comes from the GEMM accumulator path: ensure `W` is loaded contiguously (currently `W.stride(1), W.stride(0)` swap makes the inner load strided across K, hurting both speed and possibly precision). Pre-transpose `W` once in `__init__` (`self.Wt = weight.t().contiguous()`) and pass natural strides; this also enables larger `BLOCK_K` cleanly.\n- The ~2e-3 max diff suggests a numerical issue in Mish: `tl.exp(2*sp)` overflows for moderately positive `acc` (after hardtanh, acc\u2208[-1,1] so this is actually safe \u2014 but `tl.log(1+tl.exp(acc))` for acc=-1 gives ~0.313 fine). The real bug is likely that `out` is fp32 but the reference computes GroupNorm on fp32 with the *exact* same intermediate; double-check that `fused_bias = gemm.bias + self.bias` matches reference order. It does. The diff is small enough that it may just be tolerance; rerun with higher BLOCK_K to confirm \u2014 try `BLOCK_K=64` configs and use `tl.math.tanh` if available, or `2*sigmoid(2*sp)-1` formulation for tanh stability.\n- Add `GROUP_M=8` swizzle to the GEMM grid for better L2 reuse on the 1024\u00d78192 output, and add configs with `BLOCK_M=128, BLOCK_N=64, BLOCK_K=64, num_stages=4`.",
+    "large_guidance": "- The GEMM is the dominant cost (1024\u00d78192\u00d78192). Rewrite with a proper tiled GEMM that pre-transposes the weight once at init time (store `self.weight_t` contiguous as (K,N)) so the B-load is fully coalesced along N, and fuse bias+hardtanh+mish in the epilogue exactly as now. This alone should unlock 2-3\u00d7 over the current strided-B variant.\n- Consider fusing GroupNorm's first pass (mean/var reduction) with the GEMM epilogue when `CPG` divides `BLOCK_N` evenly: each GEMM tile already has a contiguous chunk of channels per row, so partial group sums can be written to a small workspace, then a tiny second kernel finishes normalization. With `out_features=8192, num_groups=256, CPG=32`, a `BLOCK_N=128` tile holds 4 full groups per row \u2014 ideal for in-tile partial reductions.\n- Alternatively, a persistent split-K-free GEMM with `tl.dot(..., allow_tf32=False)` for tighter numerics, since the failure is correctness not speed; once correct, re-enable TF32 and tune.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 47,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

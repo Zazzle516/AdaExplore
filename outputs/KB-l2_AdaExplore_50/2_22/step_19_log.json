@@ -1,0 +1,31 @@
+{
+    "node_id": 19,
+    "parent_node_id": 18,
+    "context_node_ids": [
+        3,
+        4,
+        18
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.6157874944471482,
+    "max_reward": 0.6157874944471482,
+    "avg_reward": 0.6157874944471482,
+    "score": [
+        1,
+        1,
+        1.8802468291889727
+    ],
+    "small_guidance": "- Drop the 2-kernel split: with M=1024, N=8192, K=8192, the partial buffers plus reduce-kernel add latency. Use a persistent GEMM that processes BLOCK_N=8192 (whole row) per program via a streaming K loop, OR keep tiling but use atomic-free single-pass online softmax accumulation per row by assigning one program per row-block and looping over N internally.\n- The autotune list is too wide; on 4090 for (1024, 8192, 8192) the winners are typically BLOCK_M=128, BLOCK_N=128/256, BLOCK_K=32/64, num_warps=8, num_stages=3. Prune to ~4 configs to cut tuning noise and avoid suboptimal selections.\n- Replace `tl.exp2(x*LOG2E)` with `tl.exp(x)` \u2014 current code does an extra multiply per element without benefit since Triton lowers `exp` to `exp2` already. Also fuse `2*scale` into a single constexpr (already done) and skip storing tile_max/tile_sumexp separately \u2014 pack into a single (M, ntiles, 2) buffer to halve store traffic.",
+    "large_guidance": "- Redesign as a single fused kernel: one program per row (or small row tile) that streams over the full K\u00d7N GEMM tile by tile, maintaining a running (max, sumexp) accumulator in registers, then applies log + mish in epilogue and writes one scalar per row. This eliminates the intermediate (M, ntiles) buffers and the second kernel entirely. With M=1024, grid is small but each program does heavy work \u2014 use BLOCK_M=16 or 32 per program with persistent inner N-loop.\n- Alternatively, split-K style: assign (row_tile, n_tile) programs that compute partial (max, sumexp) and use `tl.atomic_*` with a log-sum-exp combiner via a per-row lock, or write to small per-row buffers and do the reduce inside the same kernel via a final tile. Then no second launch.\n- Since N==K==8192 and M is modest (1024), consider transposing the problem: treat as a 1024\u00d78192 output where each row's logsumexp is the goal; a Flash-attention-style online softmax over the GEMM output is the natural fit. Tile over K with BLOCK_K=64, over N with BLOCK_N=128, keep running (m_i, l_i) per BLOCK_M row tile, never materialize the full row.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 20,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        1.9043525577683185
+    ]
+}

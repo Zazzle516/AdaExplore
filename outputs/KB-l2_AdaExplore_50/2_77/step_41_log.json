@@ -1,0 +1,31 @@
+{
+    "node_id": 41,
+    "parent_node_id": 37,
+    "context_node_ids": [
+        35,
+        36,
+        37
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing (avg diff ~4e-3): the eval path folds `scale_factor` into conv weight/bias but then calls `fused_scale_bn_pool_kernel` with `scale_factor=1.0` while passing `bn_running_mean`/`bn_running_var` that were trained on `scale*conv_out`; this is consistent but verify the BN stats path. More likely the bug is the channels_last_3d input to F.conv_transpose3d producing a non-contiguous output that the fused kernel reads with the wrong stride assumption \u2014 drop the channels_last conversion or call `.contiguous()` before the fused kernel (already done, but check stride layout matches `(n*OC+oc)*SPATIAL` indexing).\n- Once correct, increase BLOCK_S to 8192 and try `num_warps=8, num_stages=3` for `fused_scale_bn_pool_kernel`; the per-(n,oc) reduction over 20*36*36 \u2248 25920 elements benefits from fewer outer iterations.\n- The custom `conv_transpose3d_kernel` is defined but unused \u2014 either remove it or actually launch it; the `F.conv_transpose3d` call is what dominates runtime.",
+    "large_guidance": "- The conv_transpose3d is the dominant cost (~16\u00d764\u00d7128\u00d75\u00b3\u00d716\u00d732\u00d732 output volume). Replace `F.conv_transpose3d` with a real custom kernel: scatter-add of `input \u00d7 kernel` outer product. One program per `(n, ic_tile, input-spatial-tile)` accumulating into the output via atomic adds, OR one program per `(n, oc, output-spatial-tile)` doing a gather (the existing kernel sketch) \u2014 but actually launch and tune it with BLOCK_SPATIAL=128/256 and tile over OC inside the kernel to amortize weight loads.\n- Fuse the conv epilogue directly with the global-avg-pool: each output-spatial program accumulates its tile sum into a per-(n,oc) partial via `tl.atomic_add`, eliminating the need to materialize the 16\u00d7128\u00d720\u00d736\u00d736 conv output (~53 MB) entirely. Apply the folded BN affine `a*x + b_term` before the partial sum.\n- For training, compute per-(n,oc) sum and sumsq inline during the conv kernel as well (atomic adds on two small (N,OC) buffers) so the big tensor is never re-read; only one materialization+epilogue pass exists.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 42,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        1.599996769230769
+    ]
+}

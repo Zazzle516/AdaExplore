@@ -1,0 +1,29 @@
+{
+    "node_id": 20,
+    "parent_node_id": 8,
+    "context_node_ids": [
+        8
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.02153207318548387
+    ],
+    "small_guidance": "- The scatter kernel uses `tl.atomic_add` per input position which is the main bottleneck; even small tuning gains exist by raising `BLOCK_OC` to 64 with `num_warps=4` so each program writes more channels per atomic, and by avoiding the bias-expand (`y = bias.view(...).expand(...).contiguous()` materializes a full output before scattering \u2014 use `torch.zeros` and add bias in the softmax kernel epilogue instead).\n- In `softmax_sigmoid_kernel`, increase `BLOCK_S` to 128 and use `num_warps=8`; C=64 fits in one block so the kernel is bandwidth-bound \u2014 larger S tiles amortize the load.\n- Add `@triton.autotune` over `(BLOCK_OC, BLOCK_IC, num_warps)` \u2208 {(32,32,2),(64,32,4),(32,64,4)} keyed on `(OC, IC, KD*KH*KW)`.",
+    "large_guidance": "- Switch from scatter-add (input-centric, atomics) to a gather-based output-centric ConvTranspose3d implemented as an im2col-style GEMM: one program per `(N, OC tile, output-spatial tile)`, accumulating over `(IC, kd, kh, kw)` with the standard transposed-conv index inversion (`d_in = (d_out + pad_d - kd) / stride_d` with divisibility check). This eliminates all atomics \u2014 currently each output voxel receives ~`IC*KD*KH*KW/stride^3` atomic adds, which dominates the 248 ms.\n- Fuse the bias add directly into the conv epilogue (store accumulator + bias), and since softmax is along channels, consider keeping the OC dimension fully resident per program (OC=64 fits) so softmax+sigmoid become the epilogue of the conv kernel \u2014 eliminating the entire second pass and the intermediate output tensor write/read.\n- Use channels-last (NDHWC) layout internally so the OC axis is contiguous for the GEMM-N tile and for the channel-wise softmax reduction; tile `BLOCK_M=32` (spatial), `BLOCK_N=64` (OC, full), `BLOCK_K=32` (IC), `num_warps=4`, `num_stages=2` fits SMEM comfortably.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 21,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.5287083316831683
+    ]
+}

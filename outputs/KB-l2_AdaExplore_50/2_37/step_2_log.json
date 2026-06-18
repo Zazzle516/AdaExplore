@@ -1,0 +1,29 @@
+{
+    "node_id": 2,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness issue likely comes from the GroupNorm kernel: `tl.sum(x, axis=0)` on a masked-loaded tensor includes zeros for out-of-range lanes which is fine, but `1.0 / CG.to(tl.float32)` may have issues \u2014 verify CG is passed as int. More importantly, the GEMM stores `out` with swish+bias as fp32 accumulator cast to fp32 output, but the GroupNorm reduction in fp32 should be exact. Double-check that `BLOCK_GN = next_pow2(CG=64) = 64` and the mask works; the small ~1e-4 avg diff suggests a subtle numerical/eps mismatch \u2014 confirm `eps=1e-5` matches PyTorch default and that the affine is applied after normalization on the same dtype.\n- Try lowering tolerance source: load weight/bias outside the masked region with `other=0.0` is fine since mask zeros them. Check that the GEMM K-loop tail mask is correct when K=1024 is divisible by BLOCK_K (no tail), so masking is unused \u2014 fine. The mismatch is small and uniform, suggesting it's the GroupNorm computing variance with different precision; try computing `mean` and `var` with `tl.sum` after explicit fp32 cast (already done) and use `var = (sum_x2 - sum_x*sum_x*inv_cg) * inv_cg` form for better numerical stability.\n- Once correct, sweep GEMM autotune to focus on M=32768, N=4096, K=1024 \u2014 try BLOCK_M=128, BLOCK_N=256, BLOCK_K=32, num_warps=8, num_stages=3 as the top candidate, and prune small tiles.",
+    "large_guidance": "- Consider fusing GroupNorm's reduction directly into the GEMM epilogue when each row's group fits in a single GEMM tile: if BLOCK_N == CG (=64) or a multiple, the tile already has the group's data \u2014 compute partial sum/sum_sq across N tiles via atomics or a two-pass strategy where pass 1 writes swish+bias output and partial stats, pass 2 normalizes.\n- Alternative: split into (1) fused GEMM+swish+bias writing `out` (current), (2) a persistent GroupNorm kernel with one program per row that loads all C=4096 elements once, computes per-group stats in shared registers using `tl.reshape` to (G, CG), and writes normalized output \u2014 eliminates the outer M*G launch overhead and improves locality.\n- For the GEMM, since N=4096 and K=1024 are both modest, a split-K or stream-K strategy is unlikely to help; instead invest in a larger BLOCK_M tile (256) since M=32768 is huge, reducing the number of K-loop traversals over the weight matrix.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 3,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 18,
+    "parent_node_id": 14,
+    "context_node_ids": [
+        14
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness bug is in `fused_gemm_rowsum_kernel`: the k-loop loads use only `mask_m`/`mask_n` but not a K-mask, so when K is not a multiple of BLOCK_K (or for tail safety) garbage gets accumulated. Add `mask_k = (k_start + offs_k) < K` and combine into the load masks (`mask_m[:,None] & mask_k[None,:]` for x, `mask_n[None,:] & mask_k[:,None]` for w). Even though 8192%32==0, the bigger issue is that `rowsum` is initialized once but each program does `atomic_add` \u2014 across multiple autotune trials/replays the same buffer accumulates. Make sure `rowsum` is freshly zeroed each call (it is) but also ensure the kernel writes deterministically; consider a 2D rowsum tile `(num_pid_n, M)` then reduce, to avoid atomic FP nondeterminism.\n- Replace the atomic_add reduction across N tiles with a split-K style approach: allocate `rowsum_partial[num_pid_n, M]` and do a tiny follow-up `tl.sum` kernel \u2014 atomics on fp32 accumulating 32\u201364 partials can drift past 5e-2 on M=2048, N=8192 magnitudes. Alternatively, use `BLOCK_N >= N` along one axis so only one program per row contributes (then no atomics needed).\n- Tighten autotune: on a 4090 with M=2048, N=8192, K=8192, prefer `BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, num_warps=4, num_stages=4` or `128x256x32` num_warps=8; drop the 256x128 config. Ensure `GROUP_M=8` swizzle is preserved.",
+    "large_guidance": "- Restructure as a two-stage pipeline that avoids atomics entirely: Stage 1 is a tiled GEMM that, instead of writing the full (M,N) output, performs a fused per-row reduction by having each program tile compute `sum_n(acc + bs)` for its N-tile and write a partial of shape `[num_pid_n, M]`. Stage 2 is a tiny reduction kernel summing along the `num_pid_n` axis and scaling by `1/N`. This removes the FP atomic nondeterminism that's likely causing the 4/5 correctness failure.\n- Since the final output is `x + gelu(scalar_per_row)`, the residual-add kernel dominates memory bandwidth (B*IN_F=2048*8192=16M elements read+written). Fuse it tightly: compute the scalar g per row in stage 2, then in stage 3 read `x` once and write `out` once. Use `BLOCK=1024` or `2048` with num_warps=4 \u2014 4096 per program may be too large for register pressure on 4090. Consider a 1D grid over total elements with the row index derived via division to allow better SM occupancy.\n- Note that `logsumexp` over a dim of size 1 is just identity (log(exp(x))=x), so the pipeline correctly reduces to: mean over N \u2192 GELU \u2192 broadcast-add to x. Keep this simplification explicit in the rewrite but ensure the mean is computed from the *actual* (gemm(x) - subtract) at runtime (not a precomputed weight reduction) to honor the safety contract.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 19,
+    "global_best_node_id": 10,
+    "global_best_score": [
+        1,
+        1,
+        1.5925164056531704
+    ]
+}

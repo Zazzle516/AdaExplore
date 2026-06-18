@@ -1,0 +1,29 @@
+{
+    "node_id": 11,
+    "parent_node_id": 7,
+    "context_node_ids": [
+        7
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The InstanceNorm2d is over a (N,C,1,1) tensor where each (n,c) group has exactly 1 element \u2014 but `InstanceNorm2d` in eval/train without `track_running_stats` produces NaN/0 depending on `affine`. Actually with H*W=1, variance=0 so output is (x-x)/sqrt(eps)=0. The kernel assumes this but correctness fails \u2014 re-check: PyTorch's InstanceNorm2d with single element returns 0 only when `affine=False` (default here). Verify by running reference; mismatch ~0.4 avg suggests reference is NOT zero. The InstanceNorm here likely passes x through unchanged due to `H*W=1` edge case in some PyTorch versions, or normalizes across batch. Inspect actual reference behavior before assuming.\n- Replace the `x*0.0 + y) * y` shortcut with a correct fused epilogue that actually computes `(x_norm + y) * y` using the true normalization PyTorch performs on a (N,1,1,C)-unsqueezed tensor.\n- Fuse the normalization+add+mul directly into the GEMM epilogue (per-row mean/var across N dim of out) to avoid a second pass.",
+    "large_guidance": "- Redesign: compute the GEMM output, then for each row of (M,N), determine what InstanceNorm2d actually does on `x.unsqueeze(1).unsqueeze(1)` which has shape (M,1,1,N). InstanceNorm2d with num_features=out_features expects (N,C,H,W) with C=out_features \u2014 but here C=1 after unsqueeze. This is a shape mismatch in the reference, or PyTorch reinterprets: actually `x.unsqueeze(1).unsqueeze(1)` gives (batch,1,1,out_features), so C=1 \u2260 out_features=8192. PyTorch's InstanceNorm2d does NOT check this strictly \u2014 it normalizes per (N,C) over (H,W). With H=1,W=out_features, it computes mean/var across the out_features axis per sample. That's a per-row LayerNorm-like reduction.\n- So the correct fused kernel: per row of (M,N) output of GEMM, compute mean and var across N, then `((x-mean)*rsqrt(var+eps) + y) * y`. Implement as a row-wise two-pass reduction kernel after the GEMM, or fuse into a persistent GEMM epilogue.\n- Use one program per M-row with BLOCK_N tiling the feature dim (N=8192). num_warps=8, two-pass Welford or sum/sum-sq, then write back fused with y.",
+    "evaluator_direction": "large",
+    "evaluator_valid": false,
+    "total_nodes": 12,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.8111310929684835
+    ]
+}

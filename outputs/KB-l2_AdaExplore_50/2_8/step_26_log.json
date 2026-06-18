@@ -1,0 +1,30 @@
+{
+    "node_id": 26,
+    "parent_node_id": 13,
+    "context_node_ids": [
+        9,
+        13
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.48514527455001144,
+    "max_reward": 0.48514527455001144,
+    "avg_reward": 0.48514527455001144,
+    "score": [
+        1,
+        1,
+        0.8024485150375941
+    ],
+    "small_guidance": "- The conv3d (cuDNN) dominates runtime at ~5.6ms vs 4.5ms baseline; the fused post-conv kernel is already small. Tuning the post-conv kernel further (BLOCK_PW, warps) will not close the gap \u2014 focus must shift to the conv itself.\n- If staying with cuDNN conv, try `torch.backends.cudnn.benchmark = True` and pass inputs in `channels_last_3d` memory format to pick a faster algo; also fuse the conv bias add + divisor into the post kernel epilogue (skip `F.conv3d`'s bias by passing `None` and folding `conv.bias/divisor` into the pool kernel).\n- Pre-scale `conv.weight` and `conv.bias` by `1/divisor` once at init (mathematically equivalent, not a shortcut) to remove the per-element multiply in the fused kernel.",
+    "large_guidance": "- Replace `F.conv3d` with a custom Triton im2col-style GEMM: one program per `(N, OC tile, D*H*W output tile)`, with implicit gather of the 3\u00d73\u00d73 input window into the GEMM-K dimension (IC*kd*kh*kw = 8*27 = 216). Tile e.g. BLOCK_M=64 (out-spatial), BLOCK_N=16 (OC, full), BLOCK_K=32, autotune warps 4/8.\n- Fuse the entire pipeline into that conv kernel's epilogue: divide-by-divisor (fold into weight), 2\u00d72\u00d72 maxpool reduction over the produced output tile, accumulate the per-(N,OC) sum for global-avg, then add bias and reduce over OC. Have each program emit pool-window maxes directly so the conv output is never materialized to HBM.\n- Alternative: persistent kernel keyed on `(N, OC)` that loops over pool-windows internally, performing on-the-fly conv per window (each window only needs a 4\u00d74\u00d74 input region per IC, 64*8 = 512 inputs vs 27 mults \u00d7 8 maxpool positions). For PD*PH*PW = 7*31*31 = 6727 windows \u00d7 16 OC \u00d7 128 N this turns the workload into a single fused pass with no intermediate tensor.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 27,
+    "global_best_node_id": 15,
+    "global_best_score": [
+        1,
+        1,
+        0.8067704998582633
+    ]
+}

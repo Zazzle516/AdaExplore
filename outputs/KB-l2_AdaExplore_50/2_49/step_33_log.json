@@ -1,0 +1,29 @@
+{
+    "node_id": 33,
+    "parent_node_id": 31,
+    "context_node_ids": [
+        31
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4441628895915679,
+    "max_reward": 0.4441628895915679,
+    "avg_reward": 0.4441628895915679,
+    "score": [
+        1,
+        1,
+        0.46434383913043475
+    ],
+    "small_guidance": "- The conv_transpose3d is the dominant cost (output is 16\u00d764\u00d732\u00d764\u00d764 \u2248 134M elements with stride-2 upsampling); tuning the softmax+sigmoid epilogue further cannot move fast_p past ~0.5. Only minor wins remain there (e.g., try BLOCK_C=64 exact, num_warps=2 since C=64 fits one warp's worth of work, drop channels_last conversion overhead by writing output in the original NCDHW layout if the conv produces it directly).\n- If staying small, autotune the epilogue over `num_warps \u2208 {1,2,4}` and consider processing multiple spatial positions per program (e.g. 4 rows \u00d7 64 channels) to amortize launch overhead across 524K programs.\n- Skip the redundant `tl.where(mask, e, 0.0)` since `tl.load` already masked with `-inf` (exp(-inf)=0); minor but removes one op.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per (N, IC-tile, input-spatial-tile) computes the input\u00d7weight outer product and scatters into the output grid using stride=2, padding=1, output_padding=1 index math. This is where the 11.5ms is going \u2014 the torch conv_transpose3d on a 16\u00d732\u00d716\u00d732\u00d732 input producing 16\u00d764\u00d732\u00d764\u00d764 with 3\u00b3 kernel is the heaviest op by far.\n- Fuse softmax (over OC=64) and sigmoid into the conv-transpose epilogue: after the scatter completes, run a second pass kernel over the output (one program per spatial position) that loads all 64 channels, applies stable softmax + sigmoid, and writes back. Or, structure the conv-transpose kernel to be gather-style (one program per output voxel summing contributing input\u00b7weight pairs) so all 64 OC values for a voxel are produced in one program and softmax+sigmoid fuse naturally before store.\n- Prefer the gather formulation for fusion: output tile = (OC=64, spatial-block); inner loop over IC\u00d7KD\u00d7KH\u00d7KW with stride/padding index math selecting valid input positions. With OC=64 fitting in one tile dimension, the softmax reduction is in-register. Use channels_last_3d input layout so IC loads coalesce. Autotune (BLOCK_OC=64, BLOCK_SPATIAL \u2208 {8,16,32}, num_warps \u2208 {4,8}, num_stages=2).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 34,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.5287083316831683
+    ]
+}

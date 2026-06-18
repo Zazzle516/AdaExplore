@@ -1,0 +1,29 @@
+{
+    "node_id": 29,
+    "parent_node_id": 27,
+    "context_node_ids": [
+        27
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The current kernel is incorrect: it computes `sum_k x[m,k] * (sum_n W[n,k])` which is the mathematically correct distributive form, but the accumulator drifts because `w_sum` is recomputed inside the K-loop with fp32 accumulation over 8192 elements \u2014 and the small max_difference (~0.02) suggests a tolerance/precision issue rather than algorithmic. Try casting `x_tile` and `w_tile` to fp32 explicitly before the multiply/sum, and verify that `w_sum` is being zeroed each K-iteration (it is, but ensure no stale state).\n- Tile shapes: with M=1024, BLOCK_M=64 gives only 16 programs \u2014 too few for a 4090's 128 SMs. Drop BLOCK_M to 16 or 32 and increase grid occupancy; or move the N-loop to the grid (split-K-style along N) and do an atomic_add into out.\n- Add configs with smaller BLOCK_M (8, 16) and larger BLOCK_N (1024, 2048) since the N reduction is the heavy inner work \u2014 current kernel re-reads all of W for every M-tile, which is 16x redundant traffic.",
+    "large_guidance": "- The current strategy re-loads the entire W matrix once per M-tile (16 reloads of a 256MB matrix = 4GB traffic), which is why even a correct version would be slow. Redesign: launch a 2D grid over (M-tile, N-tile), have each program compute a partial `acc[m] = sum_k x[m,k] * sum_{n in tile} W[n,k]`, and atomic_add into out[m]. This reads W exactly once.\n- Alternative: two-kernel design \u2014 kernel 1 computes `w_colsum[k] = sum_n W[n,k]` at forward time (runtime, not init \u2014 contract-safe), kernel 2 computes `out[m] = scale * sum_k x[m,k] * w_colsum[k]`. This is a runtime reduction + a matvec, both bandwidth-bound and minimal. Total traffic = sizeof(W) + sizeof(x) + tiny, vs current 16\u00d7sizeof(W).\n- Use split-K along the N-reduction axis with atomics on a small `out[M]` buffer; combine with BLOCK_M=32, BLOCK_N=512, BLOCK_K=64 and num_warps=8 for good occupancy on the 4090.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 30,
+    "global_best_node_id": 27,
+    "global_best_score": [
+        1,
+        1,
+        0.8119585150360703
+    ]
+}

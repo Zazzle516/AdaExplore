@@ -1,0 +1,29 @@
+{
+    "node_id": 24,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        23
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5720211016223193,
+    "max_reward": 0.5720211016223193,
+    "avg_reward": 0.5720211016223193,
+    "score": [
+        1,
+        1,
+        1.5191740883841343
+    ],
+    "small_guidance": "- Fuse the softmax into the matmul epilogue when N fits a single tile column-wise: use a persistent kernel where each program handles one full output row (BLOCK_N == 8192 split across multiple K-chunks) so the GEMM result stays in registers/SMEM and softmax (max + exp + sum + divide) runs without writing the GELU output to HBM. This eliminates the entire 1024\u00d78192 fp32 read/write between the two kernels.\n- For the existing two-kernel split, raise softmax `num_warps` to 32 only if the row spans >=8192 lanes; otherwise tune the row tile so each program processes 2 rows with `num_warps=8` to amortize launch overhead. Also use `tl.exp2` with `log2(e)` scaling instead of `tl.exp` for a faster softmax inner loop.\n- In the GEMM autotune set, add `BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, num_warps=4, num_stages=4` and `BLOCK_M=64, BLOCK_N=64, BLOCK_K=128, num_warps=4, num_stages=4` configurations \u2014 for square 1024\u00d78192\u00d78192 these often beat the wider-N tiles on Ada because L2 pressure is lower.",
+    "large_guidance": "- Redesign as a single fused matmul\u2192GELU\u2192softmax kernel using a split-K + row-persistent strategy: one program per output row (or pair of rows). The kernel streams the full K=8192 inner-product for all N=8192 columns in BLOCK_N chunks, applying GELU on the fly, accumulating the row-max via online softmax (Welford-style: track running max and running denominator). A second pass (or second loop over N) then computes the final exp/normalize. This removes the 32 MB intermediate entirely.\n- Alternatively, since N is large (8192) and a single-pass online softmax is heavy, use a two-stage approach but with the GEMM written to produce its output in BLOCK_N column tiles and have a second small kernel do the softmax \u2014 but write the GEMM output tile-major (no, must stay row-major). Better: have the GEMM kernel additionally compute and store per-row partial max and partial sum-of-exp into auxiliary buffers as it goes, so the softmax kernel only needs to do a final scan/normalize rather than re-reading the entire row twice.\n- Consider switching weights to fp16/bf16 with fp32 accumulate (cast at init time) \u2014 Ada's tensor cores are ~2\u00d7 faster for fp16 GEMM, and the GELU+softmax accuracy tolerance (5e-2) easily admits this. This is by far the largest single lever for an 8192\u00b3-class problem.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 25,
+    "global_best_node_id": 15,
+    "global_best_score": [
+        1,
+        1,
+        1.55763419188753
+    ]
+}

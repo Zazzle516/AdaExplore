@@ -1,0 +1,31 @@
+{
+    "node_id": 24,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        1,
+        2,
+        23
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.48590768192485834,
+    "max_reward": 0.48590768192485834,
+    "avg_reward": 0.48590768192485834,
+    "score": [
+        1,
+        1,
+        0.8087383758800808
+    ],
+    "small_guidance": "- The Linear (1024\u00d78192\u00d78192 GEMM) dominates runtime; the norm kernel is cheap. Tuning norm_warps further won't close the gap. Still, try BLOCK_N=8192 with num_warps=8, num_stages=4 to verify the norm cost is negligible.\n- Skip the mask in the norm kernel since N=8192 is already a power of two \u2014 `mask = offs < N` is trivially true and the `tl.where` for variance is unnecessary; this reduces predicate overhead.\n- Consider fusing the bias add into the norm kernel (pass bias_ptr, drop bias from F.linear by calling matmul without bias) so the epilogue is `(x+bias - mean)*inv * 1 + y` style \u2014 saves one elementwise pass.",
+    "large_guidance": "- Replace `F.linear` with a custom Triton tiled GEMM (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8, num_warps=8, num_stages=3-4) that fuses bias add into the epilogue. This 1024\u00d78192\u00d78192 GEMM is the bottleneck; cuBLAS sgemm is the baseline so beating it requires a hand-tuned kernel \u2014 but more importantly, fusing bias + the subsequent InstanceNorm-equivalent normalization with `y` residual into the GEMM epilogue eliminates a full read/write of an 8192\u00d71024 fp32 tensor.\n- Because InstanceNorm here reduces across N=out_features for each row, and the GEMM produces a full row of N per (M-tile, all N-tiles), a split-K-style or persistent-row strategy could keep the row resident: produce all N-tiles for a small set of rows, accumulate sum and sum-of-squares on-the-fly in shared memory, then do a second pass over the same row tiles to apply normalization + residual. This fuses GEMM + norm + residual into a single kernel.\n- Alternatively, a two-kernel pipeline where GEMM writes to a buffer and the norm kernel reads + fuses bias + residual + multiply is simpler; the key win is a custom GEMM (the current cuBLAS path is ~3.0ms of the 3.39ms total).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 25,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        0.8208452377944534
+    ]
+}

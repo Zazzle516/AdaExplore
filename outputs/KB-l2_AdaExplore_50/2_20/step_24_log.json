@@ -1,0 +1,30 @@
+{
+    "node_id": 24,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        3,
+        4
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4302693657365737,
+    "max_reward": 0.4302693657365737,
+    "avg_reward": 0.4302693657365737,
+    "score": [
+        1,
+        1,
+        0.34972226732673267
+    ],
+    "small_guidance": "- The epilogue kernel is already trivial; tune BLOCK_SIZE (try 1024/2048/8192) and num_warps (4 vs 8) via `triton.autotune`, but expect <5% gain since ConvTranspose3d dominates (~10s vs 3.5s baseline).\n- Drop the `mask` on the bias load by computing `c_idx` safely (it's always valid mod C), and use `tl.load(bias_ptr + c_idx)` without mask to reduce predication overhead.\n- Consider passing the bias add directly to the conv by setting `conv_transpose.bias` = original bias + self.bias (since bias broadcasts identically across spatial dims), turning the epilogue into `(2x+b)*x + x` with `b` already inside conv output \u2014 no extra kernel needed for the bias add itself.",
+    "large_guidance": "- The bottleneck is `nn.ConvTranspose3d` itself \u2014 replace it with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)`, computing the outer product `input[n, ic, d, h, w] * weight[ic, oc, kd, kh, kw]` and scattering into the output grid at `(n, oc, d*stride - pad + kd, h*stride - pad + kh, w*stride - pad + kw)` using `tl.atomic_add`. Handle output_padding in index math.\n- Alternatively (and likely faster on Ampere), implement ConvTranspose3d as a gather-style GEMM: for each output voxel `(od, oh, ow)`, iterate `(kd, kh, kw)` finding input voxels where `(od + pad - kd) % stride == 0`, then do an `(OC, IC)` matmul against the gathered input vector. Tile over `(N, OC_tile, output-spatial-tile)` with BLOCK_OC=64, BLOCK_S=64, BLOCK_IC=32, channels-last layout for coalesced IC loads.\n- Fuse the entire epilogue `(2x + bias)*x + x` into the GEMM kernel's epilogue (after accumulator + conv bias) so the output is written once. This eliminates the second pass over a tensor of shape (16, 64, 32, 64, 64) \u2248 134M elements.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 25,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.34972226732673267
+    ]
+}

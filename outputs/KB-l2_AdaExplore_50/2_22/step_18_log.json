@@ -1,0 +1,30 @@
+{
+    "node_id": 18,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        3,
+        4
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.6187094009416144,
+    "max_reward": 0.6187094009416144,
+    "avg_reward": 0.6187094009416144,
+    "score": [
+        1,
+        1,
+        1.9043525577683185
+    ],
+    "small_guidance": "- Add larger-tile autotune configs targeting this GEMM shape (M=1024, N=8192, K=8192): BLOCK_M=128/BLOCK_N=256/BLOCK_K=32 and 64 with num_warps=8, num_stages=3-4; also try BLOCK_M=64/BLOCK_N=128/BLOCK_K=128 and BLOCK_M=256/BLOCK_N=64. The current best is likely K=64 num_warps=8 stages=4, but a wider BLOCK_N (256) with stages=4 typically wins on 4090 for K=8192.\n- Lower the partial-buffer write overhead: choose BLOCK_M=128 so only 8 tiles cover M=1024 and BLOCK_N=256 so only 32 N-tiles, then make the reduce kernel use BLOCK_T=32 with num_warps=1. Also consider storing partials in fp16 (read-back is tiny) \u2014 but more importantly, fuse: have each program atomically combine into a single (max, sumexp) per row using two atomic-max + atomic-add passes, eliminating the second kernel entirely.\n- Try `tl.exp2` (multiply tile by 1/ln2 before clamp-equivalent scaling) for the per-tile exp reduction \u2014 faster than `tl.exp` on Ampere/Ada and slightly increases throughput in the epilogue.",
+    "large_guidance": "- Persistent split-K GEMM with online (streaming) LSE: launch a 1D grid of (num_SMs) persistent programs that iterate over (row-tile, N-tile) work items. Each program keeps a per-row running (max, sumexp) in registers across all its N-tiles for that row, only writing a per-(row, program) partial when it migrates rows. This collapses the two-kernel pipeline and dramatically shrinks the partial buffer (M \u00d7 num_SMs instead of M \u00d7 128).\n- Alternatively, flip the parallelization: one program per row-tile that loops over all N-tiles, accumulating GEMM tiles for that row chunk and folding each tile directly into an online softmax/LSE state \u2014 no scratch buffer at all, and the final mish is done in-kernel before storing the M outputs. The K=8192 reduction is heavy but BLOCK_M=32, BLOCK_N=128, BLOCK_K=64 with num_warps=8 keeps each program's working set in registers/SMEM.\n- If keeping two kernels, replace the per-tile (max, sumexp) partials with a single fused atomic combine: use `tl.atomic_max` on a row-max buffer (first pass) and `tl.atomic_add` on a sumexp buffer (second pass after re-reading max), or do log-sum-exp via a single `tl.atomic_add` on exp(x - global_const) where global_const is a safe upper bound (clamp_max * scale * 2 = 40), eliminating the reduce kernel entirely.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 19,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        1.9043525577683185
+    ]
+}

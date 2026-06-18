@@ -1,0 +1,29 @@
+{
+    "node_id": 20,
+    "parent_node_id": 14,
+    "context_node_ids": [
+        14
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4145216885088404,
+    "max_reward": 0.4145216885088404,
+    "avg_reward": 0.4145216885088404,
+    "score": [
+        1,
+        1,
+        0.2198039301979331
+    ],
+    "small_guidance": "- In the eval path the conv_transpose still runs via torch (only BN+pool fused). Replace `self.conv_transpose(x)` with the existing `fused_convt_bn_pool` kernel \u2014 currently it's defined but unused. Calling it would consolidate ConvT+BN+both pools into one launch.\n- For `fused_bn_avgpool4_kernel`, the `scale`/`shift` loads use `mask=mask` but they're per-channel \u2014 load them unconditionally and let the mask only guard the output store; this avoids redundant masked gathers. Also try `BLOCK \u2208 {2048, 4096}` with `num_warps=8` since the work per element is tiny (64 adds).\n- Add a channels_last_3d layout for the conv_transpose output before the BN+pool kernel so the 4\u00d74\u00d74 window reads are contiguous in C \u2014 but here C is the outer dim, so instead try collapsing the inner `ww` loop to a vectorized contiguous load of 4 floats via `tl.arange(0,4)` along W.",
+    "large_guidance": "- The torch ConvTranspose3d dominates the 26.4 ms runtime (BN+pool fusion alone can't reach baseline). Wire in a custom ConvTranspose3d kernel as scatter-add of `input \u00d7 kernel` outer product: one program per `(N, IC tile, input-spatial tile)`, scattering into the OC \u00d7 output-spatial grid via atomic_add, fused directly with the 4\u00d74\u00d74 average pool by accumulating into the pooled output tile (each input contributes to a known set of pooled cells).\n- Alternative gather-style design: one program per `(N, OC tile, pooled-output tile)`, doing an im2col-style GEMM over `(IC \u00d7 KD \u00d7 KH \u00d7 KW)` for each of the 64 fine output positions, then averaging \u2014 but exploit that stride=2, kernel=3 means each pooled cell of size 4 in fine output sums contributions from a small overlapping input region. Tile GEMM with `BLOCK_M=32 (OC), BLOCK_N=32 (pooled positions), BLOCK_K=32`, `num_warps=4`, `num_stages=2` to fit SMEM.\n- Fold BN scale/shift into the conv weights/bias at init (eval-mode constant): `w' = w * scale[oc]`, `b' = bias*scale + shift`, so the fused kernel's epilogue is just the 1/64 average \u2014 eliminates an entire arithmetic pass.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 21,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        0.36042383585251137
+    ]
+}

@@ -1,0 +1,31 @@
+{
+    "node_id": 47,
+    "parent_node_id": 46,
+    "context_node_ids": [
+        3,
+        43,
+        46
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4752781796536797,
+    "max_reward": 0.4752781796536797,
+    "avg_reward": 0.4752781796536797,
+    "score": [
+        1,
+        1,
+        0.7210449821428572
+    ],
+    "small_guidance": "- Add a `triton.autotune` over `BLOCK_S \u2208 {64,128,256}`, `BLOCK_OC \u2208 {16,32}` (OC=16 so 16 is the cap), `num_warps \u2208 {2,4,8}`, `num_stages \u2208 {2,3}`. Current 128/16/4w/2s leaves bandwidth on the table; larger BLOCK_S with 8 warps often wins for small-OC convs.\n- Swap the grid axes so `pid_s` is axis 0 (or fuse `(N, OC_blk)` into one axis), improving L2 locality across programs that share input rows. Also collapse the OC tile loop into a single program (BLOCK_OC=16 covers all OC) to remove that grid dim.\n- Cache weights once per program: hoist `tl.load` of the entire `w[oc, ic, kd, kh, kw]` (16\u00d73\u00d73\u00d73\u00d73 = 1296 fp32, ~5KB) into registers/SMEM before the spatial loop instead of reloading inside the static_range; this kernel is currently weight-load-bound at small OC.",
+    "large_guidance": "- Rewrite as an implicit-GEMM im2col: one program per `(N, output-spatial tile)` with M = output pixels, N = OC, K = IC\u00b7KD\u00b7KH\u00b7KW = 81. Use `tl.dot` for the inner accumulate \u2014 fp32 tensor-core mma on Ada will dramatically outperform the current scalar FMA outer-product. K=81 fits in one or two K-tiles.\n- Pre-pack weights once at module init into a `(K, OC)` matrix stored as a buffer (still a runtime GEMM \u2014 does not violate the contract since the conv arithmetic still executes); load it as a contiguous tile per program.\n- Keep the fused epilogue (scale \u2192 tanh via `tl.tanh` or the exp form \u2192 bias-mul \u2192 sigmoid) on the accumulator before store. Consider channels-last output layout `(N, OD, OH, OW, OC)` so the OC tile stores are contiguous; transpose back outside the kernel if needed, or just store strided.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 48,
+    "global_best_node_id": 42,
+    "global_best_score": [
+        1,
+        1,
+        1.6824382916666667
+    ]
+}

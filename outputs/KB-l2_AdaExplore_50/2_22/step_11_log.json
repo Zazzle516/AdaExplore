@@ -1,0 +1,29 @@
+{
+    "node_id": 11,
+    "parent_node_id": 10,
+    "context_node_ids": [
+        10
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5472131933557832,
+    "max_reward": 0.5472131933557832,
+    "avg_reward": 0.5472131933557832,
+    "score": [
+        1,
+        1,
+        1.3145088451852112
+    ],
+    "small_guidance": "- The split-K GEMM writes a SPLIT_K\u00d7M\u00d7N partial tensor (4\u00d71024\u00d78192 = 128MB) and the reduce kernel reads it back twice \u2014 this is the bottleneck. Drop SPLIT_K to 1 (or eliminate it) and have the GEMM write directly to `[M, N]`, then a single-pass online-softmax LSE kernel reads each row once. With M=1024, N=8192, K=8192 the GEMM is compute-bound, not K-bound, so split-K only adds memory traffic.\n- Try larger autotune tiles tuned for (1024, 8192, 8192): `BLOCK_M=128, BLOCK_N=256, BLOCK_K=32, num_warps=8, num_stages=4` and `BLOCK_M=256, BLOCK_N=128, BLOCK_K=32`. Add a `GROUP_M=8` swizzle for L2 reuse across the N tiles of a row group.\n- In the reduce kernel, use the online (one-pass) LSE recurrence (`m_new = max(m, x); s = s*exp(m-m_new) + exp(x-m_new)`) so the partial tensor is read only once instead of twice.",
+    "large_guidance": "- Fuse bias+scale*2+clamp+LSE+mish directly into the GEMM epilogue: launch one program per row-tile (BLOCK_M rows \u00d7 full N), accumulate the GEMM along K with `tl.dot`, and as each BLOCK_N column tile of the row's output is produced, fold it into a running online-LSE state (m, s) kept in registers. This avoids materializing the [M, N] activation entirely \u2014 output is just [M, 1]. Grid = (cdiv(M, BLOCK_M),), with each program looping over N tiles and the inner K loop.\n- Alternative: persistent split-N kernel where each program owns BLOCK_M rows and a slice of N, computes its local (m_i, s_i), then a tiny second-stage kernel combines per-row partial (m, s) pairs across N-splits into the final LSE+mish. This keeps GEMM tiles compute-bound while eliminating the [M, N] write.\n- Since N=hidden_size=8192 is fixed and M=1024 is small, consider a persistent kernel with one CTA per row group that streams W column-tile by column-tile, recomputing the GEMM tile for each BLOCK_N and immediately reducing \u2014 trades a bit of redundant W-load for zero activation memory traffic.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 12,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.8922229236424055
+    ]
+}

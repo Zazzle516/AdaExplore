@@ -1,0 +1,31 @@
+{
+    "node_id": 28,
+    "parent_node_id": 25,
+    "context_node_ids": [
+        23,
+        24,
+        25
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (avg diff ~5e-5, max ~4e-3) is consistent with GroupNorm using only `gamma * normalized + beta` but missing nothing structurally \u2014 actually the issue is likely that `num_groups=256, out_features=8192` gives `CPG=32`, and the fused kernel computes mean/var over only 32 elements per group correctly, so the discrepancy is small numerical drift. Try computing the reduction in higher precision and using `tl.sum` with explicit float32 accumulation; also ensure `eps=1e-5` matches PyTorch's default exactly (it does). Verify the kernel handles the GroupNorm formula identically \u2014 the current code looks correct.\n- Add autotune to the fused GN kernel sweeping `num_warps \u2208 {1, 2, 4}` since `BLOCK_CPG=32` is tiny \u2014 a single warp per program may be optimal, and grid is `(1024, 256)=262144` programs which is plenty of parallelism.\n- Consider grouping multiple groups per program (e.g., process 4 groups per program by tiling on the group axis) to reduce launch overhead and improve memory coalescing across the 8192-wide row.",
+    "large_guidance": "- Restructure the fused GN kernel to use one program per batch row, looping over all G groups inside the kernel \u2014 this lets a single contiguous load of the full 8192-element row stay in registers/SMEM and amortizes the per-row pointer arithmetic. With `C=8192` and `CPG=32`, 256 groups per row can be processed as a 2D tile reshape `(G, CPG)` and reduced along the CPG axis with `tl.sum(axis=1)`.\n- For the GEMM (M=1024, N=8192, K=8192), the workload is large and compute-bound; consider a split-K or persistent-tile GEMM with `BLOCK_M=128, BLOCK_N=256, BLOCK_K=32-64`, `num_warps=8`, `num_stages=4`. Also evaluate using `tl.dot` with `tf32` input precision (allow_tf32) for ~2x throughput on Ada \u2014 fp32 GEMM at this size is the dominant cost.\n- Fuse the multiply_weight broadcast directly with bias load in the GEMM epilogue is not viable (still need GN between), but consider fusing GN's affine (gamma, beta) precomputation with the multiply_weight into a single combined parameter at init time (only the affine, not the normalization itself) \u2014 gamma_eff = gamma * mw saves one multiply per element. (The normalization stats must still be computed per-call.)",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 29,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

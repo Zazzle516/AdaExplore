@@ -1,0 +1,30 @@
+{
+    "node_id": 29,
+    "parent_node_id": 28,
+    "context_node_ids": [
+        27,
+        28
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.45280400354939526,
+    "max_reward": 0.45280400354939526,
+    "avg_reward": 0.45280400354939526,
+    "score": [
+        1,
+        1,
+        0.5356330292825106
+    ],
+    "small_guidance": "- The fused conv path recomputes the full conv for every one of the POOL\u00b3=64 pool positions per output; cache the conv outputs across the pool window once (compute (POOL*POOL*POOL, OC) into registers once, then reduce). Even simpler: tile so that one program covers a (POOL,POOL,POOL) output cube and shares the channel reduction across pool taps.\n- Add a `triton.autotune` over `num_warps \u2208 {4,8}`, `num_stages \u2208 {2,3,4}` keyed on (N,Dp,Hp,Wp); current `num_warps=2` is likely too low given OC=16 and 64 inner pool taps \u2014 try 4 with `num_stages=3`.\n- Increase grid parallelism by mapping one program per `(n, dp, hp, wp, oc_tile)` only if OC grows; for OC=16 instead reduce work-per-program by parallelizing the pool taps across `program_id(1)` and combining with atomic max \u2014 or persistently across multiple `(wp)` along the W axis to amortize weight loads.",
+    "large_guidance": "- Redesign as im2col-GEMM: one program per `(N, output-spatial tile of the pooled grid covering POOL\u00b3 conv outputs, OC tile=OC)`. Materialize the conv via a tiled GEMM over IC*KD*KH*KW (K=81), with `BLOCK_M = POOL*POOL*POOL = 64` spatial conv outputs, `BLOCK_N = OC = 16`, `BLOCK_K = 32`. After the GEMM, softmax along N(=OC) in registers and reduce-max along M(=64 pool taps) to produce 16 outputs per program. This computes each conv output exactly once instead of 64\u00d7.\n- Use channels_last (NDHWC) for the input so the GEMM-K (IC) dim is contiguous and loads coalesce; precompute the im2col gather offsets as a constexpr-friendly index pattern (KD*KH*KW=27 small) and load IC=3 contiguously inside.\n- Fuse end-to-end: bias add \u2192 softmax(numerically stable, single program holds all OC=16 in registers) \u2192 2\u00d72\u00d72 pool\u00d72 (=4\u00b3 window) max reduction \u2192 store. The two MaxPool3d(2)s compose to a single 4\u00b3 pool with stride 4, so the program tile should be the 4\u00b3=64 conv-output cube that produces one pooled voxel per channel.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 30,
+    "global_best_node_id": 22,
+    "global_best_score": [
+        1,
+        1,
+        2.689860190720031
+    ]
+}

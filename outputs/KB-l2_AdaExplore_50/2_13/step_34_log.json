@@ -1,0 +1,30 @@
+{
+    "node_id": 34,
+    "parent_node_id": 29,
+    "context_node_ids": [
+        27,
+        29
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4611924968988127,
+    "max_reward": 0.4611924968988127,
+    "avg_reward": 0.4611924968988127,
+    "score": [
+        1,
+        1,
+        0.6048380994152046
+    ],
+    "small_guidance": "- The post-conv fused kernel is fine; runtime is dominated by `nn.ConvTranspose3d` (stride=1, kernel=3, padding=1 \u2014 output shape equals input spatial dims). Tuning BLOCK_C/num_warps here yields <5% \u2014 current C=64 with BLOCK_C=64, num_warps=4 is near optimal. Try num_warps=2 since per-program work is only 64 elements, and consider processing multiple (h,w) per program (BLOCK_HW=4) to amortize bias loads.\n- Fold the `mean over depth` into the conv-transpose epilogue so the D-axis output is never materialized: each program accumulates sum over D then divides by D before storing to (B,C,H,W). This removes the giant intermediate tensor read/write.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton kernel. With stride=1, ConvTranspose3d is equivalent to a regular Conv3d with flipped kernel and padding=kernel_size-1-padding; implement as a direct gather-style conv where each program computes a tile of (oc, h, w) for one (b, d) and accumulates over (ic, kd, kh, kw). Output shape must remain (B, OC, D, H, W) \u2014 full multiply-add count preserved.\n- Fuse the entire chain: conv-transpose accumulator \u2192 online sum across D (loop d inside kernel, accumulate per-(b,oc,h,w) sum) \u2192 divide by D \u2192 add bias \u2192 softmax over C \u2192 tanh \u2192 scale, all in one kernel. Layout one program per (b, h-tile, w-tile) holding all C channels in registers (C=64 fits), looping over D and the conv reduction inside; write only the final (B,C,1,H,W) tensor.\n- Use channels_last-ish tiling: BLOCK_HW=32 or 64, full C=64 in registers, loop over D and (ic,kd,kh,kw). num_warps=4, num_stages=2. This eliminates the D-sized intermediate (16\u00b764\u00b732\u00b7128\u00b7128 fp32 \u2248 2GB writes) which is the real bottleneck.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 35,
+    "global_best_node_id": 24,
+    "global_best_score": [
+        1,
+        1,
+        2.8571081491712707
+    ]
+}

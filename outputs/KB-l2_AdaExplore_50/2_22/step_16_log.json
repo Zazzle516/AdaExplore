@@ -1,0 +1,29 @@
+{
+    "node_id": 16,
+    "parent_node_id": 5,
+    "context_node_ids": [
+        5
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.6172391422596856,
+    "max_reward": 0.6172391422596856,
+    "avg_reward": 0.6172391422596856,
+    "score": [
+        1,
+        1,
+        1.8922229236424055
+    ],
+    "small_guidance": "- The GEMM is doing M=1024, N=8192, K=8192 \u2014 a single huge GEMM with tiny epilogue work. The current tiles are likely too small; add larger configs (BLOCK_M=128/BLOCK_N=256/BLOCK_K=64 num_warps=8 stages=3-4, and BLOCK_M=256/BLOCK_N=128/BLOCK_K=32) and drop the smallest 64x64 / 64x128 configs that won't be picked for this shape.\n- Avoid materializing both `max_buf` and `sumexp_buf` of size M\u00d7ntiles_n with a separate reduction pass: when BLOCK_N covers a full row tile span, do the partial LSE in registers and `tl.atomic_max` / atomic LSE update \u2014 or better, since M=1024 is small, run a persistent kernel with one program per row-tile of M that loops over N tiles, keeping running max/sumexp in registers and writing one scalar LSE per row. This removes the second kernel launch entirely.\n- The `reduce_lse_mish_kernel` is launched with `num_warps=1` and `BLOCK_T` rounded up to next pow2 \u2014 fine, but for M=1024 launches it's still 1024 tiny grids. Either fuse into the GEMM epilogue (above) or batch multiple rows per program (e.g. BLOCK_M_REDUCE=8) to amortize launch overhead.",
+    "large_guidance": "- Switch to a **split-K-free, persistent row-parallel design**: one program per row-tile (BLOCK_M=32 or 64), each program iterates the full K=8192 against all N=8192 columns in N-tiles, maintaining online-softmax-style running (max, sumexp) in registers across N tiles. Final LSE + Mish epilogue happens in the same kernel \u2014 no intermediate buffers, no second launch. With M=1024 this gives 16-32 programs each doing ~1 GFLOP, which fits the 4090 well and removes all the partial-tile bookkeeping.\n- Alternatively, use **split-N with atomics**: keep the current 2D GEMM grid but combine partial (max, sumexp) into a per-row accumulator using `tl.atomic_max` for the max and a two-pass online combine \u2014 but the persistent row-tile approach above is simpler and avoids atomics entirely given small M.\n- Since `nn.Linear.weight` is stored row-major as (N, K) and currently transposed at init to (K, N), keep that transpose but also consider loading W as (N, K) directly with a K-inner GEMM (`tl.dot(x, w.T)` via swapped iteration) to test whether the contiguous W layout improves L2 reuse on the K loop with stages=4.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 17,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.8922229236424055
+    ]
+}

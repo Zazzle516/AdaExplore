@@ -1,0 +1,27 @@
+{
+    "node_id": 2,
+    "parent_node_id": 1,
+    "context_node_ids": [],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The atomic_add accumulation across N-tiles is causing the correctness failure (massive max_difference like 2M suggests races or wrong reduction). Replace the multi-program-per-row atomic strategy with a single program per row-tile that loops over all N internally, or use a 2-stage approach: stage 1 writes per-tile partial sums to a `[num_pid_n, M]` buffer, stage 2 reduces along the tile axis.\n- Once correct, since the output is just `(M,1)`, you don't need a full GEMM tile reduction \u2014 fuse the divide-by-2 and scaling_factor multiply into a single scalar applied once at the end (already done as `scale`).\n- Consider larger BLOCK_N (256/512) with BLOCK_M=32 or 64 and num_warps=8, num_stages=4 to better cover K=8192.",
+    "large_guidance": "- Reformulate as: `out[m] = scale * sum_k x[m,k] * (sum_n w[n,k])`. **However, this violates the safety contract** (it collapses the GEMM into a matvec via precomputed column sums of W). So do NOT do this \u2014 the reference matmul must execute at runtime.\n- Instead, design a tiled GEMM where each program owns a full row tile (BLOCK_M rows) and iterates over BOTH N and K inside the kernel, accumulating a `[BLOCK_M]` row-sum register. This eliminates atomics entirely: grid is just `cdiv(M, BLOCK_M)`. Inner loop: for each N-tile, do `tl.dot(x_tile, w_tile.T)` to get `[BLOCK_M, BLOCK_N]`, then `tl.sum(axis=1)` and accumulate into the row-sum vector. K-loop is the inner-most for tl.dot.\n- Alternative: keep two-program-per-(M,N) tiling but write partials to a `[grid_n, M]` workspace, then launch a tiny second kernel to reduce along grid_n. Avoids atomic_add nondeterminism/ordering issues that may be causing the numerical blowup.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 3,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

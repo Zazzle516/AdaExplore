@@ -1,0 +1,30 @@
+{
+    "node_id": 15,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        3,
+        5
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness failed with avg_diff ~5e-5 and max_diff ~4e-3 \u2014 likely the GroupNorm fused kernel's reduction is fine, but check that gamma/beta indexing uses channel offset (not group offset). The `chan_off` looks correct, but verify mask/bounds: with C=8192, num_groups=256, CH_PER_G=32, GROUPS_PER_BLOCK=8 \u2192 block reads 256 channels per row, no masking needed. Try lowering eps tolerance by computing variance with the more stable two-pass formula using `tl.sum((x-mean)^2)` (already done). The mismatch is likely due to using fp32 sigmoid but storing fp32 \u2014 should be fine. Recheck if `chan_off` could overflow when `(g_start + g_off) * CH_PER_G` exceeds C boundaries near the last block.\n- Add explicit boundary mask `chan_off < C` to load/store calls to rule out OOB reads tainting reductions.\n- Try GROUPS_PER_BLOCK=16 or 32 (CH_PER_G=32 \u2192 512\u20131024 elem tile) with num_warps=8 to reduce launch count from 1024\u00d732 to 1024\u00d78.",
+    "large_guidance": "- The GEMM (1024\u00d78192\u00d78192) dominates runtime; ensure it reaches near-cuBLAS. Consider a split-K or persistent GEMM with larger tiles (BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4) and tf32 accumulation via `tl.dot(..., allow_tf32=True)`.\n- Fuse the bias + GroupNorm partial reduction into the GEMM epilogue: each (M-tile, full-N-row) program can directly accumulate per-group sums into a workspace, eliminating a full read of the 1024\u00d78192 output before normalization. Alternatively, keep GEMM separate but use `torch.addmm` (cuBLAS) for the GEMM and only fuse the GN+Swish+Mul+Swish epilogue in Triton.\n- For the normalization kernel, since CH_PER_G=32 is tiny, process many groups per program (e.g. 32 groups = 1024 channels) using one warp per group via 2D tiles, and apply Welford-free two-pass within registers \u2014 this maximizes occupancy on the 1024-row launch.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 16,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 16,
+    "parent_node_id": 9,
+    "context_node_ids": [
+        7,
+        9
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4526358177667082,
+    "max_reward": 0.4526358177667082,
+    "avg_reward": 0.4526358177667082,
+    "score": [
+        1,
+        1,
+        0.5342454965753425
+    ],
+    "small_guidance": "- The conv_transpose3d dominates runtime (output is 16\u00d7128\u00d720\u00d736\u00d736 \u2248 53M elements); tuning the trailing mean+affine kernel cannot close the gap. If staying small, at least move the eval-path BN folding (`a`, `b`) computation off the hot path by caching it whenever running stats are unchanged, and increase `BLOCK_S` to 8192 with `num_warps=16` since S=25920 per (N,C).\n- Set `num_stages=3` and ensure `y` is already contiguous from conv_transpose to skip the implicit copy in `_launch_fused`.\n- For the training path, fuse the per-channel sum/sum-of-squares reduction over (N,D,H,W) into one Triton kernel (one program per channel) instead of calling `.mean()` and `.var()` separately on a permuted+contiguous tensor \u2014 the permute+contiguous is itself a full pass over 53M elements.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile) computes the `input \u00d7 weight` outer product and scatter-adds into the output grid with `stride=1, padding=0` (kernel_size=5). This is the heavy op (>90% of runtime) and the current implementation never touches it.\n- Better: since the final output is global-average-pooled to (N,C,1,1,1), fuse conv_transpose3d + scale + BN-affine + spatial mean into one kernel that accumulates the per-(N,OC) sum directly without ever materializing the 53M-element intermediate. Each program handles one (N, OC) and loops over (IC, kD, kH, kW, input D,H,W) accumulating contributions to the output mean. Note: the BN stats must still be computed from the true post-conv tensor in training, so in training fall back to a two-pass kernel (pass 1: compute per-channel sum and sum-of-squares while accumulating conv output into a buffer; pass 2: apply affine + reduce). In eval, single fused pass suffices.\n- For the conv-transpose itself, prefer the gather formulation: for each output voxel (od, oh, ow), gather contributing input voxels via `(od - kd)/1` index math \u2014 this avoids atomic scatter-adds and lets the per-(N,OC) reduction stay in registers.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 17,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.5342454965753425
+    ]
+}

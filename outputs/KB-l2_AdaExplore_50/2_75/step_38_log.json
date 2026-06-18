@@ -1,0 +1,30 @@
+{
+    "node_id": 38,
+    "parent_node_id": 20,
+    "context_node_ids": [
+        3,
+        20
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM is M=1024, N=8192, K=8192 \u2014 dominant cost. Add larger tile configs to the autotune list (e.g. `BLOCK_M=128, BLOCK_N=128, BLOCK_K=128, num_warps=8, num_stages=3` and `BLOCK_M=64, BLOCK_N=128, BLOCK_K=128, num_warps=4, num_stages=4`); current configs cap BLOCK_K at 64 which leaves K-loop overhead on the table for K=8192.\n- The final `add_bias_kernel` is declared but never launched \u2014 `min_buf.view(1,1,M,1) + self.bias` falls back to PyTorch broadcast. Replace with a fused 1-launch Triton kernel that writes the (1, out_features, M, 1) result directly, or just keep PyTorch since this op is tiny \u2014 but remove the dead kernel to reduce confusion.\n- The `_refresh_weight_t` copy on every training forward is a 256MB D2D copy that may be measured. Cache by `data_ptr()`/`version` and skip the copy in eval; ensure inference path does zero refresh.",
+    "large_guidance": "- Fuse GEMM + GroupNorm + min into a single persistent kernel keyed on rows: each program computes a row's full GEMM output tile-by-tile into registers/SMEM, then does the per-group normalization and `min` reduction in-place, writing only the scalar min per row. This eliminates the 1024\u00d78192 fp32 write+read of `y` (32MB round-trip) which is a meaningful fraction of 3.6ms.\n- Alternatively, split-K GEMM: with K=8192 and only M=1024, there are few row tiles; a split-K reduction across more SMs would improve occupancy on the 4090's 128 SMs. Use atomic-add or a 2-stage reduction kernel.\n- The GN+min kernel currently uses a 2D tile of shape `(NUM_GROUPS=512, C_PER_G=16)` = 8192 elements per program but only 1024 programs total \u2014 that's fine for occupancy, but `C_PER_G=16` is too narrow for `tl.sum` efficiency. Consider one program per (row, group) with `M*num_groups=524288` programs and a global per-row min via atomicMin or a second small reduction kernel; this exposes far more parallelism.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 39,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

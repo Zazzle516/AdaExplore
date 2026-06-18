@@ -1,0 +1,30 @@
+{
+    "node_id": 35,
+    "parent_node_id": 31,
+    "context_node_ids": [
+        13,
+        16
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.48232099134199136,
+    "max_reward": 0.48232099134199136,
+    "avg_reward": 0.48232099134199136,
+    "score": [
+        1,
+        1,
+        0.7791481785714286
+    ],
+    "small_guidance": "- The GEMM (16384\u00d74096\u00d74096) is by far the dominant cost; `torch.addmm` alone is ~10ms here. Tuning the small scale+BN kernels won't close the gap. If staying with the current structure, at least try larger apply tiles (BLOCK_M=256, BLOCK_N=64, num_warps=8, num_stages=4) and merge the apply pass with stat-collection across a single grid (persistent per-column reduction then broadcast) to halve the y traffic.\n- For the stats kernel, increase BLOCK_N to 128 and lower BLOCK_M to 1024 with num_warps=8/num_stages=3 to better overlap loads; current 64-wide column tile underutilizes vector loads on a 4096-wide row.\n- Use Welford-style combine instead of `sumsq \u2212 mean\u00b2` to allow fp32 accumulators to compose with apply pass without re-reading y twice.",
+    "large_guidance": "- Replace `torch.addmm` with a custom tiled Triton GEMM (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8, num_warps=8, num_stages=3-4) that fuses the bias add and the scalar `* scale[n]` into the epilogue, and writes y into global memory once. This removes the cuBLAS GEMM + the separate scale read.\n- Make BN training-stats collection a second kernel that reads y (already scaled) once, computes per-column sum/sumsq via atomic adds across M-tiles or via a two-stage reduction (split-K style), then a tiny finalize kernel computes a, b. Then a third kernel applies `(y \u2212 mean) * invstd * gamma + beta` in-place. With y already scale-fused at GEMM epilogue, total memory traffic on y drops from ~5 passes to 3.\n- Alternative: fully persistent GEMM-then-stats kernel where each program tile holds its M\u00d7N output tile in registers, atomically contributes per-column partial sum/sumsq, then a small follow-up kernel finalizes (mean, invstd) and a final apply kernel normalizes. Tile shape 128\u00d7128 keeps register pressure manageable on Ada.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 36,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.7791481785714286
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 45,
+    "parent_node_id": 42,
+    "context_node_ids": [
+        39,
+        42
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The dominant cost is the `F.linear` GEMM (1024\u00d78192\u00d78192). Replace it with a tiled Triton GEMM (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8, num_warps=4, num_stages=3) and fuse the linear bias add into the epilogue.\n- The `add_bias_kernel` writes an (N, M) layout then `.view(1,N,M,1)` \u2014 that's fine, but switch to BLOCK_M=128/BLOCK_N=64 with num_warps=8 to better match the broadcast pattern and ensure coalesced writes along M (inner dim).\n- In `gn_min_kernel`, NUM_GROUPS=512 and GROUP_SIZE=16 \u2014 try num_warps=8 (instead of 16) since N=8192 with one program/row is not benefiting from 16 warps; also consider 2 rows per program to amortize weight loads of gn_w/gn_b.",
+    "large_guidance": "- Fuse the entire pipeline into a single persistent kernel per row: do GEMM (row-of-x \u00d7 W^T) accumulating into out_features registers/SRAM, then immediately apply GroupNorm + min-reduction, producing a scalar per row. This avoids materializing the 1024\u00d78192 intermediate. Since M=1024 is small, one program per (row, N-tile) computing GEMM partial then a second pass for GN+min is viable.\n- Alternatively, write a custom GEMM that outputs in (M, N) tiles fused with the per-group reduction: have each program handle one row's full N=8192 (split-K across the GEMM, store y per row, then immediately reduce). The bias-add is trivially cheap and should be folded into the min-output store as `out[n, m] = min_val[m] + bias[n]`.\n- Use tf32 `tl.dot` (input_precision='tf32') for the GEMM \u2014 on a 4090, an 8192\u00b3-ish GEMM at fp32 is the entire runtime budget; tf32 cuts it ~2-3\u00d7 while staying within the 5e-2 tolerance.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 46,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

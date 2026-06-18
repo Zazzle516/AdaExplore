@@ -1,0 +1,137 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import triton
+import triton.language as tl
+
+
+GEMM_CONFIGS = [
+    triton.Config({'BLOCK_M': 128, 'BLOCK_N': 128, 'BLOCK_K': 32}, num_warps=4, num_stages=3),
+    triton.Config({'BLOCK_M': 128, 'BLOCK_N': 128, 'BLOCK_K': 64}, num_warps=8, num_stages=3),
+    triton.Config({'BLOCK_M': 128, 'BLOCK_N': 256, 'BLOCK_K': 32}, num_warps=8, num_stages=3),
+    triton.Config({'BLOCK_M': 256, 'BLOCK_N': 128, 'BLOCK_K': 32}, num_warps=8, num_stages=3),
+    triton.Config({'BLOCK_M': 64, 'BLOCK_N': 128, 'BLOCK_K': 64}, num_warps=4, num_stages=3),
+    triton.Config({'BLOCK_M': 128, 'BLOCK_N': 64, 'BLOCK_K': 64}, num_warps=4, num_stages=3),
+]
+
+
+@triton.autotune(configs=GEMM_CONFIGS, key=['M', 'N', 'K'])
+@triton.jit
+def gemm_swish_bias_kernel(
+    X_ptr, W_ptr, Bl_ptr, Bp_ptr, Y_ptr,
+    M, N, K,
+    stride_xm, stride_xk,
+    stride_wn, stride_wk,
+    stride_ym, stride_yn,
+    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
+):
+    pid_m = tl.program_id(0)
+    pid_n = tl.program_id(1)
+
+    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    offs_k = tl.arange(0, BLOCK_K)
+
+    x_ptrs = X_ptr + offs_m[:, None] * stride_xm + offs_k[None, :] * stride_xk
+    w_ptrs = W_ptr + offs_n[None, :] * stride_wn + offs_k[:, None] * stride_wk
+
+    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+
+    for k in range(0, tl.cdiv(K, BLOCK_K)):
+        x = tl.load(x_ptrs)
+        w = tl.load(w_ptrs)
+        acc += tl.dot(x, w, allow_tf32=True)
+        x_ptrs += BLOCK_K * stride_xk
+        w_ptrs += BLOCK_K * stride_wk
+
+    bl = tl.load(Bl_ptr + offs_n)
+    acc = acc + bl[None, :]
+    acc = acc * tl.sigmoid(acc)
+    bp = tl.load(Bp_ptr + offs_n)
+    acc = acc + bp[None, :]
+
+    y_ptrs = Y_ptr + offs_m[:, None] * stride_ym + offs_n[None, :] * stride_yn
+    tl.store(y_ptrs, acc)
+
+
+@triton.jit
+def group_norm_kernel(
+    X_ptr, Y_ptr, Gamma_ptr, Beta_ptr,
+    M, C, G, CPG,
+    eps,
+    BLOCK_CPG: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    row = pid // G
+    grp = pid % G
+
+    offs = tl.arange(0, BLOCK_CPG)
+    mask = offs < CPG
+
+    base = row * C + grp * CPG
+    x_ptrs = X_ptr + base + offs
+    x = tl.load(x_ptrs, mask=mask, other=0.0)
+
+    cnt = CPG.to(tl.float32)
+    sum_x = tl.sum(x, axis=0)
+    mean = sum_x / cnt
+    xc = tl.where(mask, x - mean, 0.0)
+    var = tl.sum(xc * xc, axis=0) / cnt
+    rstd = tl.rsqrt(var + eps)
+
+    g = tl.load(Gamma_ptr + grp * CPG + offs, mask=mask, other=0.0)
+    b = tl.load(Beta_ptr + grp * CPG + offs, mask=mask, other=0.0)
+
+    y = xc * rstd * g + b
+    tl.store(Y_ptr + base + offs, y, mask=mask)
+
+
+def _next_pow2(n):
+    p = 1
+    while p < n:
+        p *= 2
+    return p
+
+
+class ModelNew(nn.Module):
+    def __init__(self, in_features, out_features, num_groups, bias_shape):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.num_groups = num_groups
+
+        self.matmul = nn.Linear(in_features, out_features)
+        self.bias = nn.Parameter(torch.randn(bias_shape))
+        self.group_norm = nn.GroupNorm(num_groups, out_features)
+
+    def forward(self, x):
+        x = x.contiguous().cuda()
+        M, K = x.shape
+        N = self.out_features
+
+        W = self.matmul.weight
+        bl = self.matmul.bias
+        bp = self.bias
+
+        y = torch.empty((M, N), device=x.device, dtype=x.dtype)
+
+        grid = lambda meta: (triton.cdiv(M, meta['BLOCK_M']), triton.cdiv(N, meta['BLOCK_N']))
+        gemm_swish_bias_kernel[grid](
+            x, W, bl, bp, y,
+            M, N, K,
+            x.stride(0), x.stride(1),
+            W.stride(0), W.stride(1),
+            y.stride(0), y.stride(1),
+        )
+
+        CPG = N // self.num_groups
+        BLOCK_CPG = _next_pow2(CPG)
+        out = torch.empty_like(y)
+        group_norm_kernel[(M * self.num_groups,)](
+            y, out, self.group_norm.weight, self.group_norm.bias,
+            M, N, self.num_groups, CPG,
+            float(self.group_norm.eps),
+            BLOCK_CPG=BLOCK_CPG,
+            num_warps=2,
+        )
+        return out

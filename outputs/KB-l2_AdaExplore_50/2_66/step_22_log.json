@@ -1,0 +1,29 @@
+{
+    "node_id": 22,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM is M=128, N=16384, K=16384 \u2014 very skinny in M. Drop the large-BLOCK_M configs and add tall-N/short-M tiles like `BLOCK_M=16/32, BLOCK_N=256, BLOCK_K=64/128` with `num_warps=8, num_stages=4` so all 128 rows fit in 4-8 row-tiles and the grid is dominated by N tiles (better SM occupancy on the 4090).\n- In `softmax_kernel`, N=16384 fits in a single persistent tile: set `BLOCK_SIZE=16384` (constexpr), drop the loop, do a single-pass max+exp+sum+normalize with `num_warps=8, num_stages=2`. This removes the second pass over global memory entirely.\n- Cache the weight transpose: store `self.weight_t = weight.t().contiguous()` in `__init__` (or lazily on first forward) so the GEMM does contiguous K-major loads on B instead of strided loads via `stride(1)/stride(0)`.",
+    "large_guidance": "- Fuse the softmax directly into the GEMM epilogue using a split-K / two-stage persistent design: stage 1 computes the full row of logits into a scratch buffer (or keeps it in SMEM if you tile a whole row per program), stage 2 does online-softmax over the row. With M=128 and N=16384, one program per row tiling along N with `tl.dot` and an in-kernel reduction across N tiles via atomics or a small second kernel will cut the round-trip to HBM.\n- Alternative: a single \"GEMV-style\" kernel \u2014 one program per output row, loop K in `BLOCK_K=128` chunks with `tl.dot` against an `(1, BLOCK_K) x (BLOCK_K, BLOCK_N)` micro-tile, accumulate the full N=16384 row in registers/SMEM, then do max+exp+sum+normalize before storing. Since M=128 is small, persistence per row eliminates re-reading the output.\n- Switch weights to fp16/bf16 for the matmul (cast once at init, accumulate in fp32) \u2014 on Ada this roughly doubles tensor-core throughput for the dominant 128\u00d716384\u00d716384 GEMM while keeping fp32 accuracy in the softmax.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 23,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

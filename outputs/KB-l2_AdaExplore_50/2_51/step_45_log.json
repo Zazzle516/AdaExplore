@@ -1,0 +1,31 @@
+{
+    "node_id": 45,
+    "parent_node_id": 43,
+    "context_node_ids": [
+        41,
+        42,
+        43
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5791720498191086,
+    "max_reward": 0.5791720498191086,
+    "avg_reward": 0.5791720498191086,
+    "score": [
+        1,
+        1,
+        1.5781694110076463
+    ],
+    "small_guidance": "- The GEMM dominates: M=N=K=8192. Add larger tiles to the autotune sweep (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32/64 with num_warps=4, num_stages=3 is often the sweet spot on RTX 4090 for square fp32 GEMM; also try BLOCK_M=64, BLOCK_N=128, BLOCK_K=32, num_warps=4). Drop the slow configs that the autotuner is unlikely to pick.\n- Allow tf32 in `tl.dot` via `allow_tf32=True` (it's the default but make it explicit) \u2014 the reference uses fp32 matmul which PyTorch runs as tf32 on Ampere/Ada; otherwise you're at a 2\u00d7 disadvantage.\n- Skip the `original_x = x.clone().detach()` \u2014 `x` is the input and isn't mutated; just reuse `x` in the residual add kernel, saving an 8192\u00d72048 fp32 copy (~64 MB) on every forward.",
+    "large_guidance": "- Fuse the entire epilogue (subtract, row-mean, LSE-of-1 = identity, GELU, residual add) into a split-K / streaming GEMM that writes directly into `out`. After the GEMM tile produces `acc[BLOCK_M, BLOCK_N]`, do a partial row-sum, atomic-add into a per-row scalar buffer `rowsum[M]`; a second tiny kernel divides by N, applies GELU, and a third kernel (or the same one via a grid sync via separate launch) broadcasts-adds to `x`. Or split into two launches: (1) GEMM+subtract+rowsum\u2192scalar[M], (2) GELU+residual fused over [M,K]. This removes the `Partial[M, num_tiles]` materialization and its second reduction launch.\n- Consider a split-K GEMM with atomic float adds into `rowsum[M]` directly (no Partial buffer), since you only need the scalar row sum, not the full GEMM output. The full Y[M,N] never needs to be materialized \u2014 every BLOCK_M\u00d7BLOCK_N tile contributes `sum_n(acc - sub) + sum_n(b)` (the bias/sub sums can be precomputed once per N-tile or just folded), reducing memory traffic enormously.\n- Even better: since only `sum_n(Y)` per row is needed, you can fuse as `rowsum[m] = sum_k x[m,k] * (sum_n W[n,k]) + sum(b) - sum(sub)` \u2014 but this is the *exact* algebraic shortcut the safety contract forbids (it collapses the GEMM into a matvec by precomputing a column sum of W). Do NOT do this. Keep the full GEMM executing; just avoid materializing its output.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 46,
+    "global_best_node_id": 36,
+    "global_best_score": [
+        1,
+        1,
+        1.66307092995426
+    ]
+}

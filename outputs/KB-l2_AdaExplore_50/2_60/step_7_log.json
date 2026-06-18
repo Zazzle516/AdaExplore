@@ -1,0 +1,29 @@
+{
+    "node_id": 7,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The grid is (128, OD*OH*OW=33*65*65 \u2248 139425, OC/16=1) which is huge but each launch dim is within limits; the \"invalid argument\" is more likely from `num_warps=2` with BLOCK_OC=16 plus inner static_range over KD*KH*KW=27 expanding register pressure. Try `num_warps=4`, BLOCK_OC=32, and reduce grid by tiling output spatial inside the kernel.\n- Avoid passing `x` as a dummy bias pointer when `HAS_BIAS=False`; pass an actual valid pointer-sized tensor (e.g. a 1-element zeros tensor) \u2014 some Triton/CUDA paths reject aliased pointer args even when unused under constexpr.\n- Ensure `eps` is passed as `tl.constexpr` (currently a raw Python float positional arg) per the safety contract \u2014 this often manifests as launcher-build failures, and can also surface as \"invalid argument\" depending on driver.",
+    "large_guidance": "- Recompute output spatial dims correctly: for ConvTranspose3d the formula is `(I-1)*S - 2*P + K + output_padding`; the current kernel uses this but the gather formulation iterates per-output element over all (kd,kh,kw,ic) which is wasteful when stride=2 (only 1/8 of kernel taps hit). Rewrite as a **scatter-add** (input-stationary): one program per (N, IC tile, ID*IH*IW tile) computes `x * w` outer product into output via `tl.atomic_add`, naturally skipping invalid taps; this matches the conv-transpose skill guidance.\n- Alternatively keep gather but switch to a **GEMM-style** formulation: tile (OC, output-spatial) as BLOCK_M\u00d7BLOCK_N with K=IC*KD*KH*KW, using one program per (N, OC-tile, spatial-tile). One program per single output voxel (current design) launches ~17M programs which is the likely root cause of the launch failure (grid dim 1 = 139425 is fine but combined with tiny work per program and BLOCK_OC=16/num_warps=2 the launcher may be tripping over invalid config).\n- Fuse Swish into the conv-transpose epilogue (already done) but make the second kernel a proper GroupNorm with Welford or two-pass per (N, G) program at `channels_last`-like layout where the C_per_G axis is contiguous within S \u2014 current layout forces strided loads in the affine pass. Consider a layout transpose so weight/bias indexing per element uses `idx // S` cheaply, or precompute per-channel scale/shift = `w*rstd` and `b - mean*w*rstd` once then apply elementwise.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 8,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        0.9352598636363637
+    ]
+}

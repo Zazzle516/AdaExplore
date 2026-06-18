@@ -1,0 +1,29 @@
+{
+    "node_id": 2,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing (4/5 trials, max diff ~1.0): the eval path uses `triton_softmax_bias` which adds bias inside softmax, but `gemm_splitk_kernel` writes via `tl.atomic_add` into a zero-initialized buffer \u2014 this is correct only if the buffer is truly zero. However the real issue is likely race-related when `SPLIT_K>1` combined with autotune re-running configs; switch to `SPLIT_K=1` (single store path) or always atomic-add and ensure `out` is `zeros` (already done). Also verify the K-loop bound: `n_iters = cdiv(K - pid_k*BLOCK_K, k_step)` with `cur_k += k_step` looks right, but `mask_m`/`mask_n` use the per-program M/N which is fine. The most likely bug: autotuner re-launches the kernel on the same `out` buffer during tuning, doubling atomic adds. Disable autotune or pre-zero inside the wrapper between trials, or drop SPLIT_K entirely.\n- Add an autotune `reset_to_zero=['c_ptr']` argument so the autotuner zeros the output between trial launches \u2014 this is the standard fix for split-K atomic-add kernels.\n- Once correct, sweep `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, SPLIT_K=1, num_warps=8, num_stages=4` with a GROUP_M=8 swizzle; M=128 is small so prefer larger BLOCK_M tiles (128) and pid_m grid of 1, focusing parallelism on N (16384/256=64 tiles) \u00d7 SPLIT_K.",
+    "large_guidance": "- Drop SPLIT_K entirely: M=128, N=16384, K=16384 gives 128\u00d716384 = 2M output elements with K=16384 reduction; a standard non-split GEMM with `BLOCK_M=64, BLOCK_N=128, BLOCK_K=32`, `GROUP_M=8`, persistent grid is sufficient and avoids the atomic-add correctness hazard. Fuse bias add into the GEMM epilogue directly (load bias[offs_n] once before store).\n- For eval mode, fuse bias+softmax into a single two-pass kernel that consumes the GEMM output (current design) but make sure dropout is a no-op in eval (it is). For training mode, also write a fused dropout+softmax kernel using a counter-based RNG (`tl.rand` with seed+offset) so training path doesn't fall back to PyTorch.\n- Consider a persistent split-N softmax: one program per row, BLOCK_SIZE=4096 with num_warps=8, online (single-pass) softmax using running max+sum updates to halve memory traffic vs. the current 3-pass implementation.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 3,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

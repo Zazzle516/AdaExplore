@@ -1,0 +1,27 @@
+{
+    "node_id": 18,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4060681505903266,
+    "max_reward": 0.4060681505903266,
+    "avg_reward": 0.4060681505903266,
+    "score": [
+        1,
+        1,
+        0.15006224237019422
+    ],
+    "small_guidance": "- Add `triton.autotune` over `BLOCK_W \u2208 {4,8,16}`, `num_warps \u2208 {2,4,8}`, `num_stages \u2208 {2,3}`; current OW=2 makes BLOCK_W=8 wasteful \u2014 try BLOCK_W=2 with more programs in the (N,OD,OH) axis.\n- Restructure the channel loop to process multiple channels per inner iteration and use `tl.max` over a vector instead of nested 6\u00d76\u00d76 Python-unrolled loops (216 iterations \u00d7 64 channels = 13824 loads per program is the bottleneck); collapse the 216 window loads into a single `tl.arange(0, 216)` gather per channel.\n- The conv_transpose3d (torch) almost certainly dominates the 69ms runtime \u2014 the fused pool+sum is on a tiny tensor (16\u00d764\u00d764\u00d764\u00d764 \u2192 16\u00d71\u00d72\u00d72\u00d72). Profile to confirm; if conv is >90% of time, tuning the pool kernel is pointless.",
+    "large_guidance": "- The torch `ConvTranspose3d` is the dominant cost and must be replaced with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile) scatters the `input \u00d7 weight` outer product into the output grid, handling stride=2, padding=2, kernel=5. Fuse the bias add into the epilogue.\n- Alternatively, since the entire output of conv_transpose is immediately reduced by a 6\u00d76\u00d76 max-pool then summed over channels to a tiny (16,1,~10,~10,~10) tensor, consider a single mega-fused kernel: one program per output element computes the conv_transpose contributions for its 6\u00d76\u00d76 input-receptive-field window, max-pools, and accumulates the channel sum \u2014 avoiding ever materializing the full (16,64,64,64,64) conv output (~64MB, the main memory traffic cost).\n- Use channels_last_3d layout for the conv weight and input so the IC reduction axis is contiguous in the GEMM-K dimension; autotune BLOCK_OC/BLOCK_SPATIAL/BLOCK_IC around 32/16/32.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 19,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.9494847335423198
+    ]
+}

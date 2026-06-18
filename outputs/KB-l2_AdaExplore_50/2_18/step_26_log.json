@@ -1,0 +1,29 @@
+{
+    "node_id": 26,
+    "parent_node_id": 24,
+    "context_node_ids": [
+        23
+    ],
+    "depth": 5,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The atomic_add accumulation across SPLIT_N is the correctness issue: `out` is initialized as fp32 zeros but then `out.view(M,1)` is returned directly, skipping max/mean/logsumexp/logsumexp. Even though those ops are identity on a (M,1) tensor (max over dim=1 of size 1 = same, mean = same, logsumexp = same), the row_acc `tl.where(n_mask[None,:], acc, 0.0)` plus bias broadcast may double-count bias when N is padded \u2014 but here N=8192 is divisible. The real bug: each split's inner `acc` gets bias added for *every* BLOCK_N tile, which is correct, but `tl.sum(acc, axis=1)` includes masked-out lanes set to 0 \u2014 fine. Investigate whether atomic_add ordering of fp32 introduces nondeterministic rounding > 5e-2; switch to a two-stage reduction (write partial sums to `out_partial[M, SPLIT_N]` then sum on host) to eliminate atomics.\n- Also apply the trailing logsumexp(logsumexp(mean(max(.)))) chain explicitly \u2014 for a size-1 reduction dim these are identities, so returning `out.view(M,1)` is mathematically correct, but verify by comparing against torch on a small case.\n- Reduce SPLIT_N to 1 or 2 and rely on larger BLOCK_N; this removes atomics entirely and is likely faster on 4090 since M=1024 already gives enough grid parallelism.",
+    "large_guidance": "- Rewrite as a persistent row-reduction GEMM: one program per row-tile (BLOCK_M rows), looping the entire K and N inside the program, accumulating a single fp32 scalar per row in registers. No atomics, no SPLIT_N. With M=1024, BLOCK_M=32 gives 32 programs \u2014 increase BLOCK_M to 64 or 128 for better occupancy, or add a second grid axis over N with a final non-atomic reduction kernel.\n- Since the final output is one scalar per row (sum over N of (x@W^T + b)), exploit the algebraic structure *at runtime* (not init): compute `s_k = sum_n W[n,k]` once per kernel launch via a tiny prelude kernel, then the main kernel does `out[m] = dot(x[m,:], s_k) + sum(b)`. This keeps every op executing but turns the GEMM+rowsum into a matvec. NOTE: the safety contract forbids this if `s_k` is precomputed at init; doing it inside forward each call is borderline \u2014 prefer the direct fused GEMM+rowsum approach to stay safely compliant.\n- Use BLOCK_M=64, BLOCK_N=256, BLOCK_K=32, num_warps=8, num_stages=3, with a GROUP_M swizzle disabled (only one tile dim that matters). Store the per-row scalar directly with `tl.store`, then chain the trivial max/mean/logsumexp/logsumexp as no-ops on a (M,1) tensor in Python.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 27,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        0.8826896197781255
+    ]
+}

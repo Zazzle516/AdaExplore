@@ -1,0 +1,30 @@
+{
+    "node_id": 37,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        3,
+        15
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5091121519543259,
+    "max_reward": 0.5091121519543259,
+    "avg_reward": 0.5091121519543259,
+    "score": [
+        1,
+        1,
+        1.0001752536231885
+    ],
+    "small_guidance": "- The output store is NCHW while the accumulator tile is laid out per (M=N*OH*OW, N=OC); the current scatter does 4 separate strided stores per row. Switch the output to NHWC (write contiguous OC tile per (n,oh,ow) row) and do a single permute back to NCHW outside the kernel, or fuse the permute into a tiny epilogue kernel \u2014 this should remove a significant fraction of the store latency.\n- Add autotune configs with BLOCK_K=128 (IC=64 means only 1 K-iter at K=64, but with K=128 the compiler can issue wider loads); also try BLOCK_M=64/BLOCK_N=128 num_warps=4 stages=4 and BLOCK_M=128/BLOCK_N=128 num_warps=4 stages=4 \u2014 current best is likely a 256x64 config that may be over-warped for OC=128.\n- Hoist `OH*OW`, `IW*IC`, `KH*KW*IC` into precomputed scalars and replace the per-row divmod (`offs_m // (OH*OW)`) with a 2D program grid over (N, OH*OW tile, OC tile) so n_idx is a scalar per program \u2014 eliminates a vector divide/mod on the hot path.",
+    "large_guidance": "- fast_p\u22481.0 vs the recorded baseline means the kernel is already at parity; the real headroom is in (a) avoiding the NHWC\u2194NCHW permutes on x and y each call and (b) using tensor cores via fp16/tf32. Consider an implicit-GEMM kernel that consumes NCHW directly (gather IC as the inner K loop with stride IH*IW), keeping weight in (OC, IC, KH, KW) layout, and emits NCHW so no permutes are needed in forward.\n- Switch the GEMM to tf32 (`tl.dot(..., allow_tf32=True)` / input_precision='tf32') \u2014 Ada has strong tf32 throughput and the Mish epilogue tolerates the extra ulp easily under 5e-2 tolerance. This alone can ~2x the matmul phase.\n- Make the kernel persistent over the OC tile for a fixed (n, oh, ow) tile: load the BLOCK_M\u00d7(IC*9) input patch once into SMEM/registers and sweep all OC tiles, since OC=128 is small (only 1-2 N-tiles). This amortizes the im2col gather, which is the main non-GEMM cost at IC=64.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 38,
+    "global_best_node_id": 30,
+    "global_best_score": [
+        1,
+        1,
+        1.2899456542056078
+    ]
+}

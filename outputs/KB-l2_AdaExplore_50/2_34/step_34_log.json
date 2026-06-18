@@ -1,0 +1,30 @@
+{
+    "node_id": 34,
+    "parent_node_id": 33,
+    "context_node_ids": [
+        30,
+        32
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.41571574589646465,
+    "max_reward": 0.41571574589646465,
+    "avg_reward": 0.41571574589646465,
+    "score": [
+        1,
+        1,
+        0.22965490364583332
+    ],
+    "small_guidance": "- The LN/GELU/scale kernel is fine but the ConvTranspose3d torch call dominates at fast_p=0.23. Tuning this LN epilogue further (e.g., ROWS_PER_PROG=8, num_warps=4 for C=64, num_stages=3) yields at most a few percent \u2014 not enough to close the gap.\n- If staying small: add `@triton.autotune` over `ROWS_PER_PROG \u2208 {2,4,8,16}` and `num_warps \u2208 {2,4,8}` keyed on `(M, C)`, and try operating on channels-last layout to keep `cols` strictly contiguous (it already is here since C is last dim of contiguous NDHWC view of NCDHW-permuted tensor \u2014 verify the permute is free).\n- Consider reading gamma/beta once per program (already done) and storing in fp32; ensure output write uses the input dtype directly without extra casts.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC-tile, input-spatial-tile)` computes the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and atomically accumulates into the output grid at `(n, oc, d*stride+kd-pad, ...)`. Bias add, LayerNorm (over OC), GELU, and scaling all fuse into a second pass over the materialized output. ConvTranspose3d on this shape (32,64,32,64,64) with 4\u00b3 kernel and stride 2 is the dominant cost.\n- Alternatively, implement ConvTranspose3d as a GEMM: reshape input to `(N*D*H*W, IC)` \u00d7 weight `(IC, OC*KD*KH*KW)` \u2192 col2im scatter-add with stride/padding handled in the index math. Tile `BLOCK_M=32, BLOCK_N=32, BLOCK_K=16, num_warps=4, num_stages=2` to stay safely under SMEM, and wrap in autotune. Fold bias into the GEMM epilogue; do LN/GELU/scale in a separate kernel over the `(N, D', H', W', OC)` channels-last output.\n- Use channels-last (NDHWC) end-to-end so the conv-transpose GEMM-K (IC) and the LN reduction axis (OC) are both contiguous, eliminating the explicit `.contiguous()` and matching the LN kernel's already-good access pattern.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 35,
+    "global_best_node_id": 15,
+    "global_best_score": [
+        1,
+        1,
+        0.7944818288288288
+    ]
+}

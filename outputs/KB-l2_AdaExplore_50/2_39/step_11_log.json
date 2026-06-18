@@ -1,0 +1,29 @@
+{
+    "node_id": 11,
+    "parent_node_id": 10,
+    "context_node_ids": [
+        10
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness issue likely stems from BN training stats: `bn_mean_kernel` accumulates `sum_x` as a per-lane vector and reduces via `tl.sum`, which is fine, but the running_var update uses `var_unbiased` computed via `1/(invstd^2) - eps` \u2014 this is the biased var times correction; PyTorch's BN uses biased var for normalization and unbiased for running_var, which matches, but ensure `running_mean`/`running_var` are float32 and writes happen before returning. Also verify `bn_apply_kernel` reads `X` written by `gemm_scale` \u2014 both row-major, strides match \u2014 OK. The mismatch (~2e-3) suggests the test runs in eval mode and `running_mean`/`running_var` differ from reference because the reference also runs training once per call; check that `self.training` path matches reference exactly (reference uses F.batch_norm via nn.BatchNorm1d which during training updates running stats with biased var * M/(M-1) \u2014 confirm formula).\n- In `bn_mean_kernel`/`bn_var_kernel`, use a single-pass Welford or merge mean+var into one kernel to reduce reload of X (4096\u00d716384 fp32 = 256MB read twice). Fuse mean/var reduction into one kernel with two accumulators.\n- For `gemm_scale_kernel`, since M=N=K=4096 is large and aligned, drop the K-tail mask (use `K % BLOCK_K == 0` fast path) and add larger configs like BLOCK_M=128,BLOCK_N=256,BLOCK_K=64 num_warps=8 num_stages=3.",
+    "large_guidance": "- Rewrite BN to use a two-stage reduction kernel: stage 1 computes per-column partial sums and sum-of-squares across row tiles in parallel (grid = (num_col_tiles, num_row_tiles)), stage 2 reduces partials per column and produces mean/invstd in one pass. Then fuse the apply step with the scale and even with the GEMM epilogue when feasible (write GEMM output in column-tiled layout so BN stats can be computed with on-chip reduction).\n- Consider fusing `(GEMM + scale) -> BN` by writing GEMM output to a transposed layout `[N, M]` so each BN column reduction reads contiguous memory; current `[M, N]` makes BN reductions strided-by-N which is bandwidth-suboptimal.\n- For eval mode, fuse `(x - running_mean) * invstd_pre * weight + bias` entirely into the GEMM epilogue (precompute combined affine `a = scale * invstd * weight`, `b_eff = (bias_gemm * scale - running_mean) * invstd * weight + bn_bias`) \u2014 this is a legal pure-affine fold per the safety contract (no axis is reduced away), eliminating a full BN pass at inference.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 12,
+    "global_best_node_id": 9,
+    "global_best_score": [
+        1,
+        1,
+        0.757505173611111
+    ]
+}

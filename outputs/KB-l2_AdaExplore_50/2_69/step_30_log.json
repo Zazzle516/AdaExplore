@@ -1,0 +1,32 @@
+{
+    "node_id": 30,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        1,
+        21,
+        22,
+        23
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (~0.375 max diff \u2248 9/24) suggests the swizzle math is wrong: `group_id = pid % num_groups; in_group = pid // num_groups` is inverted and also doesn't account for partial groups, mapping multiple programs to the same `pid_n` and skipping others. Replace with the canonical GEMM swizzle: `group_id = pid // GROUP_N; in_group = pid % GROUP_N; pid_n = group_id * GROUP_N + in_group`, or simply drop swizzling and use `pid_n = tl.program_id(0)` directly to confirm correctness first.\n- Once correct, re-enable a proper L2 swizzle keyed on the 2D `(pid_n, pid_oc)` grid (super-grouping along OC) rather than collapsing to 1D, and re-tune `BLOCK_N`/`BLOCK_OC` (try 128\u00d7128, 256\u00d764) with `num_warps=8`, `num_stages=3`.\n- BLOCK_K is set to 16 for IC=8; this wastes half the K-tile. Consider tiling K=IC*KH*KW into a single inner GEMM-K loop (im2col-style indexing) so K=72 maps to BLOCK_K=16 with ~5 iterations \u2014 denser tensor-core utilization than the static KH\u00d7KW outer loop with K=8.",
+    "large_guidance": "- Rewrite as an im2col-style GEMM where GEMM-K = IC*KH*KW (=72) is the single reduction dimension, with one program per (BLOCK_N output-pixel tile, BLOCK_OC tile). Use channels-last input layout so loads along K coalesce, and pre-pack the weight as `[OC, IC*KH*KW]` once in `__init__` (this is a layout transform, not algebraic shortcut) so the W-side load is a contiguous 2D tile.\n- Fuse bias + hardswish + ReLU into the epilogue on the accumulator (already done) and ensure the output is written in NCHW at the end via the stride math, or write channels-last and permute outside if the consumer is NCHW.\n- Consider a persistent-CTA design: with B*OH*OW = 128*126*126 \u2248 2M output pixels and OC=64, the grid is large; a persistent kernel iterating over (pid_n, pid_oc) tiles can amortize launch + improve W-tile reuse across OC tiles for the same spatial tile.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 31,
+    "global_best_node_id": 22,
+    "global_best_score": [
+        1,
+        1,
+        2.1227861676646707
+    ]
+}

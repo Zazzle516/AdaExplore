@@ -1,0 +1,31 @@
+{
+    "node_id": 20,
+    "parent_node_id": 12,
+    "context_node_ids": [
+        10,
+        11,
+        12
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4302693657365737,
+    "max_reward": 0.4302693657365737,
+    "avg_reward": 0.4302693657365737,
+    "score": [
+        1,
+        1,
+        0.34972226732673267
+    ],
+    "small_guidance": "- The elementwise epilogue is already trivial; tuning BLOCK_SIZE/num_warps further on it will not close the gap because ConvTranspose3d dominates the 10.1 ms runtime. If staying in tuning mode, drop num_stages to 2, try BLOCK_SIZE=8192 with num_warps=4, and precompute `bias` broadcast to a (C,) load via `tl.load` with `eviction_policy='evict_last'`.\n- Fuse `output_padding`-aware bias add directly into a custom conv-transpose epilogue rather than as a separate pass over the (N, 64, 32, 64, 64) output tensor (~134M elements) \u2014 the extra full-tensor read/write is wasted bandwidth.\n- Channels-last (NDHWC) layout for the output buffer would let the bias broadcast become a contiguous vector load along the inner dim.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile), computing the outer product `input[n,ic,d,h,w] * weight[ic, oc, kd, kh, kw]` and `tl.atomic_add`-ing into the output grid at `(n, oc, d*stride+kd-pad, h*stride+kh-pad, w*stride+kw-pad)`. ConvTranspose3d is the entire bottleneck (>95% of runtime); the epilogue fusion alone cannot help.\n- Alternatively, implement as a gather-style GEMM: for each output voxel, identify the contributing input voxels (those where `(out_idx + pad - k) % stride == 0`), and run a tiled matmul over `(IC * kd_eff * kh_eff * kw_eff)` reduction dim into `(OC, output_spatial_tile)`. This avoids atomics and maps well to a Triton `tl.dot` epilogue that folds `+ bias` and the `(2x+b)*x + x` math directly into the accumulator before storing.\n- Fold the entire residual/bias/multiply chain `(2*y + bias)*y + y` (where `y = conv_out`) into the conv kernel's epilogue so the full-tensor write happens exactly once. Use NDHWC layout so OC is the contiguous axis and bias broadcast is a single vector load per tile.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 21,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.34972226732673267
+    ]
+}

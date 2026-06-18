@@ -1,0 +1,30 @@
+{
+    "node_id": 49,
+    "parent_node_id": 48,
+    "context_node_ids": [
+        13,
+        48
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5791720498191086,
+    "max_reward": 0.5791720498191086,
+    "avg_reward": 0.5791720498191086,
+    "score": [
+        1,
+        1,
+        1.5781694110076463
+    ],
+    "small_guidance": "- The GEMM dominates but we only need the row-sum of (XW^T + b - s), which is a matvec: X @ (sum_n W[:, n]) is forbidden by the safety contract, but we can still tile much more aggressively along N since each program's output is reduced to a (BLOCK_M,) vector. Try larger BLOCK_N (256/512) with BLOCK_M=64 and BLOCK_K=32/64, num_warps=8, num_stages=3-4 to cut the number of N tiles and atomic/partial traffic.\n- Replace the (num_n_tiles, B) partial buffer + separate reduce kernel with a single atomic_add into a (B,) rowsum buffer in fp32 directly from the GEMM epilogue \u2014 eliminates the second kernel launch and the partial materialization. Initialize rowsum to zero with `torch.zeros`.\n- In `gelu_residual_kernel`, BLOCK_F=2048 with num_warps=8 over a 2D grid (B, IN_F/BLOCK_F) launches 2048*4=8192 programs reading/writing 64MB \u2014 this is bandwidth-bound but fine; try BLOCK_F=4096 num_warps=8 num_stages=2 and confirm coalesced contiguous writes. Also precompute the scalar `g` once per row (program_id(0)) so all F-tiles of a row don't redundantly recompute erf.",
+    "large_guidance": "- The whole pipeline collapses to: out[b, f] = original_x[b, f] + GELU(mean_b), where mean_b = (1/N) * sum_n (x[b,:] @ W[n,:] + bias[n] - sub[n]). The expensive part is computing one scalar per row from a GEMM. A split-K persistent kernel \u2014 one program per row-block, looping over K with tl.dot against a (BLOCK_M, BLOCK_N) tile and immediately summing across N before accumulating \u2014 would keep the row-sum in registers and avoid writing the (B, OUT_F) intermediate entirely. This is what the current kernel does in spirit, but a persistent-CTA design (grid = #SMs, each CTA strides over row blocks) would amortize launch overhead and allow num_stages=4-5.\n- Fuse the GELU+residual into the same kernel as the row-sum: after all N tiles for a row-block are accumulated (use a per-row atomic or a final reduction over N tiles inside the CTA via shared memory), compute mean \u2192 GELU \u2192 broadcast-add to original_x in the same kernel by re-streaming original_x. This eliminates the rowsum/gelu_residual kernel launches; the residual write is the dominant memory traffic anyway (B*IN_F = 64MB read + write).\n- Alternatively, split into two independent kernels that run concurrently: (1) compute rowsum/GELU scalar per row (small output, B floats); (2) elementwise residual add that reads `original_x` and broadcasts the scalar. Since (2) is pure memcpy + scalar add (~128MB traffic at ~1TB/s \u2248 0.13ms), the achievable lower bound is dominated by the GEMM row-reduction; aim BLOCK_N\u2265256 and split-K parallelism along K with atomic_add into the (B,) buffer.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 50,
+    "global_best_node_id": 36,
+    "global_best_score": [
+        1,
+        1,
+        1.66307092995426
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 20,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4521952937538652,
+    "max_reward": 0.4521952937538652,
+    "avg_reward": 0.4521952937538652,
+    "score": [
+        1,
+        1,
+        0.5306111734693878
+    ],
+    "small_guidance": "- The conv_transpose3d dominates runtime here \u2014 tuning the GAP kernel further will not move fast_p. The current 29.4ms vs 15.6ms baseline means the torch ConvTranspose3d is itself slower than the baseline's recorded path; verify by timing just `self.conv_transpose(x)` and compare.\n- If keeping torch conv, ensure input is `.contiguous(memory_format=torch.channels_last_3d)` and weight likewise \u2014 cuDNN has faster algos for NDHWC on Ampere.\n- Drop the two-stage split for GAP (S=8400 is small, N*C=2048 already saturates SMs); a single-pass kernel with BLOCK_S=1024, num_warps=4 will be cheaper than launching partial+finalize.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile), computing the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and atomically scattering into the output grid at `(d+kd, h+kh, w+kw)` (no stride/padding here, kernel_size=5). Fold the scale_factor and the BN affine (A,B from running stats) into the bias added during scatter, so the output tensor already contains `x*A_full + B_full` ready for GAP.\n- Even better: since the final op is GAP (reduction to (N,C,1,1,1)), fuse the entire pipeline. GAP over the conv_transpose output equals `sum_{n,oc} A[oc] * sum_{d,h,w}(conv_out[n,oc,d,h,w]) / S + B[oc]`. The inner sum of conv_transpose output equals `sum over input positions of input[n,ic,...] * (sum of weight[ic,oc,:,:,:])` weighted by how many output positions each input contributes to (a small per-position multiplicity that depends on border effects). Precompute the per-(kd,kh,kw) multiplicity mask of valid output positions and fuse into a single GEMM-like kernel: output `(N, OC) = einsum(input[N,IC,D,H,W], weight_eff[IC,OC])` \u2014 this is legitimate fusion (every op still runs at runtime on actual input) and collapses the heavy transpose conv into a small matmul.\n- If full fusion is too aggressive, at minimum write a direct conv_transpose3d kernel (gather formulation: one program per (N, OC tile, output-spatial tile), loop over kd/kh/kw and ic with masked loads from input at `(d-kd, h-kh, w-kw)`) and fuse the scale+BN-affine epilogue plus the GAP reduction into the same kernel by accumulating per-program partial sums and atomically adding into a (N,C) output.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 21,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        1.599996769230769
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 16,
+    "parent_node_id": 13,
+    "context_node_ids": [
+        1,
+        15
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.6604161745816373,
+    "max_reward": 0.6604161745816373,
+    "avg_reward": 0.6604161745816373,
+    "score": [
+        1,
+        1,
+        2.2484334402985073
+    ],
+    "small_guidance": "- Add larger autotune configs (num_warps=4/8, num_stages=3/4) and try BLOCK_OC fixed at 16 (matches OC exactly) to reduce masking overhead \u2014 current pow2 is already 16, but explicitly hoisting mask_oc-free paths when OC==BLOCK_OC helps.\n- Reorder loops so the `ic` loop is the outermost and reuse the 8 spatial input loads across OC via a `tl.dot`-style inner product: load x for the 8 positions once per (kd,kh,kw,ic), then accumulate into all 8 accumulators with a single weight vector \u2014 current code already does this but the redundant address math per OC lane can be hoisted (compute base offsets once per ic/kd/kh/kw).\n- Tile multiple pooled output positions per program (e.g. 2x2 in PH\u00d7PW) so weight loads amortize across more outputs; this is the biggest leverage since BLOCK_OC=16 is tiny and weight reuse is currently low.",
+    "large_guidance": "- Restructure as a scatter-add ConvTranspose: one program per (N, ic, id, ih, iw) input voxel computes the (OC, KD, KH, KW) outer product and atomically accumulates into the OD\u00d7OH\u00d7OW output. Then a second small kernel does maxpool+softmax+sub+swish+channel-max. Current gather form recomputes stride-divisibility checks 27\u00d73 times per output and only writes 1 scalar per program \u2014 very low arithmetic intensity.\n- Alternative: fuse into a GEMM-style kernel where each program handles a tile of pooled output positions (BLOCK_P=8 or 16) \u00d7 all OC=16 channels, performing the conv as a matmul of (OC, IC*KD*KH*KW) weight with an implicit im2col patch matrix of (IC*KD*KH*KW, BLOCK_P\u00d7POOL_K\u00b3). Weight is then reused across BLOCK_P\u00d78 output positions instead of 8.\n- Persist the pooled (N, OC, PD, PH, PW) intermediate in registers/SMEM by making one program own a full channel column at a single (n,pd,ph,pw): the softmax+sub+swish+max chain only needs 16 floats and is already trivial \u2014 the bottleneck is the conv, so any redesign should focus on weight/input reuse rather than the epilogue.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 17,
+    "global_best_node_id": 16,
+    "global_best_score": [
+        1,
+        1,
+        2.2484334402985073
+    ]
+}

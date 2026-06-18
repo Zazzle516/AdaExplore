@@ -1,0 +1,30 @@
+{
+    "node_id": 22,
+    "parent_node_id": 21,
+    "context_node_ids": [
+        11,
+        21
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness bug: in the `tl.dot(w, x)`, `w` has shape `[BLOCK_M, BLOCK_K]` and `x` has shape `[BLOCK_K, BLOCK_N]`, but `x` is built as `ih = oh[None,:] + kh[:,None]` giving `[BLOCK_K, BLOCK_N]` \u2014 that's fine, but `w_ptrs = w_ptr + offs_m[:,None]*K + offs_k[None,:]` is `[BLOCK_M, BLOCK_K]`, also fine. The accumulation looks correct shape-wise. The actual issue is likely the `x_mask` does not check `ih < H` and `iw < W`; out-of-bounds reads return whatever `other=0.0` gives but the pointer arithmetic on negative/oversized indices can still alias valid memory because `mask_k` is True for valid k regardless of ih/iw. Add `(ih < H) & (iw < W) & (ih >= 0) & (iw >= 0)` to `x_mask` (here padding=0 so just `< H/W` since ih,iw \u2265 0 by construction, but still mask `iw < W` to avoid wrap-around when `ow + kw` exceeds W-1 only for tail tiles \u2014 wait, OW = W-KW+1 so `ow + kw \u2264 W-1` always; but for masked-out `offs_n` (tail), `ow` and `oh` are garbage from `offs_n // OW`, which can yield ih \u2265 H). Add `mask_n` into the address validity, not just into `other`.\n- After fixing correctness, the small tile `(32,32,16)` safe config should be added to autotune to avoid SMEM overflow on edge shapes; current largest `(128,128,32, stages=3)` uses ~96KB which is borderline but ok.\n- Consider channels_last input layout so the K-dim (IC*KH*KW) gather is more coalesced; currently `stride_xc = H*W` so loads across IC are strided.",
+    "large_guidance": "- Rewrite as an im2col-style GEMM where one program handles `(N, OC tile, OHW tile)` and the input gather computes `ih, iw` per `(k, n)` element with explicit bounds masking `mask_n & (ih < H) & (iw < W)` folded into the load mask \u2014 the current kernel's mask omits the spatial validity of garbage tail-`offs_n`, which is the root cause of the ~0.002 max-diff mismatch.\n- Fuse batch into the M dimension or persist over batch within a single program: grid `(cdiv(N*OHW, BLOCK_N), cdiv(OC, BLOCK_M))` lets the weight tile be reused across all batch elements, reducing weight traffic by N\u00d7.\n- Use `tl.dot` with the layout `w[M,K] @ x[K,N]` and keep `BLOCK_K` a multiple of 16 (KH*KW*IC = 576, so BLOCK_K=32 or 64 with masked tail) for good tensor-core utilization; epilogue (min, +bias, *scale) stays fused.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 23,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.686288845766129
+    ]
+}

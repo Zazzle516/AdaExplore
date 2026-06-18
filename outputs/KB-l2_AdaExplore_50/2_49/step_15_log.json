@@ -1,0 +1,30 @@
+{
+    "node_id": 15,
+    "parent_node_id": 12,
+    "context_node_ids": [
+        10,
+        12
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.45133635353535356,
+    "max_reward": 0.45133635353535356,
+    "avg_reward": 0.45133635353535356,
+    "score": [
+        1,
+        1,
+        0.5235249166666667
+    ],
+    "small_guidance": "- The softmax/sigmoid epilogue is already cheap; the runtime is dominated by `nn.ConvTranspose3d`. Tuning BLOCK_S of the epilogue further will not move `fast_p` meaningfully \u2014 focus must shift to the conv-transpose itself.\n- If keeping the current epilogue, fuse it directly with the bias add of the conv-transpose (drop bias=True from torch op, pass bias into the Triton kernel) to remove one full read/write pass over the (N, 64, 32, 64, 64) tensor.\n- Try a single-pass channelwise softmax: with C=64 and BLOCK_C=64, set BLOCK_S=128, num_warps=8, num_stages=2, and keep the row resident in registers \u2014 the current 2D tile already does this, so the win is small.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add (or input-stationary gather) kernel: one program per (N, OC tile, output-spatial tile), computing `output[n, oc, od, oh, ow] = \u03a3_{ic,kd,kh,kw} x[n, ic, id, ih, iw] * w[ic, oc, kd, kh, kw]` with the standard ConvT index math `id*stride + kd - pad = od` solved for valid (id,kd) pairs. The conv dominates ~10ms of runtime and is the only place with real headroom.\n- Fuse the entire epilogue (bias add + channel softmax + sigmoid) into the conv-transpose kernel's store path: have the conv kernel produce a full (C=64) channel column for one spatial location per program, then reduce-max / exp / sum / divide / sigmoid in registers before storing. With OC=64 fitting in a single tile, the softmax reduction is free.\n- Use channels_last_3d layout so the OC axis is contiguous; tile (BLOCK_OC=64, BLOCK_SPATIAL=32 or 64) with BLOCK_K over `IC*KD*KH*KW`=864 in chunks of 32, num_warps=4, num_stages=2 \u2014 well within the 132 KB SMEM budget on the 4090.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 16,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.5287083316831683
+    ]
+}

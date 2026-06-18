@@ -1,0 +1,30 @@
+{
+    "node_id": 11,
+    "parent_node_id": 10,
+    "context_node_ids": [
+        3,
+        10
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Remove the largest-tile configs that blow shared memory on a 4090 (BLOCK_M=128, BLOCK_N=512, BLOCK_K=32 with stages=3, and BLOCK_M=64, BLOCK_N=512, BLOCK_K=64 with stages=3). Keep tiles \u2264 128\u00d7256 with BLOCK_K\u226464 and num_stages\u22643; e.g. (128,128,32,s3), (64,128,64,s3), (128,256,32,s3,w8), (64,256,32,s4,w8).\n- Drop num_stages to 2 for any BLOCK_N\u2265256 config so double-buffered K loads don't exceed 101376 B of smem.\n- Since smallest BLOCK_N in configs needs to match the partial buffer allocation (MAX_NUM_PID_N = cdiv(N, smallest_BLOCK_N)), align that constant with the smallest BLOCK_N you actually keep (e.g. 128).",
+    "large_guidance": "- The whole \"fused GEMM + rowmax + (x - mean(dim=1)) + GELU\" pipeline reduces a (B,1) tensor's mean over its singleton dim, which is identically the tensor itself, so diff is always 0 and GELU(0)=0. Output is structurally a zeros (B,1) tensor \u2014 current design is computing a GEMM whose result is then discarded. A correct redesign must still execute the GEMM at runtime (safety contract), but should recognize that only the rowmax of `xW^T + b` needs to be materialized; emit zeros for the final output while keeping the full GEMM+rowmax kernel running.\n- Restructure as a two-stage persistent reduction: stage 1 is a tiled GEMM with `tl.dot` (BLOCK_M=64, BLOCK_N=128, BLOCK_K=32, num_stages=2-3, num_warps=4-8) that writes per-(row, n-tile) partial maxes; stage 2 is one program per row reducing across n-tiles. This avoids the worst-case smem pressure of 512-wide N tiles and matches RTX 4090 limits.\n- Allocate the partial buffer as (M, NUM_PID_N) with NUM_PID_N derived from the actually-selected BLOCK_N (use a `pre_hook` or compute outside autotune by fixing BLOCK_N as a constexpr per-call rather than autotuning it), so layout, strides, and reduction kernel agree.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 12,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        1.7954388916792234
+    ]
+}

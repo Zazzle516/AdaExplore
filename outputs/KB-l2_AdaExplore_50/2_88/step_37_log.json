@@ -1,0 +1,31 @@
+{
+    "node_id": 37,
+    "parent_node_id": 30,
+    "context_node_ids": [
+        23,
+        24,
+        30
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The GroupNorm kernel is incorrect: CPG = 8192/256 = 32, but the kernel loads only `BLOCK_CPG` channels per group and computes mean/var over those \u2014 this is actually fine logically, but the issue is likely that `gamma`/`beta` are GroupNorm's affine weights applied per-channel; verify the formula matches PyTorch (it does). The real bug is likely numerical: `tl.where(mask, x, 0.0)` is correct, but check that GroupNorm uses biased variance (it does). Try setting `eps=1e-5` explicitly matched and ensure inputs/weights are fp32 throughout.\n- Try `num_warps=2` for the GN kernel since CPG=32 is tiny (one warp's worth); large num_warps wastes lanes. Also consider processing multiple groups per program to amortize launch overhead (grid is N*G = 1024*256 = 262144 programs, too many).\n- For the GEMM, add larger tiles like `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64` with num_warps=8 and BLOCK_K=64 configs to better hit the 8192\u00d78192 K dimension on the 4090.",
+    "large_guidance": "- Restructure the fused post-GEMM kernel: instead of one program per (batch, group), use one program per batch row that handles all G groups sequentially with C/G channels each loaded in a vectorized BLOCK. This reduces grid from 262144 to 1024 and amortizes loads of gamma/beta/mw which can be cached in registers/L2.\n- Consider fusing GroupNorm directly into the GEMM epilogue is hard (needs cross-tile reduction). Instead keep two kernels but make the GN kernel persistent: one program per batch row, loop over groups, since C=8192 fits comfortably (32KB/row in fp32).\n- Verify correctness first: max_diff ~0.004 with avg ~0.00005 suggests a small numerical/edge bug \u2014 possibly the multiply_weight is applied with wrong broadcasting, or sigmoid stability issues. Double-check the formula: PyTorch's GroupNorm applies affine per-channel after normalization, and the per-group mean/var is over C/G channels (no spatial dims here since input is 2D).",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 38,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

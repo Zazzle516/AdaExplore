@@ -1,0 +1,30 @@
+{
+    "node_id": 46,
+    "parent_node_id": 11,
+    "context_node_ids": [
+        8,
+        11
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM is huge (M=128, N=K=32768) and M is tiny \u2014 current configs with BLOCK_M=64/128 leave most of BLOCK_M masked off. Add configs with BLOCK_M=16 or 32 and larger BLOCK_N (e.g. 256) / BLOCK_K (64-128) so the grid has more N-tiles working on the small M dimension; also try num_stages=4 with BLOCK_K=64 to better overlap the long K loop.\n- Pre-transpose W once in `__init__` to layout [K, N] contiguous along N so the inner load of B in the K-loop is fully coalesced (currently `w_ptrs` uses stride_wn on the N axis with stride_wk=1 on the K axis, giving a strided load along the contiguous K dim of `nn.Linear` weight). Cache the transposed weight and bias as buffers to avoid the per-call `.contiguous().cuda()`.\n- Replace the second `reduce_partials_kernel` launch by accumulating into the output with `tl.atomic_add` (one float per row) directly from the GEMM epilogue, eliminating the partial buffer write/read and the second kernel launch entirely.",
+    "large_guidance": "- With M=128 and N=K=32768, this is effectively 128 independent dot-products of length 32768\u00b732768 reduced to 128 scalars. Reformulate as a \"split-K + row-persistent\" kernel: grid = (M, num_n_splits); each program streams a [BLOCK_N, BLOCK_K] weight tile, multiplies by the row-vector x[m, k:k+BLOCK_K], applies bias+sigmoid, sums over the BLOCK_N tile, and atomically adds the scalar into out[m]. This avoids materializing the [M, N] activation entirely and keeps W streaming bandwidth-bound (which is the true bottleneck: ~4 GB of weights read per forward).\n- Since the output is a single scalar per row, drop `tl.dot` entirely for the M=128 case and use a vectorized FMA loop: load x[m, :] in chunks into registers (or just stream it), broadcast-multiply against W tiles, add bias, sigmoid, sum. The arithmetic intensity is fixed by the weight read, so the design goal is \"read W exactly once, coalesced, with maximum num_warps\".\n- Persist the row of x in shared memory / registers across the N loop (one program per row, looping over N tiles) so x is loaded once per row rather than once per (M-tile, N-tile) pair as in the current GEMM formulation.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 47,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

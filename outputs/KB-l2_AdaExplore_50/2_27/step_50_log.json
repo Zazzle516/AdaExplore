@@ -1,0 +1,29 @@
+{
+    "node_id": 50,
+    "parent_node_id": 49,
+    "context_node_ids": [
+        49
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.46430420298680586,
+    "max_reward": 0.46430420298680586,
+    "avg_reward": 0.46430420298680586,
+    "score": [
+        1,
+        1,
+        0.6305096746411484
+    ],
+    "small_guidance": "- The conv3d kernel uses `mask_s` on weight-broadcast loads but the inner loop has IC*KD*KH*KW=192 iterations of scalar `tl.load(w_ptr + w_idx)`; preload all weights for (pid_oc) into registers/SMEM once before the spatial loop, or tile over output spatial with larger BLOCK_S=2048/4096 and num_warps=8 to amortize weight loads.\n- Add autotune configs with BLOCK_S in {1024, 2048, 4096} \u00d7 num_warps {4,8} \u00d7 num_stages {2,3,4}; the output spatial S = 13*29*29 = 10933, so larger BLOCK_S reduces grid\u00d7weight-reload pressure.\n- In the post-conv kernel, S=10933 per (B,group) is small enough that `BLOCK_S >= S` works with a single iteration \u2014 add a config with BLOCK_S=16384 (or use a one-shot variant) and drop the outer `for s_start` loop overhead.",
+    "large_guidance": "- Redesign conv3d as an implicit-GEMM: one program per (B, OC_tile, S_tile) with BLOCK_OC=16 (full OC), BLOCK_S=64\u2013128, BLOCK_K=IC*KD*KH*KW=192 reduced via `tl.dot`. This turns the 192 scalar FMAs per output point into a single tensor-core MMA and reuses weights across the OC tile.\n- Fuse hardswish + GroupNorm partial reductions directly into the conv kernel's epilogue: each conv program already produces a contiguous (OC, BLOCK_S) tile, so apply hardswish in-register and atomically accumulate per-(B,group) sum and sumsq into a small workspace. A second tiny kernel finalizes mean/rstd and emits (B,C). This removes the full (B,OC,S)=10933\u00d716\u00d71024 writeback (~700 MB) which currently dominates bandwidth.\n- Alternatively, since the final output is (B, OC) \u2014 only spatial means matter for the mean-pool \u2014 design the kernel so each program reduces over its S-tile in registers and atomically accumulates (sum_hs, sum_hs\u00b2) per (B, group) and (sum_hs) per (B, channel). Then a finalize kernel computes `(per_ch_mean - group_mean) * rstd * gamma + beta`. This avoids materializing conv_out entirely.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 51,
+    "global_best_node_id": 30,
+    "global_best_score": [
+        1,
+        1,
+        0.8530881206706803
+    ]
+}

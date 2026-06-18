@@ -1,0 +1,29 @@
+{
+    "node_id": 5,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        4
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM (1024\u00d78192\u00d78192) dominates runtime at 3.33ms; the GN+Swish+Mul+Swish kernel is already tiny by comparison. Tuning the existing fused norm kernel cannot close the gap \u2014 focus must shift to the matmul.\n- For the existing fused kernel: try `GROUPS_PER_BLOCK=16` (BLOCK_C=512) with `num_warps=8` to amortize launch overhead across 256 groups, and consider folding the bias of `nn.Linear` into the GN reduction via `x_after_gemm` already containing it (no change) \u2014 but this saves at most microseconds.\n- Ensure GEMM output is row-major contiguous fp32 so a custom matmul can stream loads cleanly; pre-transpose the Linear weight at init to `[in_features, out_features]` for B-contiguous-K access.",
+    "large_guidance": "- Replace `nn.Linear` with a custom Triton tiled GEMM: tile shape `BLOCK_M=128, BLOCK_N=128, BLOCK_K=32` (or 64\u00d7128\u00d732), `GROUP_M=8` swizzle, `num_warps=4`, `num_stages=3-4`, using `tl.dot` with the bias added in the epilogue. M=1024, N=8192, K=8192 is a textbook GEMM where Triton can hit >80% of cuBLAS on the 4090.\n- Consider fusing the bias-add and even the first stage of GroupNorm's partial-sum into the GEMM epilogue (write `x` and per-group partial sums of `x` and `x\u00b2` from the GEMM tile). With `out_features=8192` and `num_groups=256` (32 channels/group), each `BLOCK_N=128` tile spans exactly 4 groups \u2014 clean alignment for atomic-free partial reductions across N tiles using a second pass.\n- Simpler alternative: keep GEMM and fused-GN as two kernels but make the GEMM the custom Triton kernel; the post-GEMM kernel already runs in ~150\u00b5s which is near-optimal for that workload.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 6,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

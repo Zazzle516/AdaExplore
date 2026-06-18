@@ -1,0 +1,30 @@
+{
+    "node_id": 35,
+    "parent_node_id": 21,
+    "context_node_ids": [
+        3,
+        21
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5028203128563667,
+    "max_reward": 0.5028203128563667,
+    "avg_reward": 0.5028203128563667,
+    "score": [
+        1,
+        1,
+        0.9482675810650252
+    ],
+    "small_guidance": "- Add `triton.autotune` over the apply kernel with configs sweeping `BLOCK_S \u2208 {128, 256, 512, 1024}` and `num_warps \u2208 {4, 8}`, `num_stages \u2208 {2, 3, 4}`; C=16 is tiny so widening BLOCK_S should improve occupancy and reduce launch overhead.\n- Fuse the stats pass and the apply pass by making the stats kernel persistent per `(N, C)` with BLOCK_S large enough to cover S=14\u00d730\u00d730=12600 in a few iterations, then have a single second kernel; or better, eliminate the stats kernel altogether by using one program per `(N, s-tile)` that computes per-channel mean/invstd inline (since C=16 fits in registers, a single program can load the whole channel slice and reduce \u2014 no inter-program sync needed for stats).\n- Switch the output write to also fuse the conv bias add if the conv is left as torch \u2014 currently irrelevant since conv dominates; focus tuning effort on the conv path instead.",
+    "large_guidance": "- The torch `nn.Conv3d` is now the dominant cost (post-conv fused kernel is already lean). Replace it with a custom Triton im2col-style GEMM kernel: one program per `(N, OC tile, output-spatial tile)`, gathering input via computed offsets, with `BLOCK_M=64, BLOCK_N=64, BLOCK_K=32` autotuned. Output shape is `(128, 16, 14, 30, 30)` \u2014 small OC (16) means tile OC=16 fully and tile output-spatial heavily.\n- Fold the first `* multiplier` and the InstanceNorm stats accumulation into the conv epilogue: as the GEMM writes each output element, multiply by `multiplier[oc]` and accumulate per-(N,C) sum and sum-of-squares into a separate buffer via `atomic_add` (or via a second small reduction kernel over the conv output). This collapses three passes (conv, mul, stats) into one.\n- Then a single final kernel does: load conv-mul output, apply `(x - mean) * invstd`, clamp, multiply by multiplier again, reduce-max over C, write `(N, D', H', W')`. With C=16, the channel dim fits in one warp; one program per `(N, spatial-tile)` keeps it simple and coalesced.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 36,
+    "global_best_node_id": 28,
+    "global_best_score": [
+        1,
+        1,
+        1.6580138687333263
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 27,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        5
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.41571574589646465,
+    "max_reward": 0.41571574589646465,
+    "avg_reward": 0.41571574589646465,
+    "score": [
+        1,
+        1,
+        0.22965490364583332
+    ],
+    "small_guidance": "- The LN+GELU+scale kernel is fine; the bottleneck is the torch ConvTranspose3d which dominates the 38.4 ms runtime (baseline 8.8 ms). Tuning the tail kernel further will not close the gap \u2014 the conv must be replaced.\n- If keeping the LN tail, add `@triton.autotune` over `num_warps \u2208 {2,4,8}` and `num_stages \u2208 {2,3}` for `BLOCK_C=64` (the actual C here), but expected gain is <5%.\n- Ensure the conv output is in channels-last-3d so the LN row stride matches `C=64` contiguously without an explicit `.contiguous()` reshape copy.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: each program tiles `(N, OC_tile, output_spatial_tile)` and accumulates `input \u00d7 weight` outer products into the output grid, handling stride=2/padding=1/output_padding in index math. With N=32, OC=64, output spatial 32\u00d764\u00d764, this is the dominant work.\n- Alternatively implement transposed conv as a gather-style GEMM: for each output voxel, sum over `(ic, kd, kh, kw)` positions where `(od + pad - kd) % stride == 0` maps to a valid input voxel \u2014 one program per `(N, OC tile, D'\u00b7H'\u00b7W' tile)`, K-loop over `IC*KD*KH*KW`, with autotune tiles `(BM,BN,BK) \u2208 {(32,32,16),(64,32,16),(32,64,16),(64,64,32)}`, num_warps=4, num_stages=2 to fit SMEM.\n- Fuse the LayerNorm-over-channels + GELU + scale into the conv epilogue only if the GEMM tile spans full C=64 per output voxel; otherwise keep LN as a second kernel reading the conv output. Given C=64 is small, a tile with BN covering all 64 OC enables in-kernel LN reduction along the channel axis directly on the accumulator, eliminating an entire pass over the 32\u00b764\u00b732\u00b764\u00b764 fp32 tensor.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 28,
+    "global_best_node_id": 15,
+    "global_best_score": [
+        1,
+        1,
+        0.7944818288288288
+    ]
+}

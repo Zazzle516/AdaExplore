@@ -1,0 +1,29 @@
+{
+    "node_id": 4,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The compile error is in the multi-group kernel: `tl.arange(0, GROUPS_PER_BLOCK)` and `tl.arange(0, CH_PER_G)` require both bounds to be `tl.constexpr`. `CH_PER_G` is currently passed as a runtime int. Add `CH_PER_G: tl.constexpr` (and ensure `GROUPS_PER_BLOCK` is constexpr, which it already is) \u2014 pass `CH_PER_G` as a constexpr from the launcher.\n- For this shape (N=1024, C=8192, num_groups=256, CH_PER_G=32), use GROUPS_PER_BLOCK=8 \u2192 BLOCK_C=256 with num_warps=4, num_stages=2. Consider autotuning GROUPS_PER_BLOCK \u2208 {4,8,16} and num_warps \u2208 {4,8}.\n- Load gamma/beta/mw once per program (they are channel-only) and broadcast; current code already does this \u2014 keep it but ensure they're loaded as 1D `[GP*CH_PER_G]` reshaped, which is cheap.",
+    "large_guidance": "- The GEMM (1024\u00d78192\u00d78192) dominates runtime here, not the GroupNorm+Swish epilogue. A from-scratch rewrite should replace `nn.Linear` with a tiled Triton GEMM (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8, num_warps=4, num_stages=3) that fuses the bias add into the epilogue. The current design leaves cuBLAS in place and only optimizes the trailing ~1% of work.\n- Optionally fuse the GroupNorm+Swish+Multiply+Swish into the GEMM epilogue only if the N tile aligns with a whole group (CH_PER_G=32 divides BLOCK_N=128 \u2192 4 groups per N tile), enabling per-tile group reductions without a second pass. Otherwise keep them as two kernels: a fused GEMM+bias, then the existing fused GN+Swish+Mul+Swish.\n- For the norm kernel itself, prefer a per-row persistent layout: one program per batch row processes all 256 groups by looping over group blocks, reusing the loaded gamma/beta/mw vectors across rows via L2. This amortizes channel-param loads and increases arithmetic intensity.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 5,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

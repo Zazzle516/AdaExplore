@@ -1,0 +1,27 @@
+{
+    "node_id": 35,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4243987976969697,
+    "max_reward": 0.4243987976969697,
+    "avg_reward": 0.4243987976969697,
+    "score": [
+        1,
+        1,
+        0.301290081
+    ],
+    "small_guidance": "- The fused softmax/sub/swish/max kernel is tiny (output is ~128*4*8*8 elements); it's not the bottleneck. Focus tuning effort on replacing the ConvTranspose3d. For the current fused tail, try `num_warps=1` and grid coalescing along S contiguously \u2014 but expected savings are <1ms.\n- Add `triton.autotune` over `num_warps \u2208 {1,2,4}` for the fused tail kernel just to free the parameter, but do not expect it to move fast_p.",
+    "large_guidance": "- The dominant cost is `nn.ConvTranspose3d` (input 128\u00d73\u00d716\u00d732\u00d732 \u2192 128\u00d716\u00d732\u00d764\u00d764) plus the subsequent MaxPool3d. With fast_p\u22480.30 and the tail already fused, replacing ConvTranspose3d with a custom Triton kernel is the high-headroom move. Implement it as a scatter-add of the `input \u00d7 weight` outer product into the output grid, handling stride=2, padding=1, output_padding=1 in index math; use one program per (N, OC tile, output-spatial tile) with channels-last layout so IC is the contiguous GEMM-K axis.\n- Better: fuse ConvTranspose3d + MaxPool3d into one kernel that, for each output (n, oc, d_out, h_out, w_out) of the pooled tensor, directly computes the max over the 2\u00d72\u00d72 post-conv window by gathering the contributing input positions for each of the 8 conv outputs and reducing. This eliminates writing the full 128\u00d716\u00d732\u00d764\u00d764 intermediate (~256MB) entirely.\n- Push further by fusing the pool output straight into the existing softmax/sub/swish/max kernel: one persistent program per (n, d_out, h_out, w_out) loads all 16 channels' pooled values (computing them on the fly from conv) into registers, runs softmax across channels, subtracts, swish, and reduces to max \u2014 producing the final (N, D, H, W) output in a single pass with no global intermediates.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 36,
+    "global_best_node_id": 30,
+    "global_best_score": [
+        1,
+        1,
+        6.958200484988453
+    ]
+}

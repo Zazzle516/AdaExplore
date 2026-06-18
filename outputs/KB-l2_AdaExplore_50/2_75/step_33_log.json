@@ -1,0 +1,30 @@
+{
+    "node_id": 33,
+    "parent_node_id": 30,
+    "context_node_ids": [
+        24,
+        30
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM (1024x8192x8192) dominates runtime; F.linear via cuBLAS is already fast but the trailing bias-add kernel writes an 8192x1024 transposed layout \u2014 switch to writing `(1, N, M, 1)` directly with contiguous M (inner) so the store is coalesced, and try BLOCK_M=256/BLOCK_N=64 with num_warps=8.\n- For `gn_min_kernel`, N=8192 with NUM_GROUPS=512/GROUP_SIZE=16 \u2014 try num_warps=16 and num_stages=2, and consider processing 2-4 rows per program to amortize the weight/bias loads of gn_w/gn_b.\n- Fuse the bias broadcast into the GN+min kernel's output path by storing the broadcast result directly (one program per (row, N-tile)) to eliminate the second kernel launch entirely.",
+    "large_guidance": "- Replace `F.linear` with a custom tiled Triton GEMM (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8, num_warps=8, num_stages=3) that fuses bias add into the epilogue \u2014 this is the heavy op (~137 GFLOPs) and cuBLAS isn't tuned for this exact shape on 4090.\n- Fuse GroupNorm + min reduction into the GEMM epilogue is impractical (needs full row), so instead make a two-kernel pipeline: (1) custom GEMM writing y, (2) a single fused kernel that does GN + min + bias-broadcast-store in one pass, producing `(N, M)` output directly with the bias added per-N inside the same kernel that computed min (broadcast on-the-fly during the store loop over N tiles).\n- Consider keeping the final output in `(1, N, M, 1)` layout by writing `min_val + bias[n]` into N-strided positions inside the GN/min kernel using a second pass over offs_n \u2014 eliminates the standalone add_bias_kernel and its 8192*1024 store traffic for an intermediate.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 34,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

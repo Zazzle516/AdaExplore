@@ -1,0 +1,27 @@
+{
+    "node_id": 39,
+    "parent_node_id": 5,
+    "context_node_ids": [],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The current kernel computes the full GEMM tile then sum-reduces, which is wasteful: switch to autotune over `BLOCK_M \u2208 {32,64,128}`, `BLOCK_N \u2208 {64,128,256}`, `BLOCK_K \u2208 {32,64,128}`, `num_warps \u2208 {4,8}`, `num_stages \u2208 {2,3,4}` to find a configuration better matched to M=128, N=K=32768.\n- Pre-transpose W to shape `[K, N]` once in `__init__` (store as a buffer) so the inner load is `w[offs_k, offs_n]` with the contiguous N-axis on the inner dim, enabling clean coalesced loads and a faster `tl.dot(x_tile, w_tile)` without `tl.trans` in the K-loop.\n- Increase `BLOCK_M` to 128 (M=128 fits exactly in one program) and use a single program over M with `BLOCK_N=128`, `BLOCK_K=64`, `num_warps=8`, `num_stages=4` so the K-loop has enough pipelining to hide the 32768-element K reduction.",
+    "large_guidance": "- The dominant cost is the 128\u00d732768\u00d732768 GEMM (~275 GFLOPs); the pool+sum+scale is trivial. Restructure as a standard 2D-tiled GEMM grid `(cdiv(M,BLOCK_M), cdiv(N,BLOCK_N))` writing pooled-and-summed partials into a `[grid_m, grid_n]` workspace, then a tiny second kernel reduces along the N-tile axis and applies scale. This exposes parallelism across N (currently serialized inside one program), which is critical when M=128 is far below the SM count.\n- Alternatively, make the kernel persistent over N with a 2D grid `(pid_m, pid_n)` where each program computes its `(BLOCK_M, BLOCK_N)` GEMM tile, fuses bias + max-pool(kernel=2) + partial sum in the epilogue, and atomically adds the per-row partial scalar to the output (with scale applied at the end via a separate small kernel or by absorbing scale into the atomic). This keeps the fusion but unlocks N-dimension parallelism.\n- Use a GROUP_M swizzle (group=8) on the 2D grid for L2 reuse of x rows across N tiles, and pre-transpose W to `[K,N]` once at init so the GEMM hot path avoids `tl.trans`.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 40,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

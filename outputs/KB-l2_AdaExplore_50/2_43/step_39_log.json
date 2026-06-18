@@ -1,0 +1,30 @@
+{
+    "node_id": 39,
+    "parent_node_id": 36,
+    "context_node_ids": [
+        10,
+        36
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4507996853566785,
+    "max_reward": 0.4507996853566785,
+    "avg_reward": 0.4507996853566785,
+    "score": [
+        1,
+        1,
+        0.5190974041925974
+    ],
+    "small_guidance": "- Add a `triton.autotune` over `BLOCK_W \u2208 {8,16,32,64}` and `num_warps \u2208 {2,4,8}`, `num_stages \u2208 {2,3}`; current `BLOCK_W=16, num_warps=8` likely under-utilizes the 64\u00d764 output tiles given C=64 (BLOCK_C=64 means each warp does little work per program).\n- Reduce the grid by tiling over `oh` too (e.g. process 2-4 `oh` rows per program), so each program amortizes more of the index math and pointer arithmetic; the current grid is `4*32*64*4 = 32k` programs which is excessive for this small per-program workload.\n- Switch the output store to use `tl.store` on a contiguous 1-D `[BLOCK_W]` vector with the precomputed base offset (avoid recomputing `ow * out_stride_w` since `out_stride_w==1`).",
+    "large_guidance": "- The pool+LSE+ReLU kernel is already correct and cheap; the dominant runtime is the `nn.Conv3d` (3\u00d73\u00d73, 32\u219264, on 4\u00d732\u00d7128\u00d7128). Replace it with a custom Triton conv3d kernel: implicit-im2col GEMM with one program per `(N, OC tile, output-spatial tile)`, K-loop over `IC*kD*kH*kW=864`. Use `BLOCK_M=64 (OC), BLOCK_N=64-128 (spatial), BLOCK_K=32`, channels-last layout so IC is contiguous along K.\n- Fuse the conv epilogue directly with the 2\u00d72\u00d72 maxpool, channel-LSE, and ReLU: have the conv kernel produce output tiles in registers, then within the same program perform the pool reduction across the 8 spatial neighbors and the LSE reduction across OC \u2014 eliminates the full conv-output write/read (huge: 4\u00b764\u00b732\u00b7128\u00b7128\u00b74B \u2248 512 MB traffic saved).\n- Alternative if full fusion is too complex: write a standalone conv3d Triton kernel that writes the 4D conv output, keep the existing pool/LSE/ReLU kernel; this alone should dominate the speedup since cuDNN conv3d here is the bottleneck.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 40,
+    "global_best_node_id": 27,
+    "global_best_score": [
+        1,
+        1,
+        1.1936464374482187
+    ]
+}

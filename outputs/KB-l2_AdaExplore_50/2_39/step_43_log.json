@@ -1,0 +1,31 @@
+{
+    "node_id": 43,
+    "parent_node_id": 25,
+    "context_node_ids": [
+        13,
+        16,
+        21
+    ],
+    "depth": 5,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4816511884805502,
+    "max_reward": 0.4816511884805502,
+    "avg_reward": 0.4816511884805502,
+    "score": [
+        1,
+        1,
+        0.773622304964539
+    ],
+    "small_guidance": "- The GEMM `torch.addmm(b, x, W.t())` (16384x4096 @ 4096x4096) dominates runtime; tuning the apply/stats kernels won't move the needle. If staying small, at least fuse the scale+stats pass into the GEMM epilogue so we don't re-read the 256MB Y matrix three times (GEMM write, stats read, apply read+write).\n- For the existing apply kernel, try `BLOCK_M=128, BLOCK_N=256, num_warps=8, num_stages=4` and drop the redundant `scale_ptr` argument (it's already folded into `a`); also bump stats kernel to `BLOCK_M=1024, BLOCK_N=256, M_CHUNKS=8` to reduce atomic traffic.\n- Allocate `y` as an empty buffer and pass it into a custom matmul rather than calling `torch.addmm` then rewriting in-place \u2014 the in-place store still costs a full HBM round-trip.",
+    "large_guidance": "- Replace `torch.addmm` with a tiled Triton GEMM (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8, num_warps=4, num_stages=3) that fuses bias add + scale multiply + partial sum/sumsq accumulation per N-tile in the epilogue, atomic-adding into N-sized sum/sumsq buffers. This collapses the GEMM, scale, and stats pass into one launch.\n- After the fused GEMM+stats kernel, finalize mean/invstd on the host (tiny N=4096 reduction), compute affine `a,b`, and run a second pass that re-reads the materialized Y and writes normalized output \u2014 or, better, store Y once and a separate apply kernel reads/writes it with BLOCK_M=128, BLOCK_N=256.\n- Alternative: two-pass design where the GEMM writes Y to HBM, then a column-reduction kernel computes mean/var (one program per N-tile, looping over M with vectorized loads), then an apply kernel. Even this two-pass design, with a custom GEMM, should beat cuBLAS+BN since the BN work is overlapped/fused. The current kernel keeps cuBLAS and only fuses the cheap tail, so it can't beat baseline.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 44,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.7791481785714286
+    ]
+}

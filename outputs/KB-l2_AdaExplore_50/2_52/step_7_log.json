@@ -1,0 +1,29 @@
+{
+    "node_id": 7,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The activation in the reference is `tanh(softplus(x)) * x` which is Mish, but check the BN training path: the reference applies BN to the activation output, but `bn_train_apply` computes statistics from `conv_mish` correctly \u2014 however the unbiased_var update uses `NHW/(NHW-1)` which matches PyTorch. The likely correctness issue is numerical: `tl.exp(2.0 * sp)` overflows for large sp; use `t = tanh(sp)` via the stable form `(1 - exp(-2*sp))/(1 + exp(-2*sp))` for sp>0, or compute Mish as `x * (1 - 2/(exp(2*sp)+1))`. Also the threshold `sp > 20` for the linear branch should still feed through tanh \u2014 for x>20, sp\u2248x, and tanh(sp)\u22481, so `mish\u2248x`; current code computes `e2 = exp(2*sp)` which overflows to inf and `(inf-1)/(inf+1)` = nan. Guard tanh: `t = tl.where(sp > 20.0, 1.0, (e2-1)/(e2+1))` with `e2 = tl.exp(2.0 * tl.minimum(sp, 20.0))`.\n- Once correctness is fixed, raise autotune coverage with `(BLOCK_M=128, BLOCK_N=64, BLOCK_K=32, num_warps=8, num_stages=2)` and `(64,128,32)` \u2014 OUT_HW=126*126=15876 and OC=128 favor larger M tiles.\n- Consider switching the conv input layout to channels-last so the IC dim becomes contiguous along K; current strided gather along `ic*stride_xc` is the dominant memory cost.",
+    "large_guidance": "- Rewrite the conv as an implicit-GEMM with channels-last input/weight layout: pack x to NHWC and w to (OC, KH, KW, IC) so the K-loop walks contiguous memory. This eliminates the strided per-channel gather that dominates the current kernel and allows wider BLOCK_K (e.g. 64) for better tensor-core utilization.\n- Fuse BN-eval scale/shift into the conv epilogue (one kernel from input to BN-output in eval mode). For training, fuse the BN reduction with the conv store by having each conv block atomically accumulate per-channel partial sums into a global buffer, then a small finalize kernel computes mean/var and a second pass applies \u2014 or keep two passes but make the apply kernel fuse with the next op.\n- For the reduction kernel, parallelize across (C, row-blocks) with atomic add or a 2D grid + tree reduction; one program per channel over 64*126*126\u22481M elements is serializing the reduction unnecessarily.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 8,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.34309302
+    ]
+}

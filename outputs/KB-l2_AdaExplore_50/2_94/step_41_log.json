@@ -1,0 +1,30 @@
+{
+    "node_id": 41,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        3,
+        23
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure likely stems from GroupNorm reading `weight`/`bias` with `grp * CG + offs` \u2014 that's correct, but the GEMM output is computed in fp32 while the reference uses fp32 too, so the issue may be elsewhere. Check that `bias_lin + bias_extra` matches the reference order (reference does `Linear(x) + self.bias`, which equals `x@W.T + bias_lin + bias_extra` \u2014 this is fine). The real bug is likely that hardtanh+mish are applied to fp32 acc that already includes bias correctly \u2014 verify by running a tiny case. Also ensure `Wt = W.t().contiguous()` matches strides expected by the kernel.\n- Increase autotune coverage with smaller `BLOCK_K=16` configs and a `BLOCK_M=64, BLOCK_N=64` config for tail tiles; M=N=1024 with K=8192 favors larger BLOCK_K (64\u2013128) and `num_stages=4`.\n- For GroupNorm with CG=32 (8192/256), use `BLOCK=32` and `num_warps=1` or 2 \u2014 current `num_warps=4` over a 32-wide reduction wastes warps. Consider grouping multiple (row,group) pairs per program for better occupancy.",
+    "large_guidance": "- Fuse GroupNorm into the GEMM epilogue is impractical (groups span N tiles), but a persistent GEMM that writes hardtanh+mish output to a scratch buffer and a second kernel that processes one row across all groups in a single program (BLOCK_N covers full 8192 width, two-pass mean/var per group via segment reductions) would cut launches and improve locality.\n- Since M=1024, N=K=8192, the GEMM dominates (~137 GFLOPs). A split-K or stream-K GEMM with `BLOCK_M=128, BLOCK_N=128, BLOCK_K=64`, `num_warps=8`, `num_stages=4`, plus dropping the explicit `Wt = W.t().contiguous()` copy (cache it once at init, not per-forward) would help. Currently `_get_wt` recomputes on version change but the `.cuda()` call is redundant if already on device.\n- Consider keeping the post-GEMM tensor in fp32 and doing GroupNorm with one program per (row, group) where the row-major layout makes the 32 contiguous elements a single cacheline load \u2014 current kernel is fine structurally, but a fused \"row-wide GroupNorm\" that loads the entire row of 8192 elements once and computes all 256 group stats in registers would eliminate redundant global memory traffic.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 42,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

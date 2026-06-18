@@ -1,0 +1,29 @@
+{
+    "node_id": 14,
+    "parent_node_id": 13,
+    "context_node_ids": [
+        13
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.45280400354939526,
+    "max_reward": 0.45280400354939526,
+    "avg_reward": 0.45280400354939526,
+    "score": [
+        1,
+        1,
+        0.5356330292825106
+    ],
+    "small_guidance": "- The fused kernel loads the full weight tile [OC=16, K_VOL=81] = 1296 fp32 elements once, then runs P^3=8 inner iterations each doing a 16\u00d781 GEMM via tl.sum. Try widening num_warps to 8 and num_stages=4 in the autotune list to better hide the inner-loop latency, and add configs that group multiple output spatial tiles per program (e.g. process 2 or 4 (od,oh,ow) per program so the weight tile is amortized further).\n- Replace the per-iteration `ic_idx/kd_idx/kh_idx/kw_idx` divmod chain with precomputed offset tables: build `k_offs`-indexed offset deltas as constants (since IC, KD, KH, KW are constexpr) by computing them once outside the di/hi/wi loop and only adding the (d_conv,h_conv,w_conv) base per iteration \u2014 this removes 4 divisions \u00d7 81 lanes \u00d7 8 inner iters from each program.\n- Move bias addition + softmax outside the gather: compute the 8 conv outputs first into an [8, OC] register tile, then do a single softmax+max-reduce across the 8 window positions, which avoids redundant max/exp/sum work and lets the compiler schedule the 8 GEMMs together.",
+    "large_guidance": "- Restructure as an im2col-style GEMM: one program computes a tile of (N, OC, output-spatial) where the spatial tile spans an entire pool window (P^3=8 conv outputs that share most of their input footprint). The shared input region is (KD+P-1)^3 = 4^3 = 64 elements per channel \u00d7 3 channels = 192 fp32 \u2014 load once into SRAM, then do 8 small GEMMs against the [OC, IC*KD*KH*KW] weight, fuse softmax(dim=1) and max-pool reduction across the 8 positions in registers, write OC outputs. This maximizes input reuse which the current kernel does not exploit (it reloads overlapping input patches 8 times).\n- Alternatively, since OC=16 and IC*KD*KH*KW=81 are tiny, make the kernel persistent over batch: one program per (oh_tile, ow_tile) iterates N*OD in a loop, keeping the weight tile resident across many output positions. Combined with channels-last input layout this turns the kernel into a streaming K-reduction with very high weight reuse.\n- Consider merging both pools (total stride 4) directly into the conv kernel \u2014 the current code only fuses one pool because pool_factor is set to pool_kernel_size**2=4. That is already done; verify the 4\u00d7 output reduction is correctly halving grid size, and ensure the output write is coalesced (currently OC is the slowest-varying axis in the store, which is fine, but a channels-last output would coalesce the 16-wide store into a single transaction).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 15,
+    "global_best_node_id": 9,
+    "global_best_score": [
+        1,
+        1,
+        0.7670958700808058
+    ]
+}

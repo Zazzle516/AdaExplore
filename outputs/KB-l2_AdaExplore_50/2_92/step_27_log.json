@@ -1,0 +1,30 @@
+{
+    "node_id": 27,
+    "parent_node_id": 26,
+    "context_node_ids": [
+        23,
+        26
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Replace `g_scalar: tl.constexpr = c // C_PER_GROUP` with a plain Python assignment `g_scalar = c // C_PER_GROUP` (since `c` is already a constexpr loop var from `tl.static_range`, the result is a Python int and does not need re-annotation). Constexpr cannot be reassigned each loop iteration.\n- Alternatively, inline the expression directly: `tl.load(mean_ptr + base_mr + (c // C_PER_GROUP))`.\n- Keep the autotune sweep but add `BLOCK_HW: 4096` with `num_warps=8, num_stages=2` since HW=16384 \u2014 fewer launches per row often wins on a bandwidth-bound LSE.",
+    "large_guidance": "- The two-kernel split (stats then apply+LSE) reads the conv tensor twice. A single persistent kernel per (N, HW-tile) that computes group stats inline (loop over C once to accumulate per-group sum/sumsq into a small register array indexed by group, then a second loop over C to apply norm/tanh/hardswish/residual/LSE) would halve global traffic. Stats are per (N, group) not per (N, group, HW-tile), so this requires either redundant computation per tile or one program per N that streams C twice while keeping HW resident.\n- Consider fusing the conv into a custom im2col-GEMM kernel that writes directly into the GN-reduction layout (channels_last for the activation), so the entire forward becomes conv\u2192GN-stats\u2192apply-LSE with the conv output never materialized to HBM in NCHW. Given conv likely dominates runtime here (8\u219264 channels, 3\u00d73, 128\u00d7128 spatial), replacing it is the highest-headroom move.\n- For the LSE-apply pass, switch to one program per (N, HW-tile) with the C loop unrolled via `tl.static_range` and load gamma/beta/mean/rstd once into registers before the loop body, computing `a = rstd*gamma`, `b = beta - mean*a` per channel outside any per-pixel work.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 28,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.9741129195974848
+    ]
+}

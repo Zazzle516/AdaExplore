@@ -1,0 +1,30 @@
+{
+    "node_id": 48,
+    "parent_node_id": 45,
+    "context_node_ids": [
+        30,
+        45
+    ],
+    "depth": 7,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 1.3939396644127224,
+    "max_reward": 1.3939396644127224,
+    "avg_reward": 1.3939396644127224,
+    "score": [
+        1,
+        1,
+        8.300002231404958
+    ],
+    "small_guidance": "- Add autotune configs that tile the OC dimension as well (BLOCK_OC=8/16) with TILE_W=8/16; current OC=16 is small but `acc` is (OC, TILE_W) \u2014 keeping OC as a constexpr full-vector is fine, but try larger TILE_W (32, 64) with num_warps=8/num_stages=2 to amortize the 8 pooled-position recompute per (kd,kh,kw,ic).\n- Hoist the `bv2` add inside each pooled-position max chain by adding bias once (it's the same `bv2` for all 8); also try precomputing `id_d0/id_d1`, `ih_h0/ih_h1` outside the kw loop (they don't depend on kw) \u2014 currently they are recomputed per kh iteration which is fine, but ensure the compiler sees the kw loop body only depends on offs_t \u2014 keep as static_range.\n- Try a config where the program handles two `dp` rows (TILE_DP=2) so the `id_d` masks are reused across more work, and sweep num_stages=4 with num_warps=8 for TILE_W=16/32 to overlap the global loads better.",
+    "large_guidance": "- Restructure as a gather-style direct conv-transpose: precompute a small input-index lookup per (kd, ddp) pair using `STRIDE=2, PAD=1` symmetry \u2014 for stride=2 only one of the two pooled positions inside a 2-wide window has each (kd,kh,kw) contributing, so half the loads are guaranteed-invalid. Specialize the kernel to S=2 and split the kernel taps by parity (even/odd taps for ddp=0/1 separately), cutting effective KD*KH*KW work by ~8\u00d7.\n- Persist input tile across the OC GEMM: load an (IC, small DHW input tile) into SRAM once per program, then sweep all KD*KH*KW*8-pool-positions against it, instead of re-issuing 8 masked loads per (ic,kd,kh,kw). With IC=3 the input footprint is tiny and reuse is large.\n- Move the (softmax + subtract + swish + max-over-C) epilogue to operate directly on the bias-added accumulator rows already in registers (already done) \u2014 but consider rewriting the per-pool max as `tl.maximum` over 8 (OC,TILE_W) tiles using a tree reduction in registers prior to the softmax, since softmax is taken per pooled spatial position; verify that the current kernel correctly applies softmax *after* maxpool (it does: maxpool over depth/H/W per channel, then softmax over channel). Keep that fusion boundary but precompute pool-spatial offsets at host side and pass as a small index tensor to avoid repeated divmod arithmetic.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 49,
+    "global_best_node_id": 45,
+    "global_best_score": [
+        1,
+        1,
+        8.547236340425533
+    ]
+}

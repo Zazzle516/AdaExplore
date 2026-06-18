@@ -1,0 +1,29 @@
+{
+    "node_id": 39,
+    "parent_node_id": 19,
+    "context_node_ids": [
+        2
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5059530811633315,
+    "max_reward": 0.5059530811633315,
+    "avg_reward": 0.5059530811633315,
+    "score": [
+        1,
+        1,
+        0.9741129195974848
+    ],
+    "small_guidance": "- The conv now dominates runtime (fast_p=0.97). Replace the torch conv with a custom Triton im2col-GEMM kernel and fuse the bias add into its epilogue; keep the existing fused groupnorm+tanh+hardswish+residual+LSE chain.\n- For the existing fused_lse_kernel, the stats kernel is a separate launch reading the full conv tensor \u2014 consider folding stats computation into the same persistent kernel pass per (N,G) using a two-pass structure, or at least add larger BLOCK_S configs (2048) and a num_warps=16 candidate to the autotuner.\n- Hoist `a = inv_std * gamma` and `b = beta - mean * a` per channel into a small precomputed `[N, C]` table (one tiny kernel) so the inner LSE loop only does one load per channel instead of four.",
+    "large_guidance": "- The big remaining headroom is the `nn.Conv2d` (8\u219264, k=3, 128\u00d7128). Write a Triton im2col-style GEMM conv: one program per (N, OC tile, output-spatial tile), with BLOCK_M=64 (OC), BLOCK_N=64-128 (spatial), BLOCK_K = IC*kh*kw = 72 (pad to 128). Fuse bias and store in channels-last to feed downstream kernels efficiently.\n- Consider a single mega-fused kernel: conv \u2192 groupnorm (per (N,G)) \u2192 tanh \u2192 hardswish \u2192 residual \u2192 LSE. Since GN reduces over channels-per-group \u00d7 S, structure as one program per (N, G) that computes conv outputs for that group's channels, accumulates GN stats, then does a second pass over the same group computing activation+residual and accumulating per-spatial LSE running max/sumexp. Final cross-group LSE merge in a tiny kernel.\n- Alternatively, since C=64 fits in registers, make the post-conv pipeline a single persistent kernel per (N, spatial-tile) that loads all 64 channels of the tile, computes per-group mean/var via tl.sum across the spatial tile's contribution combined into globally-aggregated stats (requires two-pass over spatial), then applies the activation+LSE.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 40,
+    "global_best_node_id": 31,
+    "global_best_score": [
+        1,
+        1,
+        0.977100996037968
+    ]
+}

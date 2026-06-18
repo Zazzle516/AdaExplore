@@ -1,0 +1,29 @@
+{
+    "node_id": 22,
+    "parent_node_id": 9,
+    "context_node_ids": [
+        9
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure stems from the inner-loop masking: `tile_acc` uses `mask_n` from the *current* n-tile, but when N is divisible by BLOCK_N this is fine \u2014 the real bug is more likely that `tl.dot(x_vals, tl.trans(w_vals))` is fine but `row_acc += tl.sum(tile_acc, axis=1)` is summing the *full* BLOCK_N including padding when N % BLOCK_N != 0. Since N=8192 divides cleanly by all tested BLOCK_N, check instead whether the mask_m on the store is correct and whether `out` allocation matches. Add `tl.where(mask_m, row_acc, 0.0)` before scale and ensure `out` is zero-initialized via `torch.zeros` not `torch.empty`.\n- Pass `SCALE` as a runtime float (0-d tensor or just kwarg float) rather than constexpr to avoid recompilation issues per scaling_factor; or keep constexpr but verify it's threaded through autotune.\n- Add larger BLOCK_M configs (256) since M=1024 and we only need 4-8 programs; current grid of 8-16 programs underutilizes the 128 SMs of 4090. Better: switch to a 2D grid over (M-tiles, N-tiles) with atomic_add reduction, or split-K style across N.",
+    "large_guidance": "- The kernel launches only \u2308M/BLOCK_M\u2309 programs (8-32), severely underutilizing the RTX 4090's 128 SMs. Redesign with a 2D grid: one program per (M-tile, N-tile), each computing a partial row-sum of its tile, then `tl.atomic_add` into a `(M,)` output buffer. Apply the `*scale` in a tiny second kernel or fuse the scale by pre-scaling. This exposes ~8192/128 * 1024/128 = 512 programs.\n- Alternative redesign: since the final output is just (M, 1) = sum_n(x @ W^T)/2 * s, the true math still requires the full M*N*K work (no shortcut allowed). Use a split-K-over-N persistent kernel: each program owns a strip of M rows and a strip of N columns, accumulates `tl.dot` results, row-reduces immediately to a `(BLOCK_M,)` vector, then atomic-adds to global. This avoids materializing the (M,N) intermediate while parallelizing over N.\n- Ensure correctness first: initialize the output with `torch.zeros`, use `atomic_add` for cross-program accumulation, and apply scaling in a tiny epilogue kernel after the main reduction completes.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 23,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        0.10046266372480192
+    ]
+}

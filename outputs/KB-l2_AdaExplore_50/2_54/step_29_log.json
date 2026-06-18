@@ -1,0 +1,29 @@
+{
+    "node_id": 29,
+    "parent_node_id": 26,
+    "context_node_ids": [
+        27
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4481575521169138,
+    "max_reward": 0.4481575521169138,
+    "avg_reward": 0.4481575521169138,
+    "score": [
+        1,
+        1,
+        0.497299804964539
+    ],
+    "small_guidance": "- The output store writes NCHW but `offs_m` is contiguous in OW while the inner store dimension is `offs_m[:, None]` \u2014 this is fine, but consider writing NHWC output and then a final permute, or better, swap the tile orientation so `BLOCK_N` (channels) is the contiguous store dim. Add autotune configs with `BLOCK_M=128, BLOCK_N=128` and `BLOCK_M=64, BLOCK_N=128` (K=32/64), num_warps=4/8, num_stages=2/3 \u2014 current configs are biased toward narrow N (BLOCK_N=64) even though OC=64 fits exactly in one tile, leaving spatial tile underprovisioned.\n- The im2col gather of `x_block` is the bottleneck: for KH=KW=3, IC=64 \u2192 K_TOTAL=576. Try `BLOCK_K=64` or `128` consistently and unroll the KH*KW loop explicitly (loop over kh,kw with `BLOCK_K=IC=64` per step) so input offsets become `(oh+kh)*IW + (ow+kw)` shared across all K lanes \u2014 this removes the divmod-by-KHW per iteration and makes loads dense along IC.\n- Drop the `x.permute(0,2,3,1).contiguous()` if you switch to a kh/kw-loop scheme on NCHW input directly; the permute itself costs a full tensor copy each forward.",
+    "large_guidance": "- Restructure as an explicit `for kh in range(KH): for kw in range(KW):` loop with the inner GEMM-K being just IC (=64, a single `BLOCK_K`). One program computes a `(BLOCK_OH * BLOCK_OW, BLOCK_OC)` output tile. This eliminates per-iteration divmod, makes input loads coalesce along IC contiguously, and reuses weight tiles across spatial positions. Keep input in NCHW (or NHWC) but with IC contiguous so the K-vector load is one cache line per row.\n- Persist on the OC dimension: since OC=64 fits in a single `BLOCK_N=64` tile, launch grid as `(N, cdiv(OH*OW, BLOCK_M))` with no OC tiling \u2014 load the full (OC, IC*KH*KW) weight tile chunk-by-chunk once per program and accumulate. This drastically reduces weight re-reads.\n- Write output directly in NCHW with `BLOCK_N` along channels but store transposed (so the channel axis is the fast store dim for a single row-of-OW), or alternatively produce NHWC output and fuse a final transpose into the next consumer \u2014 current store pattern with `offs_m[:, None]` as the inner index has stride-OW writes across the M dim, hurting store coalescing.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 30,
+    "global_best_node_id": 12,
+    "global_best_score": [
+        1,
+        1,
+        1.1094821598101265
+    ]
+}

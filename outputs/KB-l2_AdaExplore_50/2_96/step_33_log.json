@@ -1,0 +1,31 @@
+{
+    "node_id": 33,
+    "parent_node_id": 6,
+    "context_node_ids": [
+        8,
+        21,
+        26
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.06961992952556426
+    ],
+    "small_guidance": "- The gather kernel recomputes the same conv-transpose output voxel for each of the MK^3 pool positions independently \u2014 but adjacent pool positions in the same program share no work. Reduce per-program redundancy by tiling multiple output channels together (e.g. process BLOCK_OC=4 or 8 OCs per program) so the inner IC\u00d7KD\u00d7KH\u00d7KW loop's input loads are amortized across OCs. Add `num_warps=8`, `num_stages=2`.\n- Wrap the kernel in `triton.autotune` over `BLOCK_OC \u2208 {1,2,4,8}` and `num_warps \u2208 {4,8}` keyed on `(N, OC, PD*PH*PW)`.\n- For the avg+clamp epilogue, total = PD*PH*PW is small (~8\u00b716\u00b716=2048); use a single-pass `BLOCK=2048` (next pow2) with `num_warps=4` and skip the loop.",
+    "large_guidance": "- Switch from a gather-style ConvTranspose3d (which inverts stride math and wastes work on invalid kernel taps) to a **scatter-add via implicit GEMM**: treat each input voxel as contributing an `(OC, KD*KH*KW)` outer product, and accumulate into the dense output grid. Equivalently, implement as an im2col-style GEMM where the \"K\" axis is `IC` and each output position pulls from the proper strided input positions \u2014 output spatial size is 31\u00d763\u00d763 which is far larger than input 16\u00d732\u00d732, so a forward-direction GEMM `[OC] x [IC]` per output voxel with explicit valid-tap masking is far more arithmetic-efficient than the current per-pool-voxel recomputation.\n- **Fuse maxpool into the convT epilogue properly**: one program per `(N, OC_tile, pooled_voxel)`, but compute the MK^3 conv-transpose output values by iterating input contributions once and writing to a small register tile of size MK^3, then reduce-max \u2014 instead of recomputing the full ConvT acc MK^3 times as the current kernel does (8\u00d7 redundant work for MK=2).\n- Use `channels_last_3d` memory format for both input and weight so the IC reduction axis is contiguous, enabling vectorized `tl.load` of the IC dimension (IC=3 is tiny; pad to 4 and load as a vector). Also fold bias\u00d7scale into a precomputed constant tensor at init.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 34,
+    "global_best_node_id": 20,
+    "global_best_score": [
+        1,
+        1,
+        16.336806567370672
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 34,
+    "parent_node_id": 33,
+    "context_node_ids": [
+        27
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4860290968664235,
+    "max_reward": 0.4860290968664235,
+    "avg_reward": 0.4860290968664235,
+    "score": [
+        1,
+        1,
+        0.8097400491479936
+    ],
+    "small_guidance": "- The matmul (1024\u00d78192 \u00d7 8192\u00d78192 = ~137 GFLOPs) dominates runtime; tuning only the row-sum kernel cannot close the gap. If staying with current structure, try fusing scale into the matmul epilogue or at least increase ROWS_PER_PROG to 8/16 with BLOCK_N=8192 to reduce launch/grid overhead on the tiny reduction kernel.\n- Add configs with BLOCK_N=1024 and ROWS_PER_PROG=16 (num_warps=4) to better match L2 reuse for the row-sum phase, though gains will be marginal vs. the matmul cost.",
+    "large_guidance": "- Replace the `torch.matmul` + separate row-sum kernel with a single fused Triton GEMM that, in its epilogue, accumulates each output tile's row-sum into a partial output and applies `scale = scaling_factor * 0.5`. Use atomic_add (or a 2-stage reduction across N tiles) on a per-row scalar output so the full hidden_size\u00d7input_size matmul output is never materialized.\n- Even better: since the final output is just `sum_j (x @ W.T)[i,j] * scale`, the per-row sum equals `sum_k x[i,k] * (sum_j W[j,k]) * scale`. However, this is the forbidden algebraic shortcut (folds the matmul into a matvec) per the safety contract \u2014 do NOT do this. Instead, run the full GEMM but fuse the column-reduction into the tiled GEMM epilogue: each `(BLOCK_M, BLOCK_N)` tile computes its dot, reduces along BLOCK_N in-register, and atomically adds the BLOCK_M-vector into a length-M output buffer.\n- Tile shapes: BLOCK_M=64, BLOCK_N=128, BLOCK_K=32, num_warps=4, num_stages=3, GROUP_M=8 swizzle. Keep W transposed (or load with the K-contiguous axis inner). This eliminates the second kernel and the M\u00d7N intermediate write/read entirely.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 35,
+    "global_best_node_id": 27,
+    "global_best_score": [
+        1,
+        1,
+        0.8119585150360703
+    ]
+}

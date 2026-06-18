@@ -1,0 +1,30 @@
+{
+    "node_id": 16,
+    "parent_node_id": 9,
+    "context_node_ids": [
+        8,
+        9
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness issue likely stems from InstanceNorm2d on shape (B,1,1,F): with C=1, H=1, W=F, the norm reduces over (H,W)=F per (N,C) \u2014 that's correct. But check `inv_F` is computed in fp64/fp32 properly and passed as a tensor or constexpr; passing a Python float positional arg can cause launcher fragility. Pass `eps` and `inv_F` as `tl.constexpr` or compute `inv_F = 1.0/F` inside the kernel from the `F` integer arg.\n- Verify the GEMM: weight layout is (N, K) with `stride_wn=K, stride_wk=1`. The current `w_ptrs = w_ptr + offs_n[None,:]*stride_wn + offs_k[:,None]*stride_wk` is correct, but ensure `tl.dot(x, w)` shapes match (x: BM\u00d7BK, w: BK\u00d7BN) \u2014 they do. Max diff ~1.5e-3 with avg 1e-4 suggests an accumulation/precision issue, possibly from `acc += b[None,:]` happening before masking or from `inv_F` precision. Use `1.0/tl.cast(F, tl.float32)` inside kernel.\n- Add larger GEMM tiles (BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3/4) since M=N=1024, K=8192 \u2014 large K benefits from deeper pipelining.",
+    "large_guidance": "- The post-kernel reduction over F=8192 with a single program per row and BLOCK_SIZE=8192 forces 16 warps and high register pressure. Consider a two-stage reduction: split F into chunks across multiple programs per row, compute partial sums, then a second small kernel combines. Or use a persistent kernel with tiled reduction (BLOCK_SIZE=1024, loop 8 times) keeping num_warps=8.\n- For the GEMM with M=1024, N=8192, K=8192 (huge), use split-K or stream-K with a dedicated K-split accumulator to better fill the 4090's SMs. Alternatively, since this size is well-served by cuBLAS, only beat it by fusing the bias + a partial of the downstream normalization mean accumulator into the GEMM epilogue (accumulate row sums while writing tiles).\n- Fuse the per-row mean reduction into the GEMM epilogue: each (M-tile, N-tile) program atomically adds its row-partial sum to a (M,) buffer; then a second pass does variance + normalize + residual + multiply. This removes one full read of the 1024\u00d78192 activation.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 17,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.8135380101583009
+    ]
+}

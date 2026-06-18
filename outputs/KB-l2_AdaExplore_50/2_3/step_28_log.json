@@ -1,0 +1,29 @@
+{
+    "node_id": 28,
+    "parent_node_id": 27,
+    "context_node_ids": [
+        27
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.514132971151028,
+    "max_reward": 0.514132971151028,
+    "avg_reward": 0.514132971151028,
+    "score": [
+        1,
+        1,
+        1.0415970119959803
+    ],
+    "small_guidance": "- The current kernel runtime is dominated by the ConvTranspose3d call (the fused post kernel is tiny). Tuning NH_PER_PROG/num_warps will not move the needle further; instead try fusing more output positions per program (e.g., combine multiple `do` iterations or process all of H per program) to reduce launch overhead, but expect <5% gain.\n- Try removing the bias-swap reparam (which allocates a new Parameter every forward) by precomputing `eff_bias` once at eval and caching it; the allocation + Parameter wrapping costs measurable \u00b5s per call.\n- Add a couple of larger autotune configs (NH_PER_PROG=16, num_warps=4) keyed on Ho \u2014 current best is likely already near memory-bound for the fused tail.",
+    "large_guidance": "- The dominant cost (~8.3 ms of 8.38 ms) is `nn.ConvTranspose3d`. To get meaningful speedup, replace it with a custom Triton ConvTranspose3d kernel implemented as a scatter-add of `input \u00d7 weight` outer products into the output grid (handling stride=2, padding=1, output_padding=1 in index math), and fuse bias+sum_weight+LayerNorm+AvgPool+GELU into the same producer where possible \u2014 or at minimum fuse bias+sum into the conv epilogue.\n- Alternatively, implement ConvTranspose3d as a gather-style GEMM: for each output voxel, gather the contributing (ic, kd, kh, kw) taps and accumulate; tile over (N, OC, output-spatial) with BLOCK_M=32, BLOCK_N=32, BLOCK_K=16, num_warps=4, num_stages=2 to fit SMEM. Use channels_last_3d layout so IC is the contiguous K axis.\n- Since the LayerNorm is over only the channel axis (norm_shape=(out_channels,)=64), it could be fused directly into the conv-transpose epilogue once the conv writes channel-contiguous output: accumulate the OC tile of 64 channels in registers, do mean/var across the 64-wide tile, normalize, then pool+GELU before storing. This collapses 5 launches into 1.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 29,
+    "global_best_node_id": 26,
+    "global_best_score": [
+        1,
+        1,
+        1.0415970119959803
+    ]
+}

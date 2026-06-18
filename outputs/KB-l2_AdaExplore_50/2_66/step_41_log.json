@@ -1,0 +1,31 @@
+{
+    "node_id": 41,
+    "parent_node_id": 39,
+    "context_node_ids": [
+        3,
+        34,
+        39
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (4/5 trials, max_diff ~1.0) is from eval-mode behavior: the reference `nn.Dropout` is a no-op in eval, but `get_inputs` reseeds and the model state may be in train mode during checking. In train mode you compute `softmax(dropout(y+b))` but PyTorch's reference uses its own RNG state, so outputs naturally differ \u2014 actually the real bug is more likely the softmax third pass recomputing `exp(vals-max)*inv` without re-checking the mask on store: tail lanes write garbage `exp(0-max)*inv` into masked positions, but `tl.store(..., mask=mask)` should guard it. Double-check that `BLOCK_SIZE=4096` with `n_cols=16384` and `num_warps=16` actually compiles \u2014 `num_warps=16` is invalid on RTX 4090 (max 8 warps for most configs). Reduce to `num_warps=8`.\n- Add `tl.multiple_of` / `tl.max_contiguous` hints on offs, and try `BLOCK_SIZE=2048, num_warps=8` for the softmax \u2014 16384 cols / 2048 = 8 iterations per pass.\n- Add an autotune sweep on `bias_softmax_kernel` with `BLOCK_SIZE \u2208 {1024, 2048, 4096, 8192}` and `num_warps \u2208 {4, 8}`, `num_stages=2`.",
+    "large_guidance": "- Rewrite as a single fused GEMM+bias+softmax kernel along the row dimension: since N=16384 fits in 1 row per program with online (one-pass) softmax accumulation. Each program computes one row's matmul tile-by-tile across K, accumulating into a register-resident row of length N is too large \u2014 instead do a two-kernel design: (1) split-K GEMM with bias fused in epilogue, (2) standalone online (Welford-style) softmax that does max+sum in a single pass using `tl.associative_scan` or the standard online algorithm, halving memory traffic.\n- For the GEMM, M=128 is small \u2014 favor `BLOCK_M=128, BLOCK_N=128/256, BLOCK_K=32-64` with `SPLIT_K=1` (atomic adds hurt at this size); the grid is only `1 * 128 = 128` tiles which already saturates 128 SMs, so split-K is unnecessary. Drop split-K to remove the atomic-add path and the zero-init.\n- Fuse bias directly into the GEMM epilogue (load bias vector once, add to acc before store) and write fp32 output; then run the softmax kernel. Eliminates the redundant `vals+bias` reload across all three softmax passes.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 42,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

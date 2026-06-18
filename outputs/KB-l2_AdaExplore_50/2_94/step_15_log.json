@@ -1,0 +1,30 @@
+{
+    "node_id": 15,
+    "parent_node_id": 13,
+    "context_node_ids": [
+        7,
+        13
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness bug: the activation order is wrong. Reference applies hardtanh THEN mish, so output equals `clamp(x,-1,1) * tanh(softplus(clamp(x,-1,1)))`. The current epilogue does this \u2014 but it also fuses the user `self.bias` into the gemm bias. That is fine. The actual issue is likely that `self._cached_wt`/`_cached_bias` are cached on first forward but the model parameters or device may differ; also `group_norm`'s `eps` is hardcoded to 1e-5 instead of reading `self.groupnorm.eps`. More importantly, double-check the mish formula: `tanh(sp) = (e^sp - e^-sp)/(e^sp + e^-sp)`, but the kernel uses `(e^(2sp)-1)/(e^(2sp)+1)` which is mathematically equivalent \u2014 OK. The numerical drift (~2e-3 max diff) suggests TF32 in `tl.dot` is the cause. Set `allow_tf32=False` or cast inputs to fp32 explicitly and disable TF32 to pass the 5e-2 tolerance \u2014 actually 5e-2 should pass, so correctness=False must be from another cause.\n- Real bug: `self._cached_wt.shape[0] != w.shape[1]` \u2014 after transpose, cached shape is (K,N)=(in,out), and `w.shape[1]` is `in`. So `cached_wt.shape[0]==K==w.shape[1]` \u2713 \u2014 but this means cache is never invalidated when params change between trials. Since `get_inputs` reseeds inputs but not params, this is fine. However, `ModelNew` is likely re-instantiated per trial, so cache is rebuilt \u2014 OK. The likely real issue: the bias `self.gemm.bias + self.bias` is fused, but `self.bias` shape is `(out_features,)` which broadcasts correctly \u2014 OK. Check: `self.groupnorm.eps` should be used (default 1e-5, matches), so that's fine.\n- Suspect: the cache stores `self._cached_wt` as a plain tensor attribute, not buffer; if `.cuda()` is called on the module, the cached tensor stays on whatever device it was. Recompute every forward, or register as buffer. Also try setting `allow_tf32=False` in `tl.dot` to rule out precision.",
+    "large_guidance": "- Keep the two-kernel structure (fused GEMM+bias+hardtanh+mish, then GroupNorm) \u2014 it is the right fusion boundary since GroupNorm reduces across a different axis than the GEMM's N tile. Do not try to fuse GroupNorm into the GEMM epilogue (would require cross-tile reductions over channels).\n- For GroupNorm with M=1024, G=256, CG=32: one program per (row, group) is correct, but BLOCK_CG=32 with num_warps=2 underutilizes. Consider one program per row that processes all 256 groups via a 2D tile (BLOCK_G groups \u00d7 CG channels), or pack multiple groups per program to increase per-program work and reduce launch overhead (262144 programs currently).\n- Do not fuse the user `self.bias` with `self.gemm.bias` at init \u2014 that is fine here since both are pure additive parameters and the reference does `Linear(x) + bias` which is associative, but make sure cache is rebuilt if params move device. Better: pass both biases to the kernel and add inside the epilogue, avoiding any caching/device-tracking bugs.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 16,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

@@ -1,0 +1,27 @@
+{
+    "node_id": 22,
+    "parent_node_id": 19,
+    "context_node_ids": [],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness bug is that BN stats must be computed from the post-scale activations (Y = (x@W^T + b) * scale), which the GEMM kernel does, but `tl.atomic_add` from many program tiles accumulates per-column sums correctly only if each column is summed exactly once per row \u2014 verify there is no double-counting from overlapping tiles (there shouldn't be, but the huge max_diff of 170305 suggests the running_mean/var update path is using values that get re-read by subsequent calls; ensure `sum_buf`/`sumsq_buf` are zeroed every forward \u2014 they are, so check that `finalize_stats_kernel` uses the right `eps`/`momentum` as `tl.constexpr` or 0-d tensors, not raw Python floats).\n- Replace the two-pass (GEMM \u2192 store Y \u2192 reload Y in bn_apply) with a single fused epilogue: do GEMM, atomic-add stats, then a second launch that reloads Y and applies BN \u2014 but better, compute stats in a separate reduction-only pass over Y (using `tl.sum` across M-tiles per column with a 2D grid + atomics on a small buffer), avoiding the per-tile atomic in the hot GEMM path which serializes N writes.\n- Tune `BLOCK_M=128, BLOCK_N=256, BLOCK_K=32, num_warps=8, num_stages=3` for the 1024\u00d78192\u00d78192 GEMM on 4090; current configs top out at BLOCK_N=128 which under-utilizes.",
+    "large_guidance": "- Redesign as two kernels only: (1) a tuned GEMM that writes Y = (x@W^T + b)*scale (no atomics, no stats), using `tl.dot` with BLOCK_M=128/BLOCK_N=256/BLOCK_K=32 and GROUP_M swizzle; (2) a column-reduction kernel that computes mean/invstd of Y per column with one program per column-tile, looping over M inside the program (no atomics), then updates running stats. Finally (3) a fused BN-apply kernel. The current atomic-add stats fusion is both a correctness risk and a perf bottleneck.\n- Alternatively, fold BN-apply into the GEMM epilogue at eval time (since mean/invstd are constants), reducing the eval path to a single kernel. At training time, the two-kernel split above is cleaner than three kernels with atomics.\n- Pass `eps` and `momentum` as `tl.constexpr` (they are Python floats from `__init__`) rather than runtime args to `finalize_stats_kernel` \u2014 the current call passes them positionally as untyped floats, which is on the pitfalls list and may be the source of the huge max_diff.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 23,
+    "global_best_node_id": 12,
+    "global_best_score": [
+        1,
+        1,
+        0.5658960882834168
+    ]
+}

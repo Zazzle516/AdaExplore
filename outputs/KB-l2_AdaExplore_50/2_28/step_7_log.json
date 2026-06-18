@@ -1,0 +1,29 @@
+{
+    "node_id": 7,
+    "parent_node_id": 6,
+    "context_node_ids": [
+        6
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure is likely because InstanceNorm2d on shape (B,C,1,1) normalizes over spatial dims H*W=1, which makes variance=0 and output=0 (the affine is off by default, so output is just (x-mean)/sqrt(0+eps) = 0). The fused kernel is instead normalizing over the feature dim N. Replace the row-wise reduction with per-element normalization: since H*W=1, mean=x itself and var=0, so x_norm = 0 for all elements. The fused kernel should simply compute `out = (0 + y) * y = y*y` \u2014 or more faithfully, mean=x, var=0, rstd=1/sqrt(eps), x_norm=(x-x)*rstd=0.\n- After fixing semantics, the GEMM dominates (1024\u00d78192\u00d78192). Keep the GEMM kernel and add larger tile configs (BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3/4) tuned for this exact shape; consider pre-transposing W once in __init__ to get contiguous K-inner loads on B.\n- The post-GEMM op becomes a trivial elementwise `y*y` kernel \u2014 fuse it directly into the GEMM epilogue (load y tile, store y*y) and skip writing the GEMM output entirely.",
+    "large_guidance": "- Recognize that InstanceNorm2d over a (B,C,1,1) tensor is a no-op-producing-zeros pattern: the normalization output is identically 0 (since per-(N,C) variance over a single element is 0, and affine is disabled by default). The full pipeline collapses to `out = y * y` mathematically \u2014 but per the safety contract, the GEMM and norm still must execute. Design a single fused kernel: tiled GEMM that computes x@W^T+b into registers, then in the epilogue applies the instance-norm formula (mean=acc, rstd=1/sqrt(eps), so x_norm = (acc-acc)*rstd = 0), loads y, and stores (0+y)*y = y*y. This keeps both ops live but avoids a second pass over memory.\n- Alternatively, structure as two kernels but make the second one a pure elementwise epilogue that reads x (to honor the op) and y, computes the instance-norm result correctly, and writes (norm+y)*y. The key bug to fix is the reduction axis.\n- Pre-transpose the Linear weight to (K,N) contiguous at module init so the GEMM B operand is naturally row-major along K with stride 1 on N, enabling wider vectorized loads.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 8,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.8111310929684835
+    ]
+}

@@ -1,0 +1,27 @@
+{
+    "node_id": 27,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (~0.0024 max diff, 0.00034 avg) is consistent with using BatchNorm's training-mode stats but comparing against eval-mode (or vice versa). Match the reference exactly: if `model.eval()` is used in benchmarking, the bn path must use `running_mean`/`running_var`; if training, use batch stats. Verify by mirroring `self.training` semantics and double-check that `var` is the biased variance for normalization (it is) but running_var update uses unbiased (looks correct). Most likely the test runs in eval mode \u2014 ensure the eval branch is hit and that running stats aren't being mutated on the first call.\n- Fuse the BN apply into the GEMM epilogue when in eval mode: load `mean`, `var`, `gamma`, `beta` per BLOCK_N once, compute `scale_eff = gamma/sqrt(var+eps) * scale`, `shift_eff = beta - mean*gamma/sqrt(var+eps)`, and write `acc*scale_eff + shift_eff` directly \u2014 eliminates the second pass entirely.\n- Increase `bn_stats_kernel` parallelism: split the M reduction across multiple programs per channel (2D grid: (N, num_splits)) with atomic adds or a second small reduction kernel; current single-program-per-channel over M=16384 is fine but BLOCK_M=1024 with num_warps=8 may be suboptimal \u2014 try BLOCK_M=2048, num_warps=8, num_stages=2.",
+    "large_guidance": "- Restructure as a two-kernel pipeline for training: (1) a fused GEMM+bias+scale kernel that also accumulates per-column partial sums and sum-of-squares into a `(num_pid_m, N)` workspace via the epilogue, (2) a reduction+apply kernel that finalizes mean/var and normalizes in place. This removes the redundant full read of Y in the stats pass.\n- For eval mode, collapse everything into a single GEMM kernel with a fully fused epilogue: `out = (x@W^T + b) * scale`, then `(out - mean)/sqrt(var+eps) * gamma + beta` \u2014 algebraically `out * A + B` where A,B are precomputed per-column constants in the host wrapper from BN running stats and scale. This is a legal epilogue fusion (not a reduction shortcut) and removes a full pass over the M\u00d7N tensor.\n- Consider channels-last-friendly tiling for the BN apply (BLOCK_N=256, BLOCK_M=32) since N is the contiguous axis after GEMM; current BN apply uses BLOCK_N=128 which under-utilizes the row.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 28,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.7791481785714286
+    ]
+}

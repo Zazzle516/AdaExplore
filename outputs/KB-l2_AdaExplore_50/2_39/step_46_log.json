@@ -1,0 +1,29 @@
+{
+    "node_id": 46,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure is small-magnitude (~2e-3 max diff, 3e-4 mean) which suggests the GEMM math is right but the BN path is inconsistent: the forward calls `F.batch_norm` (which uses the unmodified `self.bn.weight/bias`) yet the GEMM kernel already folded `self.scale` into its epilogue \u2014 that's correct, but `self.scale` is multiplied *before* BN in the reference, so BN's batch stats must be computed on `(Wx+b)*scale`. Verify the GEMM output matches `(x@W.T+b)*scale` in fp32 against torch reference; the residual likely comes from accumulating in fp32 vs torch's cuBLAS tf32 \u2014 try forcing `tl.dot(..., allow_tf32=False)` or upcast loads to fp32 explicitly to rule it out.\n- Add a few bigger tiles to the autotune list for this M=N=K=4096 shape: `BLOCK_M=128/BLOCK_N=256/BLOCK_K=64, num_warps=8, num_stages=3` and `BLOCK_M=256/BLOCK_N=128/BLOCK_K=64`. Pre-transpose weight to `[K,N]` contiguous once in `__init__` so the inner B load is a contiguous row stride.\n- Replace the `F.batch_norm` call with the custom `batch_norm_train` already written (currently dead code) and fuse the affine into the apply kernel; also fuse the BN apply into the GEMM epilogue is not possible (needs full-column reduction first), but the stats kernel can use a 2D tile (BLOCK_M\u00d7BLOCK_N) so one program handles a column tile and reduces along M with vectorized loads.",
+    "large_guidance": "- Redesign as a two-stage persistent pipeline: (1) a tiled GEMM that writes `y = (x@W.T + b) * scale` and simultaneously accumulates per-column partial sums and sum-of-squares into a `[num_pid_m, N]` workspace via `tl.atomic_add` or a separate reduction buffer; (2) a small kernel that finalizes mean/var and a third that applies BN. This removes the second full pass over `y` that the current `bn_stats_kernel` performs.\n- Alternatively, since BN at training reads every element of `y` once for stats and once for apply, fuse stats+apply by doing a column-wise two-pass kernel where each program owns one column (or a column tile) and keeps `y` resident in registers/SMEM across the two passes \u2014 at M=16384, N=4096 a column is 64KB, so tile columns in groups of e.g. 8 and stream M with a chunked reduction.\n- Consider channels-last/column-major layout for `y` (write GEMM output as `[N, M]`) so the BN reduction along M is the contiguous axis; this lets the stats kernel use wide vector loads and a single warp-reduce per column.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 47,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.7791481785714286
+    ]
+}

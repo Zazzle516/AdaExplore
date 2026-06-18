@@ -1,0 +1,30 @@
+{
+    "node_id": 18,
+    "parent_node_id": 13,
+    "context_node_ids": [
+        3,
+        13
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (avg_diff ~2.3e-4, max ~1.6e-3) looks like an fp32 reduction precision issue in group norm: with C_PER_G=512, computing variance as `sum(diff*diff)/N` after a single-pass mean works but the rstd application paths/eps may differ. Verify EPS is applied as fp32 and gamma/beta loaded correctly; consider a two-pass approach: load x once, compute `sum_x` and `sum_x2`, then `var = sum_x2/N - mean*mean`, ensuring all in fp32 \u2014 but be careful with catastrophic cancellation; the current two-pass diff-based approach is more numerically stable, so the issue is likely elsewhere (e.g. GEMM accumulator).\n- Investigate the GEMM: with K=8192 and BLOCK_K=32, accumulator drift in fp32 should still be within 5e-2 tol \u2014 the issue is that correctness tol is 5e-2 but reported max_diff is 1.6e-3, which is *within* tolerance. Recheck: correctness=False but max_diff 0.0016 < 0.05 \u2014 this suggests the failure may be a shape/NaN issue on some trials, not magnitude. Add NaN guards and ensure `Bt = weight.t().contiguous()` happens once (cache it) \u2014 recomputing per forward both wastes time and may interact with autograd.\n- Add `GROUP_M=8` swizzle to gemm_kernel for better L2 reuse on the 1024\u00d78192 output, and add a `BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, num_stages=4` config.",
+    "large_guidance": "- Cache `weight.t().contiguous()` once in `__init__` (store as a buffer) rather than recomputing per forward \u2014 this is both a correctness-stability and perf win, and removes a hidden 8192\u00d78192 transpose from the hot path.\n- Consider fusing the GroupNorm+Hardtanh epilogue directly with the GEMM by writing the GEMM output tile, then having a persistent group-norm kernel that processes one row at a time across all C=8192 with G=16 groups of 512 each \u2014 use one program per row, loop groups inside, keeping the row in registers/shared memory to avoid a second global round-trip.\n- For the GEMM itself, use a tiled GEMM with `GROUP_M` swizzle, K-split if needed, and tl.dot with `allow_tf32=False` to match reference fp32 precision (the small numerical drift suggests TF32 may be enabled by default).",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 19,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

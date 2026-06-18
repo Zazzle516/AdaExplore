@@ -1,0 +1,31 @@
+{
+    "node_id": 30,
+    "parent_node_id": 26,
+    "context_node_ids": [
+        27,
+        25,
+        26
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4519646462646265,
+    "max_reward": 0.4519646462646265,
+    "avg_reward": 0.4519646462646265,
+    "score": [
+        1,
+        1,
+        0.5287083316831683
+    ],
+    "small_guidance": "- The softmax+sigmoid epilogue is already cheap; runtime is dominated by `nn.ConvTranspose3d`. Tuning BLOCK_C/BLOCK_S/num_warps on the epilogue cannot close the gap \u2014 at most a few percent. Don't waste cycles here.\n- If kept, try `BLOCK_S=256, num_warps=4` and ensure the kernel reads/writes via vectorized contiguous loads; current `c_offs[:, None] * S + s_offs[None, :]` already coalesces along S, which is fine.\n- Consider channels_last_3d for the conv output so C is contiguous, allowing the softmax to load along the contiguous channel axis with one program per (N, spatial-tile).",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per (N, IC-tile, input-spatial tile), computing the input\u00d7weight outer product and atomic-adding into the (D_out,H_out,W_out) output grid with stride=2, padding=1, output_padding=1. This is the heavy op (~2\u00d7 input volume reduction-equivalent) and where all the headroom is.\n- Alternative gather-style design: one program per (N, OC-tile, output-spatial tile), iterate over (IC, kD, kH, kW) and gather only valid input positions where `(out + pad - k) % stride == 0`. This avoids atomics and is usually faster on Ampere; structure it as a GEMM with K=IC*kD*kH*kW, M=OC tile, N=output-spatial tile. Use BLOCK_M=32, BLOCK_N=64, BLOCK_K=16, num_warps=4, num_stages=2 as a safe starting autotune config.\n- Fuse the bias add and the softmax+sigmoid into the conv-transpose epilogue: have the conv-transpose kernel write its OC-tile per output spatial position, then a second small kernel (or persistent kernel) reduces across C for softmax. Since softmax is along C=64 (small), one program per (N, spatial-position) holding all 64 channels in registers makes the fusion trivial.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 31,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.5287083316831683
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 29,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        10
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.07208561020408163
+    ],
+    "small_guidance": "- The inner `for ic in range(0, IC)` loop is serial and dominates: replace with a tiled GEMM-K reduction (BLOCK_K over IC, e.g. 16/32) and use `tl.dot` on a `[BLOCK_SP, BLOCK_K] x [BLOCK_K, BLOCK_OC]` matmul to get tensor-core throughput; also bump BLOCK_OC to 64 and BLOCK_SP to 64/128, sweep num_warps\u2208{4,8} and num_stages\u2208{2,3,4} via `triton.autotune`.\n- Hoist `D_in*H_in*W_in`, `OC*KD*KH*KW`, and `KH*KW` into scalar constants before the loops, and precompute `oc * (KD*KH*KW)` once outside the kd/kh/kw loops to drop redundant index math in the hot path.\n- The output write currently has channel-stride-major access (`offs_oc * sp_total + offs_sp`); swap to channels-last storage internally (`[N, sp_total, OC]` then a final permute) so stores along OC are contiguous and coalesce.",
+    "large_guidance": "- Rewrite as a scatter-add ConvTranspose3d: one program per `(N, IC tile, input-spatial tile)` computing the outer product `x[n,ic,d,h,w] * W[ic,:,kd,kh,kw]` and `tl.atomic_add`-ing into the output grid at `(d*stride - pad + kd, ...)`. This avoids the modulo/`d_num - d_in*STRIDE == 0` predicate that wastes `stride^3=8x` of the gather work per output voxel.\n- Alternatively, reformulate as an explicit im2col-style GEMM where the K dimension is `IC * KD * KH * KW` and the M dimension is `D_out*H_out*W_out` (per N), with implicit gather of x; this lets a single `tl.dot` over BLOCK_K accumulate all kernel taps and IC contributions, instead of the current 27 separate sub-accumulations each with a serial IC loop.\n- Fuse the epilogue `(2y + bias)*y + y` directly after the GEMM store (already done), and pre-fold the conv bias and extra bias into a single `[OC]` vector at init / first-forward to remove one load from the inner store path.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 30,
+    "global_best_node_id": 27,
+    "global_best_score": [
+        1,
+        1,
+        0.7008323214285714
+    ]
+}

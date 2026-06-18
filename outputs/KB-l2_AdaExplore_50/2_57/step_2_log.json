@@ -1,0 +1,29 @@
+{
+    "node_id": 2,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5009179074960128,
+    "max_reward": 0.5009179074960128,
+    "avg_reward": 0.5009179074960128,
+    "score": [
+        1,
+        1,
+        0.9325727368421053
+    ],
+    "small_guidance": "- Add larger BLOCK_N configs (256, 512) with BLOCK_OC=32/64 and num_warps=8 \u2014 at OH*OW=15876 per batch, increasing spatial tile reduces redundant weight loads. Also try a swizzled program ordering (group pid_n into chunks) to improve L2 reuse of weights.\n- The inner reduction loop is `IC*KH*KW = 8*3*3 = 72` iterations of outer-products of shape [BLOCK_N]\u00d7[BLOCK_OC]; this is FMA-bound rather than tl.dot. Try collapsing to a tl.dot by gathering an [BLOCK_N, IC*KH*KW] tile and a [IC*KH*KW, BLOCK_OC] tile per step \u2014 at minimum reshape weight to (OC, IC*KH*KW) once and load BLOCK_K=32 chunks for tl.dot.\n- Move the `mask_n` extension into x load by using `mask=mask_n` only and clamping ih/iw via b/oh/ow valid \u2014 currently fine, but consider precomputing `b*stride_xb + ih*stride_xh + iw*stride_xw` once outside the IC loop.",
+    "large_guidance": "- Rewrite as an explicit im2col GEMM using `tl.dot`: K = IC*KH*KW = 72, M = OC = 64, N = B*OH*OW = 2,032,128. One program per (BLOCK_N, BLOCK_OC) tile, inner loop over BLOCK_K=32 (pad K to 96 or handle tail). This converts the current scalar FMA outer-product into tensor-core mma which is 4-8\u00d7 faster on Ada.\n- Reshape weight once in `__init__` (or first forward) into (OC, IC*KH*KW) contiguous, and gather x via computed offsets per K index \u2014 keep im2col implicit, no materialization. Use channels-last view of x so IC is contiguous within K.\n- Fuse bias + ReLU + HardSwish in epilogue (already done) and store directly. With OC=64, fix BLOCK_OC=64 so the OC dimension is a single tile and only the N dimension is split \u2014 eliminates the pid_oc grid axis and improves weight reuse via a persistent loop over N tiles.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 3,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.9325727368421053
+    ]
+}

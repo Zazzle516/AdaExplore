@@ -1,0 +1,30 @@
+{
+    "node_id": 38,
+    "parent_node_id": 32,
+    "context_node_ids": [
+        29,
+        32
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The linear kernel uses `input_precision='ieee'` which disables TF32/tensor-core fast path on the 4090 \u2014 drop it (or use `'tf32'`) to unlock the tensor cores; this single change should give a multi-x speedup on the 8192x8192x8192 GEMM that dominates runtime.\n- Add larger autotune tiles tuned for big square GEMMs: e.g. `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4` and `BLOCK_M=256, BLOCK_N=128, BLOCK_K=64, num_warps=8, num_stages=3`; with M=N=K=8192 the tile-quantization is clean so masks can be elided on the fast path.\n- Store the linear output in fp16/bf16 only if the GN kernel reads it back as fp32 \u2014 otherwise keep fp32 but ensure the weight matrix is loaded with its K-dim contiguous (transpose weight once in `__init__` to `(K, N)` layout) so the inner load is along the contiguous axis instead of strided.",
+    "large_guidance": "- Fuse the bias-add + GroupNorm + LeakyReLU + double into the GEMM epilogue: since `num_groups=512` and `hidden_size=8192` give `CH_PER_GROUP=16`, choose `BLOCK_N` as a multiple of 16 so each output tile contains whole groups, compute per-group mean/var by intra-tile reduction (or a small cross-tile reduction via atomics into a `(N, G)` scratchpad with a second pass), and write the final activated output \u2014 eliminating the full read+write round-trip of the 1024\u00d78192 activation tensor between the two kernels.\n- Alternatively, split into two passes that both consume the GEMM output from registers: pass-1 GEMM writes fp32 output AND atomically accumulates per-group sum/sumsq into small `(N, G)` buffers; pass-2 is a lightweight elementwise kernel that loads stats, normalizes, applies LeakyReLU, doubles \u2014 this avoids the structural difficulty of full per-group reduction inside a GEMM tile.\n- Switch the GEMM to use tensor cores explicitly (tf32 `tl.dot`, no `ieee`), and preload-transpose the weight to a `(K, N)` contiguous layout in `__init__` so both A and B inner-loop loads are along stride-1 \u2014 the current code transposes B inside the loop via `tl.trans`, which is fine but combined with `ieee` precision is leaving the bulk of the perf on the table.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 39,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

@@ -1,0 +1,27 @@
+{
+    "node_id": 19,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (avg diff ~2e-4, max ~2.8e-3) is small but consistent \u2014 likely from the GroupNorm using `tl.where(mask, diff, 0.0)` after computing `diff = x - mean` where masked lanes had `other=0.0` so `diff = -mean` for tail lanes; that part is fine, but check that `CPG=32` (8192/256) and BLOCK=32 with `num_warps=4` is sane. More likely the issue: bias is `torch.randn(bias_shape)` with `bias_shape=(out_features,)` \u2014 fine. The actual bug: in the reference, Mish is `x * tanh(softplus(x))` with `softplus = ln(1+exp(x))`; for clamped values in [-1,1] this is well-conditioned. Numerical diff likely from `(e2-1)/(e2+1)` formulation \u2014 replace with `tl.tanh` if available, or use stable softplus `tl.where(x>0, x+log(1+exp(-x)), log(1+exp(x)))` then a stable tanh.\n- Add an autotune config with `BLOCK_M=64, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4` for the M=1024,N=8192,K=8192 shape; also try `BLOCK_K=64` variants since K=8192 is large.\n- Add `GROUP_M=8` block-swizzle for L2 reuse across the N tiles of a row group.",
+    "large_guidance": "- Keep the structure (fused GEMM+bias+hardtanh+mish, then GroupNorm) but fix Mish numerical stability: use `softplus(x) = max(x,0) + log1p(exp(-abs(x)))` pattern (implement log1p as `tl.log(1+y)` carefully) and compute tanh as `tl.libdevice.tanh` (via `from triton.language.extra import libdevice`) rather than the manual `(e2-1)/(e2+1)` which loses precision.\n- Consider fusing GroupNorm's affine and the Mish output into a single persistent kernel per (row, group): since CPG=32 is tiny and the GEMM output is (1024, 8192), a persistent kernel that writes the GEMM tile directly into shared/registers and immediately reduces per-group could avoid the full (1024,8192) write+read between kernels. But this requires BLOCK_N to be a multiple of CPG.\n- Alternatively, write the GEMM epilogue to produce channels-grouped tiles where BLOCK_N aligns to CPG*k so GroupNorm can be done in a second pass that reads only one row per program \u2014 current layout already supports this; tune BLOCK_N=256 (= 8*CPG).",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 20,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

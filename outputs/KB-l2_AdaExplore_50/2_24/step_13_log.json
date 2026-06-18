@@ -1,0 +1,31 @@
+{
+    "node_id": 13,
+    "parent_node_id": 10,
+    "context_node_ids": [
+        12,
+        9,
+        10
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.47149923377891806,
+    "max_reward": 0.47149923377891806,
+    "avg_reward": 0.47149923377891806,
+    "score": [
+        1,
+        1,
+        0.6898686786760737
+    ],
+    "small_guidance": "- Sweep `BLOCK_HW` over {64, 128, 256, 512} with `num_warps` \u2208 {4, 8} and `num_stages` \u2208 {2, 3, 4}; current 256/8/2 may be sub-optimal \u2014 smaller BLOCK_HW with more warps often wins on the (OH*OW=900) tail since one program currently does 900/256 \u2248 4 tiles.\n- Reorder the inner loops so the OD reduction (min) is the outer accumulator and combine the conv `acc` write with `tl.minimum` without re-zeroing \u2014 also try moving the `kd` loop outermost and reusing `x` loads across `od` (each x voxel is reused KD times across output depths) by accumulating KD partial `acc[od]` registers.\n- Try a `tl.dot`-based inner GEMM: pack `[C_PAD, KVOL]` weight tile and `[KVOL, BLOCK_HW]` input tile per (od) and call `tl.dot` instead of the scalar `w[:,None]*x[None,:]` outer-product loop \u2014 this leverages tensor cores for the dominant FMA work.",
+    "large_guidance": "- Rewrite as an im2col-style GEMM: one program per `(N, OC_tile, OHW_tile)`, K-loop over `IC*KD*KH*KW` with `tl.dot(BLOCK_M=C_out_tile, BLOCK_K, BLOCK_N=OHW_tile)`. Fuse the min-over-OD by running the GEMM inside an OD loop and tracking a running `tl.minimum` on the `[OC, OHW]` tile, then do the channel softmax in the epilogue. This replaces the current scalar outer-product accumulation (which leaves the 4090's tensor cores idle) with mma instructions.\n- Exploit input reuse across output depth: each input voxel at depth `id` contributes to KD output depths. Structure the kernel as a persistent program per `(N, OHW_tile)` that holds KD running min/acc registers for `od \u2208 [od0, od0+KD)` and streams input planes once, accumulating into all relevant `od` accumulators \u2014 cuts global x-loads by ~KD\u00d7.\n- Use `triton.autotune` over `BLOCK_M \u2208 {16,32}`, `BLOCK_N \u2208 {64,128,256}`, `BLOCK_K \u2208 {16,32,64}`, `num_warps \u2208 {4,8}`, `num_stages \u2208 {2,3}`; with C_out=24 a single program covering all OC (BLOCK_M=32, mask 24:32) avoids cross-tile softmax synchronization.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 14,
+    "global_best_node_id": 10,
+    "global_best_score": [
+        1,
+        1,
+        0.6951753608197357
+    ]
+}

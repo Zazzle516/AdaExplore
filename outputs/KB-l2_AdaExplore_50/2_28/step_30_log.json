@@ -1,0 +1,27 @@
+{
+    "node_id": 30,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The kernel is incorrect: InstanceNorm2d on (N, C, 1, 1) normalizes over spatial dims (H*W=1), but with affine=False default and a single element, output is (x-x)/sqrt(0+eps)=0 \u2014 however InstanceNorm2d's track_running_stats=False by default, but the per-(N,C) reduction over one element gives mean=x and var=0, so output is 0. That part is right. The bug is elsewhere: actually InstanceNorm2d default affine=False, so result is indeed 0, and final = y*y. But correctness fails with avg_diff ~0.4, suggesting the reference is NOT producing y*y. Re-examine: with a single spatial element, var=0, output = 0, so (0+y)*y = y*y. Yet output mismatches \u2014 likely the reference InstanceNorm produces NaN or the test uses different semantics. Drop the algebraic assumption entirely and actually compute bmm + bias, then run instance_norm semantics, then (x+y)*y.\n- Stop relying on the y*y shortcut \u2014 implement the full pipeline: fused GEMM epilogue that adds bias, then applies (x - mean)/sqrt(var+eps) per-row (per-(N,C) with single element \u2192 just keep bias-added value and zero it via formula), then (norm + y) * y.\n- Use BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, num_warps=8, num_stages=4 for the 1024x8192x8192 GEMM; add GROUP_M=8 swizzle.",
+    "large_guidance": "- Rewrite without the algebraic shortcut: do a proper tiled GEMM (M=1024, N=8192, K=8192) with bias fused in the epilogue. After computing each output tile, apply the InstanceNorm semantics correctly \u2014 since H=W=1, the per-(N,C) variance is 0, so (x-mean)/sqrt(eps) = 0, meaning final = y*y. But this MUST be derived inside the kernel from the actually-computed gemm value, not hardcoded. Even so, the reference may not reduce to y*y due to InstanceNorm2d's behavior when stats are degenerate; test against PyTorch first.\n- Consider that InstanceNorm2d default has affine=False and track_running_stats=False; the failing correctness shows the reference output is NOT y*y. The reference likely returns NaN-free finite values because PyTorch's InstanceNorm with single-element spatial returns 0 (mean-subtracted is 0, divided by sqrt(eps) is 0). Verify empirically; if reference returns something nontrivial, then perhaps the reference uses x.unsqueeze(1).unsqueeze(1) shape (N,1,1,C) \u2014 re-read: x is (B, out_features), unsqueezed twice gives (B,1,1,out_features). InstanceNorm2d with num_features=out_features expects (N,C,H,W) where C=out_features at dim=1. Here C dim is size 1, not out_features. So normalization is over dims (H=1, W=out_features) per (n, c=0). That's a per-row normalization across out_features! This is the actual operation being missed.\n- Therefore: redesign as (1) tiled GEMM producing X=bmm(x)+bias of shape (M, N); (2) per-row reduction kernel computing mean and rstd over N; (3) fused epilogue kernel computing ((X-mean)*rstd + y) * y. Or fuse (2)+(3) into a single row-wise kernel after the GEMM.",
+    "evaluator_direction": "large",
+    "evaluator_valid": false,
+    "total_nodes": 31,
+    "global_best_node_id": 28,
+    "global_best_score": [
+        1,
+        1,
+        0.8257900886245404
+    ]
+}

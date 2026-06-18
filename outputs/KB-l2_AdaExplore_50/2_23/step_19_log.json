@@ -1,0 +1,29 @@
+{
+    "node_id": 19,
+    "parent_node_id": 18,
+    "context_node_ids": [
+        18
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5242581824982164,
+    "max_reward": 0.5242581824982164,
+    "avg_reward": 0.5242581824982164,
+    "score": [
+        1,
+        1,
+        1.1251300056102853
+    ],
+    "small_guidance": "- The conv3d call (F.conv3d) likely dominates runtime now that GN+mean is fused. Tuning BLOCK_S further has minimal headroom; instead, add configs with smaller BLOCK_S (128) and try num_stages=4 to better hide latency on the small SPATIAL=22*30*30=19800 per channel.\n- Fuse the conv bias add into a single pass: currently we load `y` twice (once for stats, once for normalize). Since conv has no bias added yet (we pass None), we can keep stats and normalization in a single pass over `y` by computing sum/sumsq on `v` without bias first, then deriving normalized mean directly \u2014 saves one full read of the spatial tensor.\n- Consider one program per (N, group, channel-chunk) with atomic reduction or two-stage reduction to expose more parallelism: with N=128, NUM_GROUPS=8, grid=1024 which is fine, but each program does 3 channels \u00d7 19800 elements sequentially \u2014 splitting along spatial could help.",
+    "large_guidance": "- Replace `F.conv3d` with a custom Triton im2col-style GEMM kernel. With OC=24, IC*kh*kw*kd=3*27=81, and output spatial = 19800 per batch, this is a small-K GEMM per (N, output-tile). The conv is now the bottleneck \u2014 fusing conv + GN stats + GN affine + mean into one or two kernels would eliminate the materialization of the (N, OC, 19800) intermediate.\n- Strategy: kernel 1 computes conv output and per-(N, group) sum/sumsq directly using atomic adds or a tiled reduction, writing the conv output to memory. Kernel 2 reads conv output, applies GN affine, and reduces to per-batch mean. Alternatively, fuse all three: compute conv twice (once for stats, once for final reduction) \u2014 since conv arithmetic is cheap relative to the memory traffic, this may be a win.\n- Use channels_last3d layout for conv output so the GN reduction over (C_in_group, D, H, W) is contiguous; one program per (N, group) loads contiguous chunks of CHANS_PER_GROUP=3 channels.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 20,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        1.1431320857000498
+    ]
+}

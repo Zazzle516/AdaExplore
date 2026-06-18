@@ -1,0 +1,29 @@
+{
+    "node_id": 46,
+    "parent_node_id": 2,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- Add larger tile configs targeting this square 128\u00d716384\u00d716384 GEMM: BLOCK_M=64/BLOCK_N=256/BLOCK_K=128 num_warps=8 num_stages=3, and BLOCK_M=128/BLOCK_N=256/BLOCK_K=128 num_warps=8 num_stages=4. With M=128 only, BLOCK_M=64 gives 2 row tiles and lets BLOCK_N grow for better K-loop reuse.\n- Pass `constant` as a `tl.constexpr` already done \u2014 also bake `K` as constexpr (K=16384 is fixed) to let Triton fully unroll the K-loop count and drop the `cdiv`. Drop the unused GROUP_M swizzle when num_pid_m is tiny (M/BLOCK_M \u2264 2) \u2014 set GROUP_M=1 in configs targeting this shape to avoid wasted modulo math.\n- Cache `weight_t` once in `__init__` and never recompute in forward (the `hasattr` fallback + `.t().contiguous()` path is dead code that confuses readers); ensure `b` is contiguous and pass `.data_ptr()`-friendly tensors. Skip `c_val = float(...item())` per forward (host sync); read constant once at init and store as Python float attribute.",
+    "large_guidance": "- This is a skinny GEMM (M=128, N=K=16384): ~68 GFLOPs total. At 1.17 ms that's ~58 TFLOP/s \u2014 already decent but memory-bound on W (1 GB read). Consider a split-K design: partition K across programs, each computing a partial (BLOCK_M, BLOCK_N) accumulator, then a second small reduction kernel sums partials and applies bias + min + sub. Split-K=4\u20138 will saturate the 4090's SMs given only 128/BLOCK_M row tiles.\n- Alternatively, since M=128 is tiny, use a persistent-N kernel: one program per N tile, loop over M internally (M fits in registers/SMEM at BLOCK_M=128). This maximizes weight-tile reuse \u2014 each W tile is loaded once and dotted against the full activation slab.\n- Store weight in fp16/bf16 (cast once at init) and accumulate in fp32 via `tl.dot`; halves W bandwidth (1 GB \u2192 512 MB) which is the dominant cost here. The min/sub epilogue is unchanged.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 47,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

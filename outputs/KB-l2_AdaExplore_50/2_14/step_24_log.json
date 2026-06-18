@@ -1,0 +1,27 @@
+{
+    "node_id": 24,
+    "parent_node_id": 11,
+    "context_node_ids": [],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The atomic_add accumulation has a race-free bug: multiple pid_n programs atomically add row partials, but the row_sum is over BLOCK_N tile only, which is correct in principle. However, atomics on fp32 can lose precision with many contributions (N=8192, BLOCK_N=128 \u2192 64 atomics per row). Switch to a 2D partial buffer `partial[M, num_n_tiles]` written non-atomically, then a second kernel reduces across the tile dimension and applies `*0.5*scaling_factor`.\n- Increase BLOCK_K to 64 or 128 and add configs with BLOCK_M=128, BLOCK_N=64/128, num_stages=4 \u2014 K=8192 is large and benefits from deeper pipelining.\n- Add GROUP_M=8 block swizzle for L2 reuse across N tiles of a row group.",
+    "large_guidance": "- Rewrite as a split-K / row-reduction kernel: since the final output is `sum_n (x @ W.T)[m,n] * 0.5 * scaling`, the GEMM output is never materialized \u2014 but per the safety contract we must still execute the matmul. Use one program per (M tile, K-split) computing the partial `sum_n` directly: `acc[m] = sum_k x[m,k] * (sum_n W[n,k])` is forbidden (algebraic shortcut). Instead, tile (M, N), compute the GEMM block via tl.dot, immediately reduce along N within the tile, and accumulate into a per-(m, n_tile) buffer to avoid atomic precision loss.\n- Use a two-stage design: stage 1 = tiled GEMM with epilogue `tl.sum(acc, axis=1)` writing to `partial[M, ceil(N/BLOCK_N)]` (no atomics); stage 2 = small reduction kernel over the n_tile axis fused with `*0.5*scaling_factor` and final store to `out[M,1]`. This preserves all reference ops and removes atomic non-determinism that may be causing the correctness failure.\n- Consider larger BLOCK_N (256) with num_warps=8 to reduce the number of n_tiles and hence reduction work in stage 2.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 25,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        0.10046266372480192
+    ]
+}

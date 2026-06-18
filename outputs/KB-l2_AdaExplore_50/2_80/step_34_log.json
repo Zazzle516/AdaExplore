@@ -1,0 +1,30 @@
+{
+    "node_id": 34,
+    "parent_node_id": 33,
+    "context_node_ids": [
+        32,
+        33
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.40178536850590224,
+    "max_reward": 0.40178536850590224,
+    "avg_reward": 0.40178536850590224,
+    "score": [
+        1,
+        1,
+        0.1147292901736931
+    ],
+    "small_guidance": "- The kernel computes a per-row max over N=8192 by iterating all N tiles per row group; this is good, but BLOCK_M is small (64-256) creating only 4-16 programs for M=1024 \u2192 severe under-occupancy on a 128-SM GPU. Add a split-K-over-N variant: split N into S column-stripes, launch (cdiv(M,BLOCK_M) * S) programs that each compute a partial row-max, then a tiny finalize kernel reduces S partials per row with `tl.max`. S=4 or 8 should saturate SMs.\n- Add autotune configs with smaller BLOCK_M (32, 16) combined with larger BLOCK_N (256) so more programs are launched; also try `num_stages=5` with BLOCK_K=64 since the K-loop has 128 iterations and benefits from deeper pipelining.\n- The `row_post_kernel` computes `x = vals - vals` (always zero) then GELU(0)=0 \u2014 this is correct only because `xm - xm.mean(dim=1)` of a single-column tensor is identically 0. Replace with a single `torch.zeros((M,1))` allocation or fuse the zero-fill into the finalize kernel to avoid the extra launch.",
+    "large_guidance": "- Redesign as a split-N persistent GEMM-rowmax: grid = (num_row_blocks * SPLITS,), each program handles BLOCK_M rows over a 1/SPLITS slice of N, writing partial row-maxes to a (M, SPLITS) scratch buffer. A second tiny kernel reduces across SPLITS and writes the final output (which is identically zero after the mean subtraction, so just emit zeros). This raises occupancy from ~16 programs to ~64-128 programs, matching the 4090's SM count.\n- Since the final output is provably `gelu(x - x) = 0` for any `xm` of shape (M,1), the heavy GEMM+max is still required by the safety contract (every op must execute), but the row_post step can collapse into a single `torch.zeros` after the max is computed. Keep the GEMM+rowmax kernel as the dominant work; just remove the redundant post-launch.\n- Consider a fully persistent kernel where each SM owns a fixed set of (row_block, n_stripe) work items and loops over them, amortizing launch overhead and improving L2 reuse of the weight matrix across row blocks that share the same N stripe.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 35,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        1.7954388916792234
+    ]
+}

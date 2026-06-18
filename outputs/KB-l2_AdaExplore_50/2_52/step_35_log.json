@@ -1,0 +1,31 @@
+{
+    "node_id": 35,
+    "parent_node_id": 34,
+    "context_node_ids": [
+        13,
+        30,
+        34
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4552807858160209,
+    "max_reward": 0.4552807858160209,
+    "avg_reward": 0.4552807858160209,
+    "score": [
+        1,
+        1,
+        0.5560664829821719
+    ],
+    "small_guidance": "- The eval path is fine but the training path runs two passes over the post-conv tensor. Reduce launches: use a single fused pass per (N,C) plane that computes mish, writes y, and accumulates per-channel sum/sqsum into a (G,C) scratchpad (one row per program block-of-N), then a small kernel finalizes mean/var/scale/shift; finally one fused apply kernel. This avoids the global atomics on `sum_ptr`/`sqsum_ptr` (current code has C=128 atomic contention) and one extra read.\n- Add `@triton.autotune` over `BLOCK \u2208 {1024, 2048, 4096}` and `num_warps \u2208 {4, 8}` for `_mish_stats_kernel` and `_apply_bn_kernel`, keyed on (HW, C). HW=16384 currently \u2014 try BLOCK=4096 with num_warps=8 for the stats pass.\n- For the apply pass, precompute `pid // (HW/BLOCK_per_row)` style channel indexing instead of `(offs // HW) % C` per element; or process one (n,c) plane per program so `c` is a scalar and `scale`/`shift` are scalar loads, removing the per-element gather on `scale_ptr`/`shift_ptr`.",
+    "large_guidance": "- The torch `nn.Conv2d` (64\u2192128, k=3 on 64\u00d7128\u00d7128) dominates runtime; further BN/activation tuning cannot close the gap. Replace the convolution with a custom Triton im2col-style GEMM: program per (N, OC-tile, OHW-tile), implicit im2col gather (compute input offsets from output index, kh, kw), accumulate in fp32, and fuse the bias add + mish + BN affine (scale/shift) in the epilogue before store. At eval, this is one kernel for the entire forward.\n- For training, do the conv+mish kernel writing y, and simultaneously accumulate per-(program, C) partial sums/sqsums into a small scratch (atomics only across program tiles, not elements), then a tiny finalize+apply pass. Use channels-last layout for the conv output so the C axis is contiguous for BN.\n- Autotune the GEMM with safe SMEM-fitting tiles first: `(BM,BN,BK) \u2208 {(32,32,16),(64,32,16),(32,64,16),(64,64,32)}`, `num_warps=4`, `num_stages=2`; expand only after a small tile is confirmed to compile. Key the autotune on (OC, N*OH*OW, IC*KH*KW).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 36,
+    "global_best_node_id": 16,
+    "global_best_score": [
+        1,
+        1,
+        0.5587834201954398
+    ]
+}

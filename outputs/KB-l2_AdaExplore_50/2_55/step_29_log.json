@@ -1,0 +1,29 @@
+{
+    "node_id": 29,
+    "parent_node_id": 26,
+    "context_node_ids": [
+        20
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The current kernel loads each row of W once per batch element (B=128), making it bandwidth-bound on a 32768x32768 weight matrix (~4GB reads \u00d7 128). Restructure as a tiled GEMM with BLOCK_M tile over batch (e.g. BLOCK_M=32 or 64) so W tiles are reused across multiple batch rows via `tl.dot`, dramatically reducing W bandwidth.\n- Replace the per-output-row dot with `tl.dot(x_tile, w_tile.T)` accumulation: tiles of shape (BLOCK_M=64, BLOCK_K=32) \u00d7 (BLOCK_N=128, BLOCK_K=32), giving full tensor-core utilization. Sweep BLOCK_N \u2208 {64,128,256} and BLOCK_K \u2208 {32,64}.\n- Pre-transpose W to (IN_FEATURES, OUT_FEATURES) once at init so the K-axis is contiguous for `tl.dot`; keep the bias+maxpool(k=2)+row-sum+scale fused into the epilogue (reduce N tile pairs by max then accumulate into a per-program scalar, then atomically add into out[batch]).",
+    "large_guidance": "- Redesign as a proper tiled GEMM kernel: grid = (cdiv(B, BLOCK_M), cdiv(OUT_FEATURES, BLOCK_N)). Each program computes a (BLOCK_M, BLOCK_N) tile of the linear output using `tl.dot` over BLOCK_K chunks of in_features. In the epilogue, add bias, reshape the BLOCK_N axis into (BLOCK_N/2, 2) and take max along the pair axis, then sum over the pooled axis. Use `tl.atomic_add` to accumulate the partial row-sum into out[m] (scaled by scale_factor). This converts the workload from B independent matvecs (memory-bound) into a true GEMM (compute-bound, reusing W across the batch).\n- Alternative: persistent split-K. Since IN_FEATURES=32768 is large and OUT_FEATURES=32768 makes the matrix huge, a split-K GEMM with atomic accumulation on the (M, N/2) pooled output, followed by a tiny finalize kernel doing pool+sum+scale, can hide the K-loop latency better. Pick BLOCK_M=64, BLOCK_N=128, BLOCK_K=32, GROUP_M=8.\n- Cache W in fp16 or bf16 (cast once at init) to halve weight bandwidth; do the `tl.dot` in fp16 with fp32 accumulator. With 4GB\u21922GB weight footprint, this alone could ~2\u00d7 the kernel.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 30,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

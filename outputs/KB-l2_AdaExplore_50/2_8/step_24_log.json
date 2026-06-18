@@ -1,0 +1,31 @@
+{
+    "node_id": 24,
+    "parent_node_id": 15,
+    "context_node_ids": [
+        9,
+        13,
+        15
+    ],
+    "depth": 6,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.48566915149797135,
+    "max_reward": 0.48566915149797135,
+    "avg_reward": 0.48566915149797135,
+    "score": [
+        1,
+        1,
+        0.8067704998582633
+    ],
+    "small_guidance": "- The conv dominates runtime (post-conv fused kernel is tiny \u2014 N*OC=2048 programs over a 14\u00d762\u00d762 slice). Tuning the fused kernel further won't move the needle; instead, focus autotune on the conv replacement. For the current fused tail, drop BLOCK_PW to exactly 32 (PW=31) and try num_warps=1, num_stages=2 only \u2014 wider warps waste lanes.\n- Consider folding the conv bias and the divisor into the conv weight/bias at init (weight *= 1/divisor, bias *= 1/divisor) so the fused tail just does maxpool+avg+bias+sum without the inv_div multiplies. Also accumulate the final sum-over-OC inside the same kernel by launching grid=(N,) and looping OC internally, eliminating the extra `out.sum(dim=1)` launch.\n- Add a `channels_last_3d` layout for the conv output so the post-conv kernel's W-axis loads are coalesced; currently W_out=62 strided gathers are fine but channel-last makes the per-(n,oc) slice contiguous in a friendlier way for the autotune sweep.",
+    "large_guidance": "- Replace `F.conv3d` with a custom Triton im2col-style GEMM kernel: one program per (N, OC tile, output-spatial tile) with BLOCK_M=OC (16, tiny), BLOCK_N=64\u2013128 spatial, BLOCK_K=IC*kd*kh*kw=216. Since OC=16 is small, prefer a layout where each program computes a full OC column for a spatial tile, keeping the weight (16\u00d7216) resident in registers/shared.\n- Fuse the entire epilogue into the conv kernel: as each spatial output is computed, immediately apply divisor, accumulate into per-(n, oc) maxpool partials (using the spatial-tile-to-pool-window mapping), then reduce. With pool=2 and small spatial output (14\u00d762\u00d762), one program per (N, OC) that streams the conv computation and maintains running max + sum eliminates the intermediate [N,16,14,62,62] tensor (~27MB write/read) which is likely the bottleneck.\n- Alternatively, since the final output is just [N,1,1,1], make the kernel persistent per N: each program owns one batch element, loops over OC and output spatial positions, computing conv on-the-fly, maxpooling in registers, summing, adding bias, and reducing over OC \u2014 a single kernel launch producing the final result with no intermediate tensors.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 25,
+    "global_best_node_id": 15,
+    "global_best_score": [
+        1,
+        1,
+        0.8067704998582633
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 6,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5658135818065164,
+    "max_reward": 0.5658135818065164,
+    "avg_reward": 0.5658135818065164,
+    "score": [
+        1,
+        1,
+        1.4679620499037602
+    ],
+    "small_guidance": "- Sweep autotune configs for `fused_gemm_rowsum_kernel`: try BLOCK_M=128/BLOCK_N=256/BLOCK_K=64 with num_warps=8, num_stages=3-4, and a GROUP_M=8 swizzle to improve L2 reuse on the K=8192 GEMM. Current 64/128/32 leaves a lot of FMA throughput on the table at M=N=2048/8192.\n- Eliminate the `tl.atomic_add` on rowsum: instead, allocate a `(num_pid_n, B)` partial-sum buffer and write non-atomically per (pid_m,pid_n), then have the GELU kernel reduce across the small N-tile dimension while applying mean+GELU. Atomics across ~64 N-tiles serialize stores and are unnecessary.\n- Fuse the residual-add with the GELU kernel: launch one program per (row, feature-tile), load scalar once, compute mean\u2192GELU on the fly (or load the precomputed scalar), and write `x + g` directly \u2014 saves an extra full read/write of the (B, IN_F) tensor.",
+    "large_guidance": "- Replace the two-stage rowsum-atomic + GELU + residual pipeline with a split-K GEMM-reduction: tile (M, K_chunk) with one program per (row-tile, k-tile), compute `sum_n W[n,:]\u00b7x[b,:] + (bias-sub)` reduced across N inside the K-loop using a tiled `tl.dot`, accumulate per-row partials into a `(num_k_tiles, B)` workspace, then a tiny second kernel finalizes mean+GELU and fuses residual-add into the (B, IN_F) write. Avoids atomics entirely.\n- Note that the reference computes `mean_n(x @ W^T + b - sub)` per row, which equals `x \u00b7 mean_n(W) + mean_n(b-sub)` \u2014 but that is exactly the algebraic shortcut the safety contract forbids. Keep the full (B,N) GEMM materialization-via-accumulator path, do not precompute a column-mean of W.\n- Consider a persistent-row kernel: one program per batch row holds the row's running rowsum in registers while streaming W tiles; with B=2048 this gives a clean 1D grid, removes the atomic, and lets you fuse mean+GELU+residual-add in the same kernel by then re-streaming `original_x` for that row (or storing the scalar and doing residual-add in a separate light kernel).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 7,
+    "global_best_node_id": 6,
+    "global_best_score": [
+        1,
+        1,
+        1.4679620499037602
+    ]
+}

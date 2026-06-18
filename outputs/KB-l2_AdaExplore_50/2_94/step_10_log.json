@@ -1,0 +1,31 @@
+{
+    "node_id": 10,
+    "parent_node_id": 5,
+    "context_node_ids": [
+        3,
+        4,
+        5
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (avg diff ~1.9e-4, max ~2.6e-3) is small but consistent \u2014 likely caused by computing mish on the post-hardtanh value but using `tl.exp(2*sp)` for tanh which can overflow / lose precision; switch to a numerically stable tanh: `th = tl.where(sp > 15.0, 1.0, (tl.exp(2*sp) - 1.0) / (tl.exp(2*sp) + 1.0))` or use the `2*sigmoid(2*sp) - 1` form. Also use `tl.log(1 + tl.exp(-|x|)) + max(x,0)` for stable softplus.\n- Verify the bias-merge: `b_lin + b_extra` is correct only if `self.bias` broadcast semantics match `(out_features,)` \u2014 confirmed here, but ensure the cached bias is on the same device/dtype as `x` before each launch (currently `.cuda()` once; OK).\n- Add autotune to `group_norm_kernel` over `num_warps\u2208{2,4,8}` for `CG=32` (small reduction) \u2014 a single warp may be optimal; current BLOCK = next_pow2(32) = 32, so try `num_warps=1` or 2.",
+    "large_guidance": "- Keep the two-kernel structure (fused GEMM+bias+hardtanh+mish, then GroupNorm) \u2014 this is the right fusion boundary because GroupNorm requires a reduction that cannot be folded into the GEMM epilogue without a persistent tile spanning a full group's worth of output. With M=1024, N=8192, K=8192 the GEMM dominates; focus design effort there.\n- For the GEMM, consider larger tiles (BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3) since K=8192 is large and benefits from deeper pipelining; also try storing the weight as row-major (no transpose) and using `tl.dot` with `B` loaded transposed via strides to skip the `W.t().contiguous()` copy.\n- For GroupNorm with CG=32 (very small), one program per (row, group) wastes a warp; redesign so each program handles multiple groups per row (e.g. 8 groups \u00d7 32 channels = 256 elements per program) to improve occupancy and amortize launch overhead \u2014 M*G = 1024*256 = 262144 programs is too many.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 11,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

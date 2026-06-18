@@ -1,0 +1,30 @@
+{
+    "node_id": 35,
+    "parent_node_id": 22,
+    "context_node_ids": [
+        21,
+        22
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4627251731977471,
+    "max_reward": 0.4627251731977471,
+    "avg_reward": 0.4627251731977471,
+    "score": [
+        1,
+        1,
+        0.6174826788814131
+    ],
+    "small_guidance": "- The GEMM is M=1024, N=8192, K=8192 \u2014 large enough to benefit from bigger tiles and TF32. Drop `allow_tf32=False` (use `allow_tf32=True`) and add configs like `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3/4` and `BLOCK_M=64, BLOCK_N=256, BLOCK_K=64`. The current autotune set with `tf32=False` is leaving ~2x on the table on Ada.\n- For the fused norm kernel, N=8192 fits in one tile: set `BLOCK_N=8192` (single-pass persistent), eliminate the 3 separate loops by loading x once into registers/SRAM, computing mean and `sum(x*x)` in one pass, then `var = E[x^2] - mean^2`, then a single write loop. Use `num_warps=16, num_stages=1`.\n- Preload y in the same kernel pass (since both x and y are streamed once) and fuse the `(norm + y) * y` epilogue with the single store. This halves global memory traffic on the norm kernel.",
+    "large_guidance": "- Rewrite the GEMM with TF32 enabled and a split-K or persistent-grid strategy: with M=1024 only, there are just 8 row tiles of BLOCK_M=128, so a persistent kernel that has each SM iterate over multiple N tiles for the same row group maximizes A-tile reuse from L2. Pre-transpose weight to (K, N) contiguous once at init so the inner B load is a contiguous vector load.\n- Fuse the bias add and the instance-norm into the GEMM epilogue: since each output row of the GEMM is the exact axis being normalized, use a 2D persistent kernel with `BLOCK_N = out_features` (8192) so the full row is produced in one program, then compute mean/var across the row registers and emit the normalized `(x-mean)*rstd + y) * y` directly \u2014 eliminating the second kernel launch and the round-trip to HBM for the 1024\u00d78192 intermediate (32 MB).\n- If a full-row tile is too large for SRAM, use a two-stage approach with cooperative thread-block reduction: stage 1 writes partial sums per N-tile to a small scratch buffer (M \u00d7 num_n_tiles), stage 2 reads x back tile-by-tile from HBM but uses the precomputed mean/rstd, fusing the y-epilogue. This is still fewer launches and fewer HBM bytes than the current 2-kernel pipeline.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 36,
+    "global_best_node_id": 28,
+    "global_best_score": [
+        1,
+        1,
+        0.8257900886245404
+    ]
+}

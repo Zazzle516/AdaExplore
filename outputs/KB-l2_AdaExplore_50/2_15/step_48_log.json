@@ -1,0 +1,29 @@
+{
+    "node_id": 48,
+    "parent_node_id": 37,
+    "context_node_ids": [
+        37
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4269484293851974,
+    "max_reward": 0.4269484293851974,
+    "avg_reward": 0.4269484293851974,
+    "score": [
+        1,
+        1,
+        0.3223245424278785
+    ],
+    "small_guidance": "- The bottleneck is `nn.ConvTranspose3d` itself (output shape ~16\u00d732\u00d731\u00d763\u00d763 = 63M elements, ~1.5 GFLOPs of multiply-adds dominated by the cuDNN call); tuning the BN/sub-mean tail any further will not move `fast_p` past ~0.35 since that tail is already a small fraction of the 5.5ms.\n- If staying in tuning mode, fold the two passes into a single Welford-style persistent kernel per `(N,C)` row so the input is read once instead of twice, and broaden `BLOCK_S` autotune to include 8192/16384 with `num_warps=8, num_stages=3` for the S=63\u00b763\u00b731\u2248123K reduction.\n- Also fuse the channel-wise reduce of `sp_sum`/`sp_sumsq` (currently a torch `.sum(dim=0)`) into a tiny second Triton kernel to remove two extra launches.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)`, computing the `input \u00d7 kernel` outer product over `OC \u00d7 KD \u00d7 KH \u00d7 KW` and atomically scattering into the output at `(d*stride - pad + kd, h*stride - pad + kh, w*stride - pad + kw)`. This is where the 80%+ of runtime lives.\n- Fuse the BatchNorm (eval-time: fold `weight/sqrt(var+eps)` and `bias - mean*scale` into a per-channel affine) directly into the conv-transpose epilogue, then run the spatial-mean subtraction as a separate two-kernel pass (reduce + apply) over the materialized output. Keep training-mode stats accumulation as a separate Welford kernel reading the conv-transpose output.\n- Use channels_last3d (`NDHWC`) layout for the conv-transpose output so the spatial-mean reduction along `(D,H,W)` strides contiguously per `(N,C)` and the BN affine is a contiguous channel broadcast; size GEMM tiles as `BLOCK_M=32, BLOCK_N=32, BLOCK_K=16` initially to stay within the 132KB SMEM budget, then sweep upward.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 49,
+    "global_best_node_id": 29,
+    "global_best_score": [
+        1,
+        1,
+        0.3246729908244386
+    ]
+}

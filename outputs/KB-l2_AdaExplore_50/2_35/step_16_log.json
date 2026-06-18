@@ -1,0 +1,29 @@
+{
+    "node_id": 16,
+    "parent_node_id": 8,
+    "context_node_ids": [
+        10
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5664424770316228,
+    "max_reward": 0.5664424770316228,
+    "avg_reward": 0.5664424770316228,
+    "score": [
+        1,
+        1,
+        1.473150435510888
+    ],
+    "small_guidance": "- The inner loop computes 4 separate `tl.dot(w, x*)` calls sharing the same `w` tile; try increasing `BLOCK_N` to cover more pooled positions per program and/or restructure to load `w` once and reuse across the 4 corner accumulators (already done) \u2014 but consider stacking the 4 spatial reads into a single `tl.dot` with `BLOCK_K` doubled by interleaving, reducing dot issue overhead.\n- Add larger autotune configs targeting this shape (OC=128, OUT_SPATIAL=63\u00d763=3969, K_TOTAL=576): e.g. `BLOCK_M=128, BLOCK_N=128, BLOCK_K=16, num_warps=8, num_stages=2` (SMEM \u2248 (128\u00b716+16\u00b7128)\u00b74\u00b72 = 32KB, fits), and `BLOCK_M=64, BLOCK_N=256, BLOCK_K=16, num_warps=8`.\n- Switch input layout to NHWC (channels_last) so the K-dimension (IC) is contiguous in memory \u2014 current NCHW gather along `ic * IH * IW` is strided and likely the bottleneck for the 4 spatial loads.",
+    "large_guidance": "- Rewrite with NHWC (channels_last) input layout and pack the K loop over `IC` as the contiguous axis: one program per `(N, OC tile, pooled-spatial tile)`, with inner loop over `(kh, kw, ic_block)`. This makes the 4 corner loads coalesced along IC and cuts redundant address math.\n- Consider a \"pre-pooled\" GEMM strategy: pre-compute the 4-corner max-of-hardswish at the accumulator level by issuing one GEMM per pool position (not per pre-pool position), so the K loop runs once per output pixel instead of effectively 4\u00d7 \u2014 currently the kernel does 4 dots per K-step which is fine, but if you swap to one `tl.dot` over a `BLOCK_N` that already represents pooled positions and loop `kh,kw` over the 2\u00d72 pool window outside the K loop, you can share more of the weight-tile cost and reduce register pressure.\n- Try a persistent-kernel design where each program handles multiple (N, OC-tile) chunks across the same output-spatial tile, amortizing the weight reload across batch \u2014 given N=128 and small OC=128, batch-major persistence over N can hide weight bandwidth.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 17,
+    "global_best_node_id": 12,
+    "global_best_score": [
+        1,
+        1,
+        1.6815885468451244
+    ]
+}

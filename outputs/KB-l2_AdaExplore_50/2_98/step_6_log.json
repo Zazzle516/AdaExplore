@@ -1,0 +1,30 @@
+{
+    "node_id": 6,
+    "parent_node_id": 2,
+    "context_node_ids": [
+        1,
+        2
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.42672616436018773,
+    "max_reward": 0.42672616436018773,
+    "avg_reward": 0.42672616436018773,
+    "score": [
+        1,
+        1,
+        0.32049085597154836
+    ],
+    "small_guidance": "- The current kernel runs ~3\u00d7 slower than baseline despite fusing everything; the main issue is that each program holds an entire row tile (BLOCK_M rows) and iterates ALL N tiles serially, so the K-loop is re-executed N/BLOCK_N times per row. Try larger BLOCK_N (512, 1024) with smaller BLOCK_M (16-32) so each row's GEMM-over-K runs fewer outer iterations, and add configs like {BLOCK_M:16, BLOCK_N:512, BLOCK_K:64, num_warps:8, num_stages:4} and {BLOCK_M:32, BLOCK_N:512, BLOCK_K:32, num_warps:8}.\n- The inner K-loop's bounds check (`offs_k < k_remaining`) executes every iteration but K=8192 is divisible by every BLOCK_K candidate \u2014 split into a no-mask main loop and skip the predicate, which removes a select from the hot path.\n- Drop the per-tile pooled-index masking (`abs_p < N/POOL_K`): since N and POOL_K are static and N%POOL_K==0, the mask is always true and just adds a `tl.where`. Also fold the `* SCALE` into `INV_POOL` (pass `INV_POOL_SCALE = scale/POOL_K`) so the epilogue is one multiply.",
+    "large_guidance": "- Restructure as a standard 2D-tiled GEMM grid `(cdiv(M, BLOCK_M), cdiv(N, BLOCK_N))` with GROUP_M swizzle for L2 reuse, writing the post-GELU-scaled pooled tile to a small intermediate `[M, N/POOL_K]`, then a second tiny kernel does the row-wise max. The current single-program-per-row design serializes the K-loop across all N tiles and leaves the GPU under-occupied (only M/BLOCK_M = 8-32 programs); a 2D grid gives ~512-2048 programs and dramatically better SM utilization on a 4090.\n- Alternatively, use a split-K / persistent design: each program owns one (row-tile, N-tile) pair, computes pooled+gelu+scale into shared memory, then uses an atomic-max (via `tl.atomic_max` on int32 reinterpretation of fp32 nonneg values is tricky \u2014 better: write partial maxes to a `[M, num_N_tiles]` buffer and reduce). This trades a small extra kernel for far more parallelism.\n- Consider channels-last/transposed-output layout for the weight load: ensure `w_t` is `[K, N]` row-major with N contiguous so the inner-dim load is a single contiguous vector per K row; verify via `w_t.stride(1) == 1`.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 7,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        1.512646402634945
+    ]
+}

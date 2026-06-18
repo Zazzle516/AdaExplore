@@ -1,0 +1,30 @@
+{
+    "node_id": 37,
+    "parent_node_id": 36,
+    "context_node_ids": [
+        35,
+        36
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.453535220959596,
+    "max_reward": 0.453535220959596,
+    "avg_reward": 0.453535220959596,
+    "score": [
+        1,
+        1,
+        0.5416655729166666
+    ],
+    "small_guidance": "- The current code calls `F.conv_transpose3d` (cuDNN) which dominates the ~28.8ms runtime \u2014 the custom `conv_transpose3d_kernel` is defined but unused. Tuning the BN/pool tail will not close the gap; the conv must be replaced. As a quick win, fold the scale into the conv weight (`weight * scale_factor`) and fold BN affine into a single per-channel transform so eval reduces to one fused conv+reduce.\n- For the eval fused kernel, try `BLOCK_S=4096` with `num_warps=16`, `num_stages=2`, and split spatial across a third grid axis with atomic-add into the (N,OC) accumulator to expose more parallelism (current grid `(N, OC)` = 2048 programs each doing a 16384-element reduction is fine, but persistent reduction can be wider).\n- Use `channels_last_3d` memory format for `conv_out` so the BN/pool kernel coalesces along OC.",
+    "large_guidance": "- Replace `F.conv_transpose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)`, computing the `input \u00d7 weight` outer product over `(OC, KD, KH, KW)` and scattering with `tl.atomic_add` into the output grid at `(od=id+kd, oh=ih+kh, ow=iw+kw)`. With stride=1/padding=0 the index math is trivial. Input is 16\u00d764\u00d716\u00d732\u00d732=8.4MB, weight is 64\u00d7128\u00d7125=4MB \u2014 both fit nicely; output is 16\u00d7128\u00d720\u00d736\u00d736 \u2248 53MB.\n- Better: fuse the entire pipeline into a single kernel that never materializes `conv_out`. One program per `(N, OC tile)` accumulates the global-average-pooled sum directly: loop over output spatial positions, compute the gather-style ConvTranspose value into registers, multiply by `scale*invstd*gamma`, add bias term, and accumulate. The output is only (N,OC)=2048 floats so the reduction is in-register, eliminating the 53MB write/read of `conv_out` entirely. This is the highest-headroom move.\n- For eval-only path, pre-fold at `__init__`/first-forward: `eff_weight = weight * scale * (bn_w/sqrt(var+eps))`, `eff_bias_per_oc = (bias*scale - running_mean) * bn_w/sqrt(var+eps) + bn_b`. Then the kernel just computes ConvTranspose with the folded weight and sums each output channel's volume divided by OD*OH*OW. (Note: bias is added per-output-element so its pooled contribution is just `eff_bias_per_oc`.)",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 38,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        1.599996769230769
+    ]
+}

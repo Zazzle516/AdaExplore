@@ -1,0 +1,29 @@
+{
+    "node_id": 32,
+    "parent_node_id": 29,
+    "context_node_ids": [
+        29
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (max diff ~0.0016) is likely due to GroupNorm computing `xc = x - mean` with `tl.where(mask, x - mean, 0.0)` but then variance uses `group_size` (full) divisor \u2014 which is correct \u2014 however the issue may be that for `group_size=64` the BLOCK=64 path picks `num_warps=2` which is fine. More likely the bias_extra fusion order is correct. Try setting `eps` as `tl.constexpr` or 0-d tensor and double-check the cast: load `weight`/`bias` for groupnorm as fp32 explicitly via `.to(tl.float32)` before multiply, then cast back on store. Also ensure `group_size` is passed as `tl.constexpr` so the division becomes exact.\n- Tune matmul autotune: with M=32768, N=4096, K=1024 the (BLOCK_M=128, BLOCK_N=256, BLOCK_K=32, num_warps=8, num_stages=3) and (256,128,32) configs should dominate; consider adding (128,128,64) with num_stages=4 and (64,256,32) num_warps=8.\n- For GroupNorm with group_size=64 (small), use a persistent kernel that processes multiple groups per program to amortize launch overhead (M*num_groups = 32768*64 = 2M programs is too many).",
+    "large_guidance": "- The GroupNorm launches 2,097,152 programs (M*num_groups), which is the dominant overhead. Redesign so one program handles an entire row (all C=4096 elements) and computes all `num_groups` group statistics in-register via a 2D layout `[num_groups, group_size]`, or have one program handle several rows. This collapses the grid to ~32K programs.\n- Consider fusing GroupNorm into the matmul epilogue is impossible (needs full row), but you can fuse the Swish + bias_extra + partial row reduction by having the matmul write tiles and a second kernel that is row-persistent. Alternatively, since group_size=64 is exactly one warp, use one warp per group and pack 4-8 groups per program (BLOCK_M dim over groups, warp-reduction over 64 lanes).\n- The current correctness bug suggests numerical: ensure the swish and groupnorm both accumulate in fp32 and that `eps` value matches PyTorch's default (1e-5). Verify by loading default `group_norm.eps` rather than passing as raw float.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 33,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

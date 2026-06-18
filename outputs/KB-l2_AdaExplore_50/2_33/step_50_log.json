@@ -1,0 +1,27 @@
+{
+    "node_id": 50,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure is small numerically (~0.0025 max diff, ~0.00035 avg) \u2014 this looks like the BN running stats / training-vs-eval mismatch. Check whether the reference is being run in eval mode while ModelNew computes batch stats (or vice versa). Simplest fix: match `self.training` behavior to reference, and when in eval use `bn.running_mean`/`bn.running_var` exactly as PyTorch does. Also verify `inv_std` is computed in fp32 and that `var = s2/M - mean*mean` is numerically stable (consider two-pass: compute mean first, then variance via `sum((x-mean)^2)/M`).\n- In `bn_apply_kernel`, fuse with the GEMM epilogue is not possible (need full-column reduction first), but you can drop the separate `bn_apply_kernel` launch by writing a single elementwise kernel that loads `(mean, inv_std, w, b)` once per column tile and streams rows \u2014 try `BLOCK_M=128, BLOCK_N=64, num_warps=4`.\n- Add `num_stages=4` configs with `BLOCK_K=64` to the GEMM autotune list for K=8192 \u2014 the K loop is long and benefits from deeper pipelining.",
+    "large_guidance": "- Restructure as: (1) tiled GEMM writing `y = (xW^T + bias) * scale` to a temporary, (2) a column-reduction kernel computing per-column `mean, inv_std` using one program per column with multi-CTA split-K reduction if M is small relative to occupancy (here M=1024, N=8192 \u2014 one program per column with `BLOCK_M=1024` persistent is fine), (3) elementwise apply. Keep operand `y` in row-major; the column reduction will be strided \u2014 consider writing `y` in column-major (transpose at GEMM store) so the BN reduction has contiguous loads.\n- Alternatively, since at training PyTorch BN uses batch stats and the reference always calls `bn(...)` (training by default in test harness?), make sure to mirror the exact `F.batch_norm` semantics including unbiased variance for `running_var`. Re-derive correctness against `nn.BatchNorm1d` output before optimizing further.\n- For the GEMM itself with M=1024, N=K=8192, the strongest config is typically `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3` with GROUP_M=8; store `W^T` once in `__init__` as a contiguous buffer so the hot path never pays for the transpose.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 51,
+    "global_best_node_id": 43,
+    "global_best_score": [
+        1,
+        1,
+        1.4797857480974401
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 5,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        3,
+        4
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM dominates (M=1024, N=8192, K=8192). Add larger autotune configs tuned for this exact shape: `BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, num_warps=4, num_stages=4` and `BLOCK_M=64, BLOCK_N=128, BLOCK_K=64, num_warps=4, num_stages=5`, and try `BLOCK_K=128` variants \u2014 K=8192 has huge room for deeper pipelining.\n- The `if self.training` branch rebuilds `weight_t` every forward call during benchmarking if training is on; ensure `.eval()` semantics or guard so the transpose isn't repeated. Also avoid `x.contiguous()` if `x` is already contiguous (it usually is from `get_inputs`).\n- Fuse the final `min + bias` add into the `gn_min_kernel` epilogue: have each row program write `N` outputs (row_min + bias[c]) directly in the (1, N, M, 1) layout, eliminating the separate add and the `min_buf` round-trip. With M=1024 and N=8192 this fused store is cheap relative to GN.",
+    "large_guidance": "- Use cuBLAS for the GEMM (`torch.addmm` / `F.linear`) rather than a hand-rolled Triton GEMM \u2014 at (1024, 8192, 8192) fp32, cuBLAS on a 4090 is typically faster than a generic Triton GEMM and removes the main bottleneck. Then keep only the fused GN+min(+bias) Triton kernel for the tail.\n- Restructure GN+min as one program per row with persistent registers: load the entire row (N=8192 fp32 = 32KB) in tiles, but keep per-group partial sums in registers; do mean/var in two passes over the row, then normalize and reduce-min on the fly, writing the final `min + bias[c]` directly to output. This collapses three kernels (GEMM-bias-add already fused, GN, min, bias-add) into GEMM + one fused tail kernel.\n- Consider fp16/bf16 accumulation paths or tensor-core usage by casting inputs to bf16 for the GEMM if numerics allow (atol=5e-2 is loose); on a 4090, bf16 tensor cores give ~8x throughput over fp32 simt.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 6,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

@@ -1,0 +1,32 @@
+{
+    "node_id": 41,
+    "parent_node_id": 8,
+    "context_node_ids": [
+        3,
+        4,
+        6,
+        8
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.47834263334877636,
+    "max_reward": 0.47834263334877636,
+    "avg_reward": 0.47834263334877636,
+    "score": [
+        1,
+        1,
+        0.7463267251274046
+    ],
+    "small_guidance": "- The GEMM (1024x8192x8192) dominates runtime; addmm via cuBLAS is already near-peak in fp32 on 4090, but you can try `torch.matmul` with `tf32` enabled (`torch.backends.cuda.matmul.allow_tf32=True`) or cast to fp16/bf16 for the matmul to roughly halve GEMM time on this shape.\n- Fuse the scale+BN-apply into the GEMM epilogue with a single Triton matmul kernel (BLOCK_M=64/128, BLOCK_N=128/256, BLOCK_K=32, GROUP_M=8, num_warps=8, num_stages=3-4) so the post-pass elementwise kernel and its extra global write/read are eliminated.\n- For the stats kernel, raise BLOCK_M to 2048 or 4096 (M=1024 fits entirely), use a single-pass mean/sqmean via E[x^2]-E[x]^2 to halve memory traffic, and parallelize across N with multiple programs per column if needed.",
+    "large_guidance": "- Replace the cuBLAS addmm + separate stats + apply with a persistent fused Triton GEMM where each program computes a (BLOCK_M, BLOCK_N) tile of `x @ W^T + bias`, multiplies by scale, and either (a) at eval time directly applies the precomputed BN affine (a_coef, b_coef computed once on host from running stats) in the epilogue, or (b) at train time writes the tile and atomically accumulates per-column sum and sum-of-squares for a tiny followup normalize kernel. This collapses three passes over the 1024x8192 activation into one.\n- Consider running the GEMM in tf32 or bf16 (inputs are `torch.rand` so fp16 is safe) inside `tl.dot` with fp32 accumulator; on a 4090, fp16 tensor cores will give ~4-8x over fp32 cores and is the only realistic path to beat the 2.57ms baseline meaningfully.\n- Switch to a split-K or stream-K GEMM if the M=1024 dimension under-utilizes the 4090's 128 SMs at large BLOCK_M; with M=1024 only 8-16 row tiles exist, so use BLOCK_M=64 + GROUP_M=8 to expose more N-tiles for occupancy, or split-K=2-4 with atomic add into the output.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 42,
+    "global_best_node_id": 41,
+    "global_best_score": [
+        1,
+        1,
+        0.7463267251274046
+    ]
+}

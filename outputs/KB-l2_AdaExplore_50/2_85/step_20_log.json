@@ -1,0 +1,31 @@
+{
+    "node_id": 20,
+    "parent_node_id": 16,
+    "context_node_ids": [
+        1,
+        5,
+        16
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4507158239846367,
+    "max_reward": 0.4507158239846367,
+    "avg_reward": 0.4507158239846367,
+    "score": [
+        1,
+        1,
+        0.5184055478732527
+    ],
+    "small_guidance": "- The conv (cuDNN call) likely dominates at OC=64, KH=KW=3, IC=8, H=W=128. Stop round-tripping through channels_last + back to contiguous \u2014 that extra `.contiguous()` after conv is a full N*OC*OH*OW copy. Either keep NCHW throughout (skip the channels_last detour entirely) or make the GN/epilogue kernels consume channels_last directly so the copy is eliminated.\n- In `gn_stats_kernel`, SPATIAL=126*126=15876 with BLOCK_SP up to 4096 means only a few iterations; collapse the `(c, sp_start)` double loop into a single flat loop over `CH_PER_GROUP*SPATIAL` so all 4 channels participate per BLOCK_SP tile, improving occupancy. Also add a `BLOCK_SP=8192` config and `num_warps=16`.\n- In `fused_epilogue_kernel`, BLOCK_PIX up to 256 with pool_k=4 means each program loads 16*256=4096 conv values; try smaller BLOCK_PIX (16, 32) with more programs to raise SM occupancy, and load the 4\u00d74 window via two contiguous row loads per pool tile (one `tl.load` of a [BLOCK_PIX, 4] vector per kh row) instead of 16 scalar gathers.",
+    "large_guidance": "- Replace the cuDNN conv with a custom Triton im2col-GEMM kernel: OC=64, IC*KH*KW=72, output spatial = 126*126=15876 per batch \u2192 a tall-skinny GEMM (M=OC=64, K=72, N=N*OH*OW\u2248260k). Use one program per (N, OC_tile=64, OW_tile) with implicit im2col gather; fuse the conv bias add into the epilogue, then directly write into a layout the GN-stats kernel can consume without a copy.\n- Fuse conv \u2192 GN-stats more tightly: since each GN group spans only 4 channels and SPATIAL\u224816k, have the conv kernel accumulate per-group sum / sumsq into atomics or a small reduction buffer as it writes, eliminating a separate stats pass over the full conv output. Then a single epilogue kernel does normalize + scale + 4\u00d74 maxpool + clamp from the conv output buffer.\n- Consider an end-to-end channels_last pipeline: write conv output as NHWC, run GN-stats with the channel axis contiguous within a group (4 contiguous fp32s per spatial location \u2192 one vectorized load), and have the epilogue do the 4\u00d74 pool with NHWC reads. This removes the current NHWC\u2192NCHW `.contiguous()` and keeps memory traffic minimal.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 21,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        0.8013158925967656
+    ]
+}

@@ -1,0 +1,27 @@
+{
+    "node_id": 10,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.48513393625169915,
+    "max_reward": 0.48513393625169915,
+    "avg_reward": 0.48513393625169915,
+    "score": [
+        1,
+        1,
+        0.8023549740765177
+    ],
+    "small_guidance": "- The conv (Conv2d 8\u219264, k=3, 128\u00d7128, batch 128) dominates runtime \u2014 fast_p\u22480.80 with the post-conv chain already fused means further tuning of `fused_post_kernel` (BLOCK_S, BLOCK_C, num_warps) yields little. If staying small, try BLOCK_S=256 with num_warps=8 and BLOCK_C=64 to reduce stats-kernel launch overhead, and merge `gn_stats_kernel` into `fused_post_kernel` via a single persistent program per (n, group) that also emits the LSE tile \u2014 eliminating the intermediate mean/rstd write/read.\n- Fold conv bias into the GN stats/normalization path explicitly (it's already in conv output, but ensure the conv result is in channels_last so the BLOCK_C dimension along channels coalesces in `fused_post_kernel`).\n- Increase `num_stages=3` for `fused_post_kernel` to overlap the per-c-chunk loads with the online-LSE compute.",
+    "large_guidance": "- Replace `self.conv` with a custom Triton conv2d kernel (im2col-style implicit GEMM): one program per (N, OC tile, output-spatial tile), with BLOCK_M=64 (OC), BLOCK_N=64 (spatial), BLOCK_K=in_channels*kh*kw=72 (small, can be a single K iter). Fuse the conv bias into the epilogue. This is the dominant op and the only path to materially beat baseline.\n- Fuse the entire pipeline end-to-end into two kernels: (1) custom conv2d writing `x_conv` in channels_last; (2) a single persistent kernel per (N, spatial tile) that computes group stats, normalizes, applies tanh+hardswish, residual-adds with the conv result kept in registers/SMEM, and reduces over channels with online logsumexp \u2014 never re-reading conv output from HBM after the conv kernel.\n- Even better: a single mega-kernel where each program tile computes its conv output tile, immediately reduces along channels for LSE without storing conv to HBM. Since C=64 is small, the channel axis fits in registers; the (N, H*W) tile loop can stream conv outputs through the GN+tanh+HS+residual+LSE chain entirely in-register, eliminating the conv\u2192post round-trip to global memory.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 11,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.9741129195974848
+    ]
+}

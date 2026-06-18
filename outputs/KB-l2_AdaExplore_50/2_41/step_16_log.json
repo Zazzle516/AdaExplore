@@ -1,0 +1,30 @@
+{
+    "node_id": 16,
+    "parent_node_id": 5,
+    "context_node_ids": [
+        1,
+        5
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4773938452088452,
+    "max_reward": 0.4773938452088452,
+    "avg_reward": 0.4773938452088452,
+    "score": [
+        1,
+        1,
+        0.7384992229729729
+    ],
+    "small_guidance": "- The current autotune config space is missing the typically-best shape for large square GEMMs on Ada (M=N=K=4096): try `BLOCK_M=128, BLOCK_N=256, BLOCK_K=32, GROUP_M=8, num_warps=8, num_stages=4` and `BLOCK_M=256, BLOCK_N=128, BLOCK_K=32, num_warps=8, num_stages=4`. Also add `GROUP_M=16` variants since M/BLOCK_M is large (16384/128=128 row tiles), giving better L2 reuse on the B matrix.\n- The K-loop has no boundary masking (fine here since K=4096 is divisible) but loads use default `other=0`; switch to `tl.load(..., evict_policy='evict_last')` on B and `evict_first` on A in the K loop to reduce L2 thrash given the large B reuse pattern across row groups.\n- Pre-cast `weight_kn`, `scale`, `shift`, `gemm_bias` to the input dtype once in `_build_cache` and store output in fp16/bf16 if downstream allows \u2014 but since dtype must remain fp32, instead ensure the output store uses the natural stride and consider writing through `tl.store` with `eviction_policy='evict_first'` since output is write-only.",
+    "large_guidance": "- Use a split-K or persistent-kernel GEMM design: with M=16384, N=4096, K=4096, a persistent kernel (one program per SM that loops over output tiles) amortizes launch and improves L2 reuse of B. Combined with a 2D swizzle this typically beats cuBLAS on Ada for square fp32-with-tf32 GEMMs.\n- Consider a Stream-K decomposition: the work tile count (16384/128 * 4096/128 = 4096 tiles) is far above SM count (128 on 4090), so basic tiling is fine, but Stream-K can fix tail imbalance for non-power-of-2 batch sizes if they appear.\n- The epilogue (bias + affine + GELU + ReLU) is already fused; the bottleneck is the GEMM itself. A redesign should focus on switching to tf32 `tl.dot` with a tighter inner loop using `BLOCK_K=32` and `num_stages=4-5` plus async-copy-friendly pointer arithmetic, or alternatively call cuBLAS for the GEMM and run only the epilogue in Triton (since baseline cuBLAS+fused-epilogue is what we are racing against).",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 17,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.7537785172413792
+    ]
+}

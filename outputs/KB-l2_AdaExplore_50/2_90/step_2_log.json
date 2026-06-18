@@ -1,0 +1,29 @@
+{
+    "node_id": 2,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4397735293605916,
+    "max_reward": 0.4397735293605916,
+    "avg_reward": 0.4397735293605916,
+    "score": [
+        1,
+        1,
+        0.42813161722488036
+    ],
+    "small_guidance": "- The kernel loads bias twice (`bs` and `conv_bias` from the same pointer) \u2014 remove the dead `bs` load. Also the inner `for ick in range(0, IC_BLOCKS)` should be `tl.static_range` since IC=8 and BLOCK_K\u226516 makes IC_BLOCKS=1; this lets Triton fully unroll and drop the masked IC load entirely when BLOCK_K\u2265IC.\n- Add autotune configs targeting the actual problem shape (OC=64, DHW_out=14\u00b762\u00b762=53816, IC*KT*KH*KW=216): try `BLOCK_M=64, BLOCK_N=128, BLOCK_K=8` (exact IC) and `BLOCK_M=32, BLOCK_N=256, BLOCK_K=8` with num_warps=8, num_stages=3/4. Small K (=IC) eliminates the inner IC loop and masking.\n- Avoid the final `.contiguous()` permute back to NCDHW: write the output directly in NCDHW by storing with `oc_off` as the channel-stride dimension and `s_off` as the inner spatial \u2014 saves a full output-tensor copy (~26MB).",
+    "large_guidance": "- Restructure as a single fused kernel where each program computes one full (N, OC_tile, spatial_tile) output block in NCDHW directly, eliminating both the input NDHWC permute and the output permute-back. Pre-permute weight once in `__init__` (cache `w_ndhwc` as a buffer) so per-call overhead is just the kernel launch.\n- Since IC=8 is tiny, collapse the K dimension to `KT*KH*KW*IC = 216` and unroll the kernel-position loops with `tl.static_range`; load each weight column as a single `[BLOCK_M, IC]` tile per (kt,kh,kw) and accumulate via `tl.dot` with BLOCK_K=8 (or 16 padded). This removes the IC_BLOCKS loop and its masking entirely.\n- Consider a register-blocked direct conv (no GEMM): one program per (N, OC_tile, output-spatial-tile), keep weights for the OC_tile resident in registers/SMEM across the spatial tile, and stream the input window. With 27 kernel taps \u00d7 8 IC = 216 muls per output and OC=64, this fits comfortably and avoids im2col gather overhead.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 3,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.532616119047619
+    ]
+}

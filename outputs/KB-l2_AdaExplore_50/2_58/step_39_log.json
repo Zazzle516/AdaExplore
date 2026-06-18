@@ -1,0 +1,29 @@
+{
+    "node_id": 39,
+    "parent_node_id": 35,
+    "context_node_ids": [
+        36
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4283197262363132,
+    "max_reward": 0.4283197262363132,
+    "avg_reward": 0.4283197262363132,
+    "score": [
+        1,
+        1,
+        0.3336377414495836
+    ],
+    "small_guidance": "- The scatter conv kernel is the bottleneck (17ms vs 5.7ms baseline). Atomic-add per (n,ic,id,ih,w-tile) with BLOCK_W=32 (since IW=32) means heavy global atomics. Try increasing parallelism over IC fan-in by switching to non-atomic gather, or at minimum add an autotune sweep over BLOCK_W\u2208{32,64}, num_warps\u2208{2,4,8}, num_stages\u2208{2,3,4} and tile multiple (id,ih) per program to amortize index math.\n- For the post kernel, BLOCK_S=128 with C=16 gives 2048 elements/program \u2014 try BLOCK_S\u2208{64,128,256,512} with num_warps\u2208{2,4} autotuned; the channel stride loads are strided so consider transposing to channels-last once before the reduction is fused.\n- Fold the conv-transpose bias into the fused_post (skip materializing bias-broadcast init) \u2014 currently `out = bias.expand(...).contiguous()` is a full-size write before the scatter; instead pass bias to the conv kernel and add it as the initialization in the gather form.",
+    "large_guidance": "- Rewrite ConvTranspose3d as a **gather** (input-stationary inverse-conv) rather than scatter-with-atomics: one program per output tile (n, oc-tile, od, oh, ow-tile), loop over (ic, kd, kh, kw), check if the corresponding input position is integral ((ow+pad-kw) % stride == 0) and in range, then accumulate into a register tile. This eliminates all atomics and lets you fuse the LogSumExp directly: keep all OC values in registers and reduce across OC in the same kernel before storing the single-channel output.\n- Better still, fully fuse conv_transpose + logsumexp + hardswish + bias-sub + clamp into one kernel: one program per (n, od, oh, ow-tile) computes all OC accumulators in registers, applies bias, then does the running-max + exp-sum logsumexp across OC (OC=16 fits in registers), the closed-form HardSwish, the scalar bias subtract, and clamp \u2014 single output write, zero intermediate tensors. This collapses the two-kernel pipeline and removes the OC-sized intermediate (N,16,OD,OH,OW) read/write entirely.\n- Use channels-last-in-registers (OC as the innermost register dim of size 16, a power of two) and tile output spatial as BLOCK_W=8 or 16 along OW for coalesced stores. Autotune (BLOCK_W, num_warps, num_stages) over a small grid.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 40,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.3267919485553208
+    ]
+}

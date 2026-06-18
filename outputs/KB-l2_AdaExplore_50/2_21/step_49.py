@@ -1,0 +1,162 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import triton
+import triton.language as tl
+
+
+@triton.autotune(
+    configs=[
+        triton.Config({'BLOCK_SIZE': 2048}, num_warps=8, num_stages=2),
+        triton.Config({'BLOCK_SIZE': 4096}, num_warps=8, num_stages=2),
+        triton.Config({'BLOCK_SIZE': 4096}, num_warps=8, num_stages=3),
+        triton.Config({'BLOCK_SIZE': 8192}, num_warps=8, num_stages=2),
+        triton.Config({'BLOCK_SIZE': 8192}, num_warps=8, num_stages=3),
+        triton.Config({'BLOCK_SIZE': 8192}, num_warps=16, num_stages=2),
+        triton.Config({'BLOCK_SIZE': 16384}, num_warps=16, num_stages=2),
+        triton.Config({'BLOCK_SIZE': 16384}, num_warps=8, num_stages=2),
+    ],
+    key=['SPATIAL', 'CH_PER_GROUP'],
+)
+@triton.jit
+def fused_pass1_kernel(
+    x_ptr, scratch_ptr, stats_ptr,
+    bias_ptr, scale_ptr,
+    N, C, H, W,
+    GROUPS, CH_PER_GROUP,
+    SPATIAL: tl.constexpr,
+    GROUP_SIZE: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    n = pid // GROUPS
+    g = pid % GROUPS
+
+    base = n * C * SPATIAL + g * CH_PER_GROUP * SPATIAL
+    total = GROUP_SIZE
+
+    sum_val = 0.0
+    sum_sq = 0.0
+
+    for ci in range(0, CH_PER_GROUP):
+        c = g * CH_PER_GROUP + ci
+        b = tl.load(bias_ptr + c)
+        s = tl.load(scale_ptr + c)
+        ch_base = base + ci * SPATIAL
+        for off in range(0, SPATIAL, BLOCK_SIZE):
+            idx = off + tl.arange(0, BLOCK_SIZE)
+            mask = idx < SPATIAL
+            x = tl.load(x_ptr + ch_base + idx, mask=mask, other=0.0)
+            y = (x + b) * s
+            y = tl.sigmoid(y)
+            tl.store(scratch_ptr + ch_base + idx, y, mask=mask)
+            y = tl.where(mask, y, 0.0)
+            sum_val += tl.sum(y)
+            sum_sq += tl.sum(y * y)
+
+    mean = sum_val / total
+    var = sum_sq / total - mean * mean
+    tl.store(stats_ptr + pid * 2 + 0, mean)
+    tl.store(stats_ptr + pid * 2 + 1, var)
+
+
+@triton.autotune(
+    configs=[
+        triton.Config({'BLOCK_SIZE': 2048}, num_warps=8, num_stages=2),
+        triton.Config({'BLOCK_SIZE': 4096}, num_warps=8, num_stages=2),
+        triton.Config({'BLOCK_SIZE': 4096}, num_warps=8, num_stages=3),
+        triton.Config({'BLOCK_SIZE': 8192}, num_warps=8, num_stages=2),
+        triton.Config({'BLOCK_SIZE': 8192}, num_warps=8, num_stages=3),
+        triton.Config({'BLOCK_SIZE': 8192}, num_warps=16, num_stages=2),
+        triton.Config({'BLOCK_SIZE': 16384}, num_warps=16, num_stages=2),
+        triton.Config({'BLOCK_SIZE': 16384}, num_warps=8, num_stages=2),
+    ],
+    key=['SPATIAL', 'CH_PER_GROUP'],
+)
+@triton.jit
+def fused_pass2_kernel(
+    scratch_ptr, out_ptr, stats_ptr,
+    gn_weight_ptr, gn_bias_ptr,
+    N, C, H, W,
+    GROUPS, CH_PER_GROUP,
+    eps,
+    SPATIAL: tl.constexpr,
+    GROUP_SIZE: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    n = pid // GROUPS
+    g = pid % GROUPS
+
+    base = n * C * SPATIAL + g * CH_PER_GROUP * SPATIAL
+
+    mean = tl.load(stats_ptr + pid * 2 + 0)
+    var = tl.load(stats_ptr + pid * 2 + 1)
+    rstd = 1.0 / tl.sqrt(var + eps)
+
+    for ci in range(0, CH_PER_GROUP):
+        c = g * CH_PER_GROUP + ci
+        gw = tl.load(gn_weight_ptr + c)
+        gb = tl.load(gn_bias_ptr + c)
+        a = rstd * gw
+        c_off = gb - mean * a
+        ch_base = base + ci * SPATIAL
+        for off in range(0, SPATIAL, BLOCK_SIZE):
+            idx = off + tl.arange(0, BLOCK_SIZE)
+            mask = idx < SPATIAL
+            y = tl.load(scratch_ptr + ch_base + idx, mask=mask, other=0.0)
+            y = y * a + c_off
+            tl.store(out_ptr + ch_base + idx, y, mask=mask)
+
+
+def fused_bsg_gn(x, bias, scale, gn_weight, gn_bias, num_groups, eps=1e-5):
+    N, C, H, W = x.shape
+    SPATIAL = H * W
+    CH_PER_GROUP = C // num_groups
+    GROUP_SIZE = CH_PER_GROUP * SPATIAL
+
+    out = torch.empty_like(x)
+    scratch = torch.empty_like(x)
+    stats = torch.empty((N * num_groups * 2,), device=x.device, dtype=torch.float32)
+
+    grid = (N * num_groups,)
+    fused_pass1_kernel[grid](
+        x, scratch, stats,
+        bias, scale,
+        N, C, H, W,
+        num_groups, CH_PER_GROUP,
+        SPATIAL=SPATIAL,
+        GROUP_SIZE=GROUP_SIZE,
+    )
+    fused_pass2_kernel[grid](
+        scratch, out, stats,
+        gn_weight, gn_bias,
+        N, C, H, W,
+        num_groups, CH_PER_GROUP,
+        eps,
+        SPATIAL=SPATIAL,
+        GROUP_SIZE=GROUP_SIZE,
+    )
+    return out
+
+
+class ModelNew(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, num_groups, bias_shape, scale_shape):
+        super().__init__()
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size)
+        self.bias = nn.Parameter(torch.randn(bias_shape))
+        self.scale = nn.Parameter(torch.randn(scale_shape))
+        self.group_norm = nn.GroupNorm(num_groups, out_channels)
+        self.num_groups = num_groups
+        self.out_channels = out_channels
+
+    def forward(self, x):
+        x = self.conv(x)
+        x = x.contiguous()
+        bias_flat = self.bias.view(-1).contiguous()
+        scale_flat = self.scale.view(-1).contiguous()
+        gn_w = self.group_norm.weight.contiguous()
+        gn_b = self.group_norm.bias.contiguous()
+        eps = self.group_norm.eps
+        out = fused_bsg_gn(x, bias_flat, scale_flat, gn_w, gn_b, self.num_groups, eps)
+        return out

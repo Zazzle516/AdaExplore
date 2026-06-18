@@ -1,0 +1,29 @@
+{
+    "node_id": 18,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness bug: InstanceNorm2d with affine=False and a single spatial element (H=W=1) outputs 0, not LayerNorm across N. The current `norm_residual_kernel` normalizes across N which is wrong. Replace with: out = (0 + y) * y = y*y (since x.unsqueeze(1).unsqueeze(1) makes shape (M,1,1,N) \u2014 channel dim is 1, and InstanceNorm2d normalizes per (batch, channel) across H*W = 1*N spatial elements). Wait \u2014 actually H=1, W=N, so spatial = N elements, so it IS normalizing across N. Re-examine: but eval mode and no affine \u2014 verify against PyTorch reference exactly. The avg_diff is small (1e-4) suggesting the math is *almost* right; likely just an eps or dtype precision issue. Try computing var with the two-pass formula in fp32 and ensure division uses N as float.\n- Increase GEMM autotune coverage: add `BLOCK_M=256, BLOCK_N=128, BLOCK_K=64, num_warps=8, num_stages=3` and `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64`. For M=N=K=8192 the largest tiles dominate.\n- Avoid the `Bt = W.t().contiguous()` transpose every forward call \u2014 cache it on the module (precompute once and store as buffer) so the GEMM hot path doesn't pay an 8192\u00d78192 copy each iter.",
+    "large_guidance": "- The semantics of `InstanceNorm2d` here need to be re-derived carefully against a PyTorch reference run, not assumed. Build a tiny standalone test: feed a known tensor through `nn.InstanceNorm2d(out_features)(x.unsqueeze(1).unsqueeze(1))` and compare to the kernel \u2014 the channel dim is 1 but `num_features=out_features=N`, which is actually a *misconfiguration* in the reference (running stats sized N but only 1 channel present). Confirm whether PyTorch silently normalizes per-spatial-element or per-row before designing the fused kernel.\n- Once semantics are pinned, fuse the entire post-GEMM op (norm + residual add + multiply by y) into the GEMM epilogue when N tile == full row, OR keep a separate row-wise kernel but make it persistent (one CTA per row, BLOCK_N=8192 fits in 8 warps with vectorized loads). Single-pass Welford reduces register pressure vs. the current two-pass.\n- Consider doing the GEMM in tf32 or with `allow_tf32` via `tl.dot(..., allow_tf32=True)` to roughly 2\u00d7 the matmul throughput on Ampere; the downstream norm tolerates the accuracy loss given atol=5e-2.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 19,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        0.8208452377944534
+    ]
+}

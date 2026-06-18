@@ -1,0 +1,30 @@
+{
+    "node_id": 14,
+    "parent_node_id": 12,
+    "context_node_ids": [
+        9,
+        12
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The SPLIT_K path uses `tl.atomic_add` on an output initialized to zero, but the bias is only added when `pid_k == 0` \u2014 this is correct, but the row-mask logic combined with atomics on unaligned tail rows is suspect. Verify correctness first with `SPLIT_K=1` only configs to isolate the bug before tuning.\n- Drop `allow_tf32=False` \u2014 the reference uses default fp32 matmul on Ampere which permits TF32; force fp32 accumulation but allow TF32 inputs (`allow_tf32=True`) for ~2x throughput on RTX 4090.\n- Since the final result is `sum(x @ W^T + b)` per row, you can collapse N into the reduction inside the K-loop: keep a `[BLOCK_M]` accumulator and do `acc += tl.sum(tl.dot(x_block, w_block), axis=1)` per K-tile, removing the outer N-tile loop's materialization of `[BLOCK_M, BLOCK_N]` between iterations.",
+    "large_guidance": "- The whole pipeline reduces to: `out[m] = logsumexp(logsumexp(mean(max(sum_n(x@W^T + b)))))` where every reduction after `sum_n` is over a singleton dim, so the final answer is just `sum_n(x @ W^T + b)` per row. This equals `x @ (sum_n W^T) + sum(b)` = `x @ w_col_sum + bias_sum`, but that is the forbidden algebraic shortcut. The correct design must still materialize the full GEMM at runtime; fuse the row-sum into the GEMM epilogue (one program per M-tile sweeping all N, accumulating a `[BLOCK_M]` row-sum register).\n- Use a 2D grid `(M/BLOCK_M, SPLIT_K)` with split-K reduction via atomics into a `[M]` buffer; the current kernel already does this but has a correctness bug (likely the masked atomic_add or the bias-on-split-0 interacting with split-K K-range partitioning when K is not divisible). Prefer a single-program-per-M-tile design (no SPLIT_K) since M=1024 and BLOCK_M=64 gives 16 programs \u2014 too few; use BLOCK_M=32 to get 32 programs, or add SPLIT_K with a separate accumulation buffer of shape `[SPLIT_K, M]` followed by a tiny reduction kernel to avoid atomics entirely.\n- K=N=8192 is large; consider a persistent-CTA design where each program owns a fixed M-tile and streams through all of K and N, keeping the `[BLOCK_M]` partial sum in registers the entire time \u2014 this maximizes reuse of the loaded x rows across N tiles.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 15,
+    "global_best_node_id": 11,
+    "global_best_score": [
+        1,
+        1,
+        0.6167747552424558
+    ]
+}

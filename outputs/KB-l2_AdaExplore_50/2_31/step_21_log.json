@@ -1,0 +1,29 @@
+{
+    "node_id": 21,
+    "parent_node_id": 11,
+    "context_node_ids": [
+        11
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4476766389986825,
+    "max_reward": 0.4476766389986825,
+    "avg_reward": 0.4476766389986825,
+    "score": [
+        1,
+        1,
+        0.4933322717391304
+    ],
+    "small_guidance": "- The K dimension is only IC*KH*KW = 64*9 = 576; current BLOCK_K=16/32 means 18-36 K-iterations per tile. Add larger-K configs (BLOCK_K=64, 96) and prefer wider BLOCK_N (128, 256) since OHW=126*126=15876 is huge \u2014 e.g. `(BLOCK_M=64, BLOCK_N=128, BLOCK_K=64, num_warps=4, stages=2)` and `(BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, num_warps=8, stages=3)` (verify SMEM: 128\u00b732\u00b74\u00b73 + 32\u00b7128\u00b74\u00b73 \u2248 96KB, fits).\n- Re-enable TF32 in `tl.dot(..., allow_tf32=True)` \u2014 the reference Conv2d uses cuDNN TF32 paths on Ampere, so disabling TF32 forces full fp32 mma and roughly halves throughput needlessly.\n- Swap the program-id mapping so `pid_ohw` is axis 0 (largest dim) and `pid_n_batch` is axis 2; this improves L2 reuse of the weight tile across the OHW grid and reduces redundant weight loads.",
+    "large_guidance": "- Rewrite as an implicit-GEMM where one program owns an `(OC tile, OHW tile)` and iterates N internally (or fuses N into the M/N grid) so the weight tile is loaded once and reused across the batch \u2014 currently each of the 128 batches reloads the full weight matrix, which is the dominant bandwidth cost given W is only 128\u00b7576\u00b74 = 288KB but is re-streamed N\u00d7grid_n\u00d7grid_ohw times.\n- Use channels-last (NHWC) input/output layout so the GEMM-K (IC) axis is contiguous in memory; this turns the strided gather over IC into coalesced vector loads and lets BLOCK_K=64 stream cleanly. Pre-permute x once in `forward`, run the kernel in NHWC, and write directly into NHWC output (final permute back is cheap relative to the conv).\n- Specialize the kernel for KH=KW=3 with an unrolled inner loop over the 9 kernel positions, reducing the K dimension to a pure IC reduction (K=IC=64). This eliminates the integer divmod for kh/kw inside the K-loop, lets BLOCK_K cover the entire IC in one step (BLOCK_K=64), and turns the kernel into 9 small GEMMs accumulated \u2014 typically ~2\u00d7 faster than the generic im2col formulation for 3\u00d73.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 22,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.686288845766129
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 14,
+    "parent_node_id": 13,
+    "context_node_ids": [
+        10,
+        13
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0815260175572519
+    ],
+    "small_guidance": "- The conv_transpose kernel's innermost loop iterates over IC with a separate `tl.load` per ic \u2014 collapse this into a vectorized K-tile: load `BLOCK_IC` input values and `[BLOCK_IC, BLOCK_OC]` weights, then use `tl.dot` to accumulate into `[BLOCK_S, BLOCK_OC]`. Wrap in `@triton.autotune` over `(BLOCK_S, BLOCK_OC, BLOCK_IC) \u2208 {(32,64,32),(64,64,16),(32,32,32),(64,32,32)}` with `num_warps\u2208{4,8}`, `num_stages=2`.\n- Hoist the `(kd,kh,kw)` validity masks and `in_spatial_off` computation outside the IC loop (already done) \u2014 but also precompute `n*IC*ID*IH*IW` base and stride into registers; then iterate `(kd,kh,kw)` as the outer K-loop and IC as the inner reduction with `tl.dot`.\n- For `fused_softmax_sigmoid`, C=64 fits in one warp; use `BLOCK_C=64`, `num_warps=1`, and process multiple `(n,s)` rows per program (e.g. BLOCK_S=4) to amortize launch overhead.",
+    "large_guidance": "- Restructure the conv_transpose as a true GEMM: treat each `(kd,kh,kw)` tap as contributing a `[N*OS_tile, OC] += [N*OS_tile, IC] @ [IC, OC]` matmul where the input gather computes the source `(id,ih,iw)` per output position with validity mask. Use `tl.dot` with `BLOCK_M=64 (output spatial), BLOCK_N=64 (OC), BLOCK_K=32 (IC)`; this replaces the scalar IC loop with tensor-core fp32 (TF32) accumulation and should give a 5-10\u00d7 speedup on the conv.\n- Fuse the softmax+sigmoid into the conv epilogue is hard (needs cross-OC reduction), but you can fuse the bias-add and write the conv output once. Then the softmax kernel only needs one pass. Alternatively, since OC=64 is small, make one program handle a full `(n, s)` channel vector: compute all 64 OC values via the GEMM-K loop accumulating into a `[BLOCK_S, 64]` tile, then do softmax+sigmoid in-register and store \u2014 eliminating the intermediate write entirely.\n- Use channels_last (NDHWC) layout for the conv output buffer so the softmax reduction over C is contiguous; this also makes the fused-epilogue variant above straightforward since OC is already the contiguous innermost axis.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 15,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.5287083316831683
+    ]
+}

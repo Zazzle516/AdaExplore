@@ -1,0 +1,31 @@
+{
+    "node_id": 30,
+    "parent_node_id": 20,
+    "context_node_ids": [
+        21,
+        5,
+        20
+    ],
+    "depth": 5,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 1.231297028483449,
+    "max_reward": 1.231297028483449,
+    "avg_reward": 1.231297028483449,
+    "score": [
+        1,
+        1,
+        6.958200484988453
+    ],
+    "small_guidance": "- Sweep `TILE_W` (8/16/32) with `num_warps` in {4, 8} and `num_stages` in {2, 3} via `triton.autotune`; the current OC=16 \u00d7 TILE_W=16 = 256-element tile is small enough that larger TILE_W (32) with num_warps=8 should better amortize weight loads.\n- Hoist the weight loads out of the spatial (ddp/dhp/dwp) loop: the same `(ic, kd, kh, kw) \u2192 offs_oc` weight vector is reloaded 8\u00d7 per program. Preload all KD\u00b7KH\u00b7KW\u00b7IC\u00b7OC weights into registers/shared once per program, then reuse across the 8 pooled positions.\n- Precompute `valid_d`/`id_` and `valid_h`/`ih_` per `(ddp, dhp, kd, kh)` outside the `kw`/`ic` inner loops, and combine the three `(num % STRIDE)==0` masks into a single parity check on `(d_out+PAD)` parity vs `kd` parity (stride=2 \u21d2 only one kd parity contributes).",
+    "large_guidance": "- Recast as an im2col-style GEMM over the unpooled output: one program per `(N, Dp\u00b7Hp\u00b7Wp tile)` accumulating an `(OC, 8\u00b7TILE_W)` tile (the 8 pooled sub-positions \u00d7 spatial tile), then do channel-softmax/sub/swish/max reduction in the epilogue. With OC=16 the K-dim (IC\u00b7KD\u00b7KH\u00b7KW = 81) is tiny \u2014 make the kernel persistent and stream the K loop while keeping the OC\u00d7spatial tile in registers.\n- Exploit stride=2 parity: for each output position, only kernel taps with matching parity contribute, so unroll the 27 taps into 8 disjoint static groups of ~3-4 taps each (one per `(ddp, dhp, dwp)`); this removes the runtime `% STRIDE` masks entirely and halves the effective inner-loop count.\n- Consider scatter-add formulation: launch over input `(n, ic, id, ih, iw)` tiles, compute the `IC\u00d7OC` outer-product contributions to a shared-memory `(OC, local_DpHpWp)` tile, then do the pool+softmax+swish+max reduction once per output tile. This trades the gather's divisibility checks for a clean dense GEMM and is the canonical ConvTranspose pattern.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 31,
+    "global_best_node_id": 30,
+    "global_best_score": [
+        1,
+        1,
+        6.958200484988453
+    ]
+}

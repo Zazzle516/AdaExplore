@@ -1,0 +1,31 @@
+{
+    "node_id": 29,
+    "parent_node_id": 28,
+    "context_node_ids": [
+        8,
+        19,
+        28
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The kernel currently uses one program per M-tile and serially loops over all N tiles, which under-utilizes the SMs (only ceil(128/BLOCK_M) programs launched). Switch to a 2D grid `(cdiv(M, BLOCK_M), cdiv(N, BLOCK_N))` writing partial sigmoid-sums to a `(num_n_tiles, M)` scratch buffer, then a tiny second kernel reduces along the N-tile dim. This exposes ~256+ programs instead of 1-4.\n- With M=128, prefer `BLOCK_M=64` or `BLOCK_M=128` and larger `BLOCK_N` (256) with `BLOCK_K=32` since K is huge (32768) \u2014 add configs like `(64,256,32, warps=8, stages=4)` and `(128,128,32, warps=8, stages=4)`. Drop tiny `BLOCK_M=32` configs that waste tensor-core lanes.\n- Pre-transpose W to `(K, N)` once in `__init__` so the inner-K load on W is contiguous along K (current layout has W of shape (N,K) loaded with K stride on rows and N stride on cols \u2014 fine, but verify the contiguous axis on `tl.dot`'s B operand is K).",
+    "large_guidance": "- Redesign as a split-K / split-N persistent GEMM-reduce: launch `(cdiv(M,BM), cdiv(N,BN))` programs, each computing its (BM,BN) GEMM tile, applying bias+sigmoid in the epilogue, and reducing along BN to a `(BM,)` partial. Use `tl.atomic_add` into a `(M,)` output buffer (M=128 is tiny so contention is fine and atomics on fp32 are cheap), eliminating the second kernel entirely. This turns the current 1-4 program launch into ~256 concurrent programs.\n- Total work is 128 \u00d7 32768 \u00d7 32768 \u00d7 2 \u2248 275 GFLOP; at 4090's ~80 TFLOP fp32 / ~165 TFLOP tf32 the floor is ~2-4 ms. Current 122 ms means ~30\u00d7 headroom \u2014 the bottleneck is parallelism, not tile shape. Enable TF32 by casting inputs to tf32 in `tl.dot` (`allow_tf32=True`) or accepting bf16 inputs to use tensor cores at full throughput.\n- Consider keeping x resident: a persistent kernel where each program owns a fixed M-tile and streams N-tiles, but launched with `cdiv(M,BM) * NUM_SMS_PER_M` programs that split the N dimension among themselves and reduce via atomics \u2014 combines x-reuse with N-parallelism.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 30,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

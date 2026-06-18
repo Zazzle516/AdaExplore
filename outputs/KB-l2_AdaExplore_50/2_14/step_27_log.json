@@ -1,0 +1,30 @@
+{
+    "node_id": 27,
+    "parent_node_id": 26,
+    "context_node_ids": [
+        25,
+        26
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.486298001822554,
+    "max_reward": 0.486298001822554,
+    "avg_reward": 0.486298001822554,
+    "score": [
+        1,
+        1,
+        0.8119585150360703
+    ],
+    "small_guidance": "- The kernel is doing a trivial row-sum on an (M,N)=(1024,8192) matrix; the matmul dominates. Tuning row_sum_scale alone cannot beat baseline. If keeping this structure, reduce launch overhead: use a single program per row with BLOCK_N=8192, num_warps=8, num_stages=2 (no K-loop needed since N fits exactly in one tile).\n- Drop the `ROWS_PER_PROG` autotune dimension \u2014 at M=1024 there is plenty of parallelism per-row already; collapsing rows just serializes work and lengthens registers.\n- Consider writing scalar output directly without the intermediate (M,1) view \u2014 store with a 1-D `tl.store(out_ptr + pid, s)` to remove the `mask=row_valid` overhead.",
+    "large_guidance": "- The heavy op is the (1024 \u00d7 8192) \u00d7 (8192 \u00d7 8192) matmul (~137 GFLOPs); cuBLAS on a 4090 is already extremely fast, but the reference's downstream `sum(dim=1)` means each output column is summed away. A custom fused GEMM+row-reduce kernel can skip writing the full (M,N) intermediate: accumulate `acc[m] += sum_k(x[m,k] * W[n,k])` across all N tiles in registers, summing the N-tile partials inline. This turns the work into a (M, K) reduction of `x @ W.T.sum(dim=0)` shape but must be expressed as a tiled GEMM whose N-tile partial sums are reduced rather than stored \u2014 every multiply still executes.\n- Alternative: tile by (BLOCK_M, BLOCK_K) with `tl.dot` against W blocks, looping over N inside the kernel, doing `tl.sum(acc, axis=1)` per N-tile and adding to a per-row accumulator. This removes the (M,N)=32 MB intermediate write/read entirely, which is the main remaining cost beyond the GEMM itself.\n- Fuse the `/2 * scaling_factor` constant into the epilogue (single scalar multiply on the (M,) result). Use BLOCK_M=64, BLOCK_N=128, BLOCK_K=32, num_warps=8, num_stages=3 as a starting tile, with a grid of (M/BLOCK_M,) persistent programs that loop over N.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 28,
+    "global_best_node_id": 27,
+    "global_best_score": [
+        1,
+        1,
+        0.8119585150360703
+    ]
+}

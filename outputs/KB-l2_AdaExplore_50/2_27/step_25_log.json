@@ -1,0 +1,30 @@
+{
+    "node_id": 25,
+    "parent_node_id": 24,
+    "context_node_ids": [
+        23,
+        24
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4657194884517692,
+    "max_reward": 0.4657194884517692,
+    "avg_reward": 0.4657194884517692,
+    "score": [
+        1,
+        1,
+        0.6421857797270955
+    ],
+    "small_guidance": "- The conv3d kernel is the dominant cost; sweep larger BLOCK_SP variants and add configs with smaller BLOCK_SP (64, 128) paired with num_warps=2 to reduce register pressure from the fully-unrolled (IC=3, KD=KH=KW=4 = 192 iters) inner loop. Also try num_stages=4 for the wider tiles.\n- Each program reloads the same (IC, KD, KH, KW) slab for one (B, OC) pair; tile OC inside a single program (e.g. BLOCK_OC=4 or 8) so the input loads are amortized across multiple output channels \u2014 change grid to (B * ceil(OC/BLOCK_OC), sp_tiles) and accumulate `BLOCK_OC \u00d7 BLOCK_SP` outputs per program, then apply hardswish before storing.\n- Keys for autotune should include B (currently fine) but consider hoisting `id_*HW + ih_*W + iw_` index math out of the innermost kw loop to reduce integer ops; precompute `oh*W+ow` once per tile.",
+    "large_guidance": "- Restructure conv3d as an im2col-style GEMM: one program per (B, OC tile, output-spatial tile) doing a tiled matmul with K = IC*KD*KH*KW = 192. Use `tl.dot` with BLOCK_M (OC tile, e.g. 16) \u00d7 BLOCK_N (spatial tile, e.g. 64\u2013128) \u00d7 BLOCK_K (32 or 64), computing input gather offsets implicitly inside the K loop. This will be vastly faster than the current scalar FMA accumulation pattern.\n- Fuse hardswish into the GEMM epilogue (already partially done) and additionally compute per-channel partial sums for the mean within the same kernel by reducing across the spatial tile and atomic-adding into a `[B, OC]` sum buffer plus a `[B, OC]` sumsq buffer \u2014 then GroupNorm + mean becomes a tiny `(B, num_groups)` kernel that only reads B*OC scalars (no need to materialize/reread the full `[B, OC, S]` activation).\n- Alternatively, since post-mean we only need per-channel scalar sum and sumsq for GroupNorm-then-mean (because mean of (\u03b3\u00b7(x-\u03bc)/\u03c3 + \u03b2) over spatial = \u03b3\u00b7(mean(x)-\u03bc)/\u03c3 + \u03b2), avoid writing conv_out at all: have the conv kernel accumulate sum(hardswish(conv)) and sum(hardswish(conv)^2) per (B, OC) directly via atomics or via a second reduction-only pass over a persistent tile. This eliminates the 1024\u00b716\u00b713\u00b729\u00b729 \u2248 180M-element intermediate write/read.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 26,
+    "global_best_node_id": 12,
+    "global_best_score": [
+        1,
+        1,
+        0.8509946528898934
+    ]
+}

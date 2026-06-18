@@ -1,0 +1,27 @@
+{
+    "node_id": 21,
+    "parent_node_id": 20,
+    "context_node_ids": [],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness failed with avg_difference ~1e-4: this is suspiciously close to fp32 roundoff for K=8192 reductions, but max_diff 1.3e-3 exceeds the 5e-2 tolerance only marginally \u2014 verify the bias is being added correctly (shape (out_features,) being indexed by offs_bn looks right). Double-check `tl.dot` allow_tf32 \u2014 set `allow_tf32=False` or use `input_precision='ieee'` to rule out TF32 accumulation drift on RTX 4090.\n- The B-matrix access uses weight directly (shape (N,K), strides (K,1)) but treats it as the transposed (K,N) operand with stride_bk=1, stride_bn=K. This is a strided load along the inner (N) dimension \u2014 coalescing is poor. Either materialize `weight.T.contiguous()` once, or reformulate the kernel to compute `A @ W^T` directly with offs_bn indexing rows of W and offs_k indexing cols (contiguous inner axis).\n- Add larger tile configs (BLOCK_M=256, BLOCK_N=128, BLOCK_K=64) and try num_stages=4-5 for K=8192; current best may be compute-bound with small K-loop pipelining.",
+    "large_guidance": "- Reformulate the kernel as `C = A @ W^T` natively: index W as (N, K) with offs_bn on the M-like axis of W and offs_k contiguous on the inner axis. This makes both A and W loads coalesced along K (the contiguous dim of both), eliminating the strided B load that the current transpose-trick produces.\n- Use `tl.dot(a, b, allow_tf32=False)` or compute in fp32 with `input_precision='ieee'` to ensure the accumulation matches torch's reference within 5e-2 max-diff (the current 1.3e-3 max diff is suspect \u2014 likely a real bug, possibly bias broadcast or out-of-bounds masking, since TF32 alone shouldn't fail at 5e-2 tolerance).\n- Consider a persistent-grid SplitK or streamK kernel for M=N=K=8192 problems on RTX 4090 \u2014 single-tile-per-program leaves SM occupancy on the table when grid size (64*64=4096 with 128x128 tiles) far exceeds 128 SMs.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 22,
+    "global_best_node_id": 16,
+    "global_best_score": [
+        1,
+        1,
+        2.945607409468169
+    ]
+}

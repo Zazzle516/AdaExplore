@@ -1,0 +1,27 @@
+{
+    "node_id": 1,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness bug: InstanceNorm2d with affine=False is being applied, but the model's `self.instance_norm` in the reference has `affine=False` default \u2014 however the issue is numerical: the reference computes normalization with `eps=1e-5` inside sqrt and returns `(x-mean)/sqrt(var+eps)`. Your kernel matches this. Re-check: small_diff ~1e-3 suggests fp32 precision drift from doing the GEMM in a different reduction order. Try increasing BLOCK_K to 64 and num_stages to 4 for the GEMM to improve K-loop pipelining, and ensure the autotune key includes shapes so the best config is chosen for M=N=K=8192.\n- The norm kernel passes `EPS` as a Python float positional arg \u2014 per safety contract this should be `tl.constexpr` (or a 0-d tensor). Make `EPS: tl.constexpr` and pass `EPS=self.eps` at launch.\n- Add `GROUP_M=8` block swizzle to the GEMM for better L2 reuse across 8192\u00d78192 output tiles; also add a 256\u00d7128 config with num_warps=8, num_stages=4.",
+    "large_guidance": "- The correctness failure (max_diff ~1.4e-3, avg ~1.2e-4) is just below the 5e-2 tolerance threshold \u2014 actually it should pass. If the harness reports mismatch, suspect the `.cuda()` calls inside forward moving `self.bmm.weight` away from the registered parameter each call, or the `Bt = W.t().contiguous()` being recomputed every forward. Cache `Bt` (transposed weight) once at init as a buffer to avoid per-call transpose overhead and any aliasing.\n- Consider fusing the entire pipeline differently: since N=K=8192 and M=1024, the GEMM dominates. Make the GEMM the only heavy kernel, and write a separate row-reduction LayerNorm-style kernel for the (M, N) normalize+residual+mul. For N=8192 a single-block reduction needs BLOCK_N=8192 which uses too many registers \u2014 switch to a two-pass kernel (pass 1: compute mean & var via tiled reduction with atomics or a small scratch; pass 2: normalize and fuse residual). Or use a persistent kernel with online Welford across BLOCK_N=1024 tiles.\n- For the GEMM with M=1024, N=K=8192, a split-K strategy is unnecessary; instead use larger BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4 and ensure weight is pre-transposed and stored as a buffer.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 2,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

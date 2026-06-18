@@ -1,0 +1,29 @@
+{
+    "node_id": 25,
+    "parent_node_id": 7,
+    "context_node_ids": [
+        7
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The kernel failed at the C launcher compile step (gcc returned non-zero). This is often caused by passing Python `float` scalars where Triton expects tensors/typed scalars \u2014 cast `inv_div` explicitly (e.g. pass as `tl.float32` via a 0-d tensor or use a constexpr) and ensure `N, IC, D, H, ...` are passed as ints, not numpy types.\n- Reduce register pressure: the conv inner loop iterates `IC * KD*KH*KW = 8*27 = 216` times per pool-window-element times 8 pool elements = 1728 MACs per (n, oc-tile, output) \u2014 split the work so each program handles one (od, oh, ow) and do the pool reduction in a second kernel, or tile OC smaller (BLOCK_OC=8) with `num_warps=2`.\n- Add `triton.autotune` over BLOCK_OC \u2208 {8,16,32}, num_warps \u2208 {2,4,8}, num_stages \u2208 {2,3}.",
+    "large_guidance": "- Rewrite the conv as an im2col-style GEMM: one program per `(N, OC_tile, OutSpatial_tile)`, with the K dimension = `IC*KD*KH*KW = 216`. Use `BLOCK_M=OC_tile (16)`, `BLOCK_N=output spatial tile (e.g. 64)`, `BLOCK_K=32 or 64`, accumulate with `tl.dot`. Fuse `+bias`, `*inv_div`, and the 2\u00d72\u00d72 maxpool in the epilogue by having each program emit a pooled tile (tile output coordinates in pooled space, gather the 8 conv outputs within registers).\n- Since the final result is `sum_dim=1` over a `(N, OC, 1, 1, 1)` tensor after global avg pool, fuse the global-avg-pool + bias-add + sum-over-OC into the same kernel: each program reduces its pooled tile into a per-(N) partial sum (scaled by `1/SP` and summed across OC with bias), and atomically adds to `out[n]`. This removes the intermediate pooled tensor entirely.\n- Use channels-last-ish layout for the input load pattern: precompute base offsets for the KD\u00d7KH\u00d7KW gather outside the K loop so the inner loop is pure pointer arithmetic + `tl.load` with masks for the spatial tail.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 26,
+    "global_best_node_id": 15,
+    "global_best_score": [
+        1,
+        1,
+        0.8067704998582633
+    ]
+}

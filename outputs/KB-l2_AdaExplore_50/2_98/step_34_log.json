@@ -1,0 +1,30 @@
+{
+    "node_id": 34,
+    "parent_node_id": 33,
+    "context_node_ids": [
+        32,
+        33
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.572242856373387,
+    "max_reward": 0.572242856373387,
+    "avg_reward": 0.572242856373387,
+    "score": [
+        1,
+        1,
+        1.521003565080442
+    ],
+    "small_guidance": "- The matmul shape is M=1024, N=8192, K=8192 with output pooled to N/16=512 then reduced to scalar per row. Since N is reduced fully, eliminate the partial buffer and per-tile max store: make BLOCK_N span the full N (or use SPLIT_K over K with atomic-max into a single (M,) buffer initialized to -inf). At minimum, drop tile shapes with BLOCK_N<256 from the autotune list and add `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4` and a `BLOCK_M=256, BLOCK_N=128, BLOCK_K=64` variant \u2014 K=8192 benefits from large BLOCK_K and num_stages=4.\n- The current `tl.reshape(acc, (BLOCK_M, POOLED_BLOCK_N, POOL_K))` assumes BLOCK_N % POOL_K == 0 (POOL_K=16); all current configs satisfy this, but the row max across BLOCK_N tiles is done in a second kernel \u2014 fuse it by having one program own a full row-strip (BLOCK_N = N) so `tl.max` produces the final scalar and stores directly to `out`, removing the second kernel and the partial buffer.\n- Try `GROUP_M=1` (only 8 row-tiles total for M=1024/BLOCK_M=128) \u2014 swizzle gives no L2 benefit here and just complicates indexing.",
+    "large_guidance": "- Redesign as a persistent split-K GEMM with full-row epilogue: each program owns a (BLOCK_M, N) row-strip. Loop over K in BLOCK_K chunks accumulating into a (BLOCK_M, BLOCK_N_INNER) register tile that walks across N, applying bias+pool+GELU+scale and running a running max per row. This eliminates the partial tensor and the second reduction kernel entirely, and keeps the row max in registers throughout.\n- Alternative: keep the tiled GEMM but use atomic-max into a pre-initialized `out` tensor (`-inf`) after computing tile-local pooled-GELU-scaled max \u2014 this removes the partial buffer + row_max_reduce kernel and saves a global round-trip of (M, num_n_tiles) floats.\n- Consider storing weight_T in fp16/bf16 (cast once at init) and accumulating in fp32. K=8192 is the dominant cost; halving the W bandwidth from 256MB to 128MB per pass is a large win on a bandwidth-bound 4090 GEMM. Cast x to bf16 inside the kernel or pre-cast it on entry.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 35,
+    "global_best_node_id": 15,
+    "global_best_score": [
+        1,
+        1,
+        1.7535136642010192
+    ]
+}

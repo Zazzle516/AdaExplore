@@ -1,0 +1,30 @@
+{
+    "node_id": 47,
+    "parent_node_id": 46,
+    "context_node_ids": [
+        10,
+        44
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The kernel computes `out_off` twice; the first write expression with `offs_oc[:, None]*stride_oc + oh[None,:]*stride_oh` has shape `[BLOCK_N, BLOCK_M]` mismatched with `acc` `[BLOCK_M, BLOCK_N]`. Remove the duplicate/incorrect first `out_off` assignment and keep only the `[BLOCK_M, BLOCK_N]` version. Likewise sanity-check the store mask alignment with `acc`.\n- The extra-bias add is applied AFTER min+scale via a second kernel \u2014 but the reference computes `(min(conv,c) + bias) * scale`. The current code stores `min(conv,c)*scale` then adds `bias*scale`, which is correct algebraically. However the duplicate `out_off` likely writes garbage \u2014 fix that first, then fold the extra bias into the main kernel epilogue (load `extra_bias[oc]`, do `acc = (tl.minimum(acc+conv_bias, c) + extra_bias) * scaling` in-kernel) to drop the second pass entirely.\n- Once correct, expand autotune with `(BLOCK_M=128, BLOCK_N=64, BLOCK_K=16)` and `(64,128,16)` at num_warps=8; OHW=15876 and OC=128 favor wider M tiles.",
+    "large_guidance": "- Rewrite as a single fused im2col-GEMM kernel where the epilogue does `min(acc + conv_bias, constant) + extra_bias` then multiplies by `scaling_factor`, all before the store. No second kernel pass, no separate bias-add traversal of the output tensor.\n- Grid should be `(N, cdiv(OC,BLOCK_N), cdiv(OH*OW,BLOCK_M))` with one program writing its tile directly to NCHW output. Precompute `oh,ow` from `offs_hw` once, and compute input gather offsets `(ih=oh+kh, iw=ow+kw)` per K-tile; KH=KW=3 means IC_KH_KW=576 \u2014 a single inner loop with BLOCK_K=32 or 64 is fine.\n- Consider channels-last input/weight layout so the K reduction (which iterates over IC fastest) is contiguous; otherwise keep NCHW but ensure `offs_k = ic*9 + kh*3 + kw` orders IC as the fastest axis to coalesce x loads across the K tile.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 48,
+    "global_best_node_id": 44,
+    "global_best_score": [
+        1,
+        1,
+        0.6869813673057518
+    ]
+}

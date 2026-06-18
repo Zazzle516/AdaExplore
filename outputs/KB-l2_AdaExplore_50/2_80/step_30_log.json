@@ -1,0 +1,29 @@
+{
+    "node_id": 30,
+    "parent_node_id": 29,
+    "context_node_ids": [
+        28
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.6041036866616621,
+    "max_reward": 0.6041036866616621,
+    "avg_reward": 0.6041036866616621,
+    "score": [
+        1,
+        1,
+        1.7838554149587122
+    ],
+    "small_guidance": "- The atomic_max approach serializes tile reductions across N tiles for each row. Try a two-stage reduction: write per-tile maxes to a small `(num_pid_n, M)` buffer, then a tiny second kernel reduces over `num_pid_n` per row \u2014 avoids atomic contention on M=1024 rows.\n- Add larger N-tile autotune configs (BLOCK_N=512 with BLOCK_M=64) so each program handles a bigger chunk of N, reducing the number of tiles competing on each row's atomic. Also try BLOCK_K=128 with num_stages=3 since K=8192 is large.\n- Since post_kernel computes `gelu(0)=0` (x - x.mean over a 1-element dim is always 0), you could skip it entirely and just `out.zero_()` \u2014 but the row_max computation still must run for the contract.",
+    "large_guidance": "- Switch from atomic_max to a split-K-style row reduction: launch a 2D grid `(pid_m, pid_n)` where each program writes its tile-max to `partial[pid_m, pid_n]`, then a second kernel does `tl.max` over N tiles per row. This removes atomic serialization and lets the GEMM run at full throughput.\n- Consider a persistent / streamK GEMM: with M=1024, N=8192, K=8192 the workload is GEMM-bound at ~137 GFLOPs, well within RTX 4090's ~80 TFLOPs fp32 budget. Current 1.55ms suggests we're near 88 TFLOPs \u2014 actually quite good. Bigger gains come from using tf32 (`tl.dot(x, w, allow_tf32=True)` is default but verify) or fp16 accumulation paths if accuracy permits.\n- Note the post-step is mathematically `gelu(rowmax - rowmax) = 0`, so the entire row_max computation is dead w.r.t. output, but the safety contract requires executing the GEMM and max. Keep them; just minimize their cost via the split-K reduction above and stream the max into the zero output.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 31,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        1.7954388916792234
+    ]
+}

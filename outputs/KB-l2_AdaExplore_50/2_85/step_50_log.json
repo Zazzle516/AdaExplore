@@ -1,0 +1,29 @@
+{
+    "node_id": 50,
+    "parent_node_id": 47,
+    "context_node_ids": [
+        49
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4464419814553786,
+    "max_reward": 0.4464419814553786,
+    "avg_reward": 0.4464419814553786,
+    "score": [
+        1,
+        1,
+        0.48314634700687337
+    ],
+    "small_guidance": "- The conv kernel dominates (5.44ms vs 2.63ms baseline). Add more autotune configs targeting the specific shape (OC=64, OH*OW=126*126=15876, IC=8, KH=KW=3): try BLOCK_OC=64/BLOCK_SP=64 with num_warps=2, and BLOCK_OC=16/BLOCK_SP=512. The current configs may not be hitting an optimal tile for the small IC*KH*KW=72 reduction.\n- Fuse the bias add and even the GN stats accumulation into the conv epilogue \u2014 currently conv writes to global memory and is reread by gn_stats. At minimum, write conv output in channels-last layout so GN's per-group reduction is contiguous.\n- Increase BLOCK_OUT in the apply/pool/clamp kernel to 512 or 1024 (TOTAL_OUT = 31*31 = 961 fits in one tile), reducing grid size from N*C*4 to N*C*1, and bump num_warps=8.",
+    "large_guidance": "- Replace the gather-style direct conv with an im2col-style GEMM where one program handles a tile of (OC, output-spatial) for a single N. With IC*KH*KW=72 (very small K), use BLOCK_K=72 as a single static reduction and BLOCK_M=64 (OC), BLOCK_N=128 (spatial); use tl.dot for the inner product instead of broadcasted multiply-accumulate \u2014 the current `w[:,None]*x[None,:]` pattern doesn't use tensor cores.\n- Fuse conv + bias + group-norm-stats into a single kernel pass: emit conv output to gmem AND atomically accumulate per-group sum / sum-of-squares into small (N,G) buffers, eliminating the separate gn_stats_kernel launch. Or use a two-stage scheme where conv writes channels-last and gn_stats reads contiguously across the CPG*H*W axis.\n- Consider a fully fused conv\u2192gn\u2192scale\u2192maxpool\u2192clamp kernel where each program owns one (N, pooled_tile) and computes the full 4x4 input window per output element on-the-fly; this avoids materializing the (N,64,126,126) intermediate (~520MB) which is the main memory-bandwidth cost. GN stats still need a prepass, but the apply+pool+clamp can read once.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 51,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        0.9287336140344138
+    ]
+}

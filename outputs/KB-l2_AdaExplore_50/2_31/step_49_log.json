@@ -1,0 +1,31 @@
+{
+    "node_id": 49,
+    "parent_node_id": 36,
+    "context_node_ids": [
+        6,
+        35,
+        36
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.44289281090909094,
+    "max_reward": 0.44289281090909094,
+    "avg_reward": 0.44289281090909094,
+    "score": [
+        1,
+        1,
+        0.45386569
+    ],
+    "small_guidance": "- The inner K-loop iterates over `IC` in `BLOCK_K` chunks *inside* the static KH\u00d7KW loop, producing 9\u00d7 more K-iterations than needed. Flatten to a single loop over `K = KH*KW*IC` (or move the `ic` loop outside and the `kh,kw` static unroll inside) so the GEMM-K dimension is contiguous and `BLOCK_K=64` actually amortizes the `tl.dot` cost.\n- Since `IC=64` is small and `KH*KW*IC=576`, prefer `BLOCK_K=64` with `BLOCK_M=128, BLOCK_N=128, num_warps=8, num_stages=3` (fits SMEM: (128\u00b764+64\u00b7128)\u00b74\u00b73 \u2248 192KB \u2014 drop stages to 2 \u2192 128KB OK). Also add `allow_tf32=True` in `tl.dot` \u2014 fp32 inputs are fine and TF32 roughly doubles tensor-core throughput on Ampere/Ada.\n- Hoist the weight reshape (`permute+contiguous+view` to `[KH*KW*IC, OC]`) into `__init__` so it isn't re-done every forward; same for `bconv` and `bias_extra`. The NHWC input permute is unavoidable per call but ensure it's the only host-side work in `forward`.",
+    "large_guidance": "- Restructure the kernel as a true im2col GEMM with one program per `(N, OH*OW tile, OC tile)` and a single flat K-loop of length `KH*KW*IC`, computing input offsets implicitly. Precompute `(kh, kw, ic)` decomposition of `k` via constexpr arithmetic so each K-tile gathers a contiguous IC stripe; this gives coalesced loads on NHWC and lets `tl.dot` run at full tensor-core rate with TF32.\n- Consider a persistent / split-K-free design where each program handles an `(BLOCK_M=128 output pixels, BLOCK_N=128 OC)` tile and loops over all `K`, with the weight tile preloaded once. With OC=128 the N grid is just 1, so swap M and N: tile M=output-pixels coarsely (256) and keep N=OC=128 as a single block \u2014 eliminates an entire grid dim and enables larger BLOCK_M.\n- Fuse the NHWC permute into the kernel by indexing the original NCHW input directly (compute `n*IC*IH*IW + ic*IH*IW + ih*IW + iw`) \u2014 this removes the ~50MB contiguous copy from `forward`, which is likely a meaningful fraction of the 15ms runtime.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 50,
+    "global_best_node_id": 44,
+    "global_best_score": [
+        1,
+        1,
+        0.6869813673057518
+    ]
+}

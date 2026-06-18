@@ -1,0 +1,29 @@
+{
+    "node_id": 21,
+    "parent_node_id": 20,
+    "context_node_ids": [
+        20
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The atomic_add accumulation is the correctness bug: multiple pid_n programs race-add to `out[offs_m]` but `tl.atomic_add` with a vector mask on FP32 is fine \u2014 however, initializing `out` as `torch.zeros((M,))` and atomic-adding partial row sums should work. The real issue is likely the masking writing 0.0 for out-of-range N still gets summed correctly, so atomic ordering isn't the bug. Check that `x` and `W` are float32 contiguous and that the kernel isn't being launched with stale `out` \u2014 actually `torch.zeros` is fresh each call. The bug is more likely that `self.linear.bias` is on CPU when `x` is moved to CUDA; ensure all params/buffers are on the same device (call `.cuda()` on bias or move via module). Also remove the redundant `tl.where` masking before `tl.sum` since masked loads already gave zero \u2014 but more importantly the accumulator may include garbage at boundaries.\n- Tighten autotune: with M=128, N=K=32768, prefer `BLOCK_M=32 or 64`, `BLOCK_N=128, BLOCK_K=64`, num_warps=4, num_stages=4. Drop `BLOCK_M=128` configs since M=128 only gives 1-2 row tiles and starves the grid; instead make BLOCK_M smaller (16/32) to expose more parallelism along M when combined with split-N.\n- Add a `GROUP_M` swizzle and ensure W is stored as (N, K) row-major and loaded with K contiguous, since K is the inner GEMM axis \u2014 currently W is (K, N) with stride_wn=1 which is correct, keep it.",
+    "large_guidance": "- Rewrite as a split-K / split-N reduction kernel: one program per (row m, N-tile), each computing the partial sigmoid-sum over its N tile and atomic-adding a single scalar per row. Since the final output is just a per-row scalar, you never need to materialize the (M,N) sigmoid tensor \u2014 accumulate `sum(sigmoid(dot+bias))` into a scalar register and atomic_add once per program. The current kernel already does this conceptually but masking + atomic correctness needs to be airtight.\n- Since M=128 is tiny and N=K=32768 is huge, structure the grid as (M, num_n_tiles) with BLOCK_M=16 or 32 and a large BLOCK_N (128-256), making the K-loop the dominant work. Consider a persistent kernel where each program handles one row entirely and streams N tiles, keeping the row's x slice in shared memory / registers across N tiles to amortize the X loads (X is read once per (m, n-tile) pair otherwise \u2014 huge bandwidth waste since K=32768 means each row's x is 128KB).\n- Even better: tile (M, BLOCK_N) outer, and for each tile do the full K reduction with x reused across all N in the tile \u2014 this is just GEMM, but ensure BLOCK_M is small (since M=128) and BLOCK_N is large so x-row reuse is high. Move bias+sigmoid+row-reduction strictly into the epilogue with one atomic_add per (m_tile, n_tile) of size BLOCK_M scalars.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 22,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

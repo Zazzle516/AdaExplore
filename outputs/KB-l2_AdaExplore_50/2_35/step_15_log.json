@@ -1,0 +1,30 @@
+{
+    "node_id": 15,
+    "parent_node_id": 14,
+    "context_node_ids": [
+        11,
+        14
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5664424770316228,
+    "max_reward": 0.5664424770316228,
+    "avg_reward": 0.5664424770316228,
+    "score": [
+        1,
+        1,
+        1.473150435510888
+    ],
+    "small_guidance": "- The current kernel does 4\u00d7 `tl.dot(w, x)` per K-step with the same `w` tile but four shifted `x` loads. Try restructuring so the inner loop accumulates a single `BLOCK_M \u00d7 (BLOCK_N*4)` GEMM tile by loading a wider x tile (covering pool 2\u00d72) once, then doing one `tl.dot` \u2014 this reuses w better and reduces redundant loads of overlapping x positions (rows shared between (oh0,ow0) and (oh0,ow0+1)).\n- Add autotune configs biased toward larger BLOCK_N (e.g. BLOCK_M=32,BLOCK_N=128,BLOCK_K=32 num_warps=4; BLOCK_M=64,BLOCK_N=128,BLOCK_K=16 num_warps=8) since OC=128 is small and OUT_SPATIAL=63\u00b763\u22483969 is large; also try BLOCK_M=128,BLOCK_N=128,BLOCK_K=16 num_stages=2 (within SMEM budget: (128\u00b716+16\u00b7128)\u00b74\u00b72=32 KB).\n- Fold the bias subtraction `bias - SUB` into a single fused scalar at host side (pass `bias - subtract` precomputed) to remove one FMA per output, and replace mish's `log1p(exp)` softplus with `tl.log(1+tl.exp(...))` clamped \u2014 already done; tighten by computing `sp = tl.where(x>20, x, log(1+exp(x)))` only once and reusing tanh closed form `tanh(sp)=1 - 2/(exp(2sp)+1)` to save one subtraction.",
+    "large_guidance": "- Switch to channels-last (NHWC) input/weight layout so the GEMM-K dimension (IC\u00b7KH\u00b7KW) is contiguous along IC, allowing vectorized 4-element loads on x and removing the strided IH\u00b7IW gather. With IC=64 and KH\u00b7KW=9, K_TOTAL=576 fits in a few BLOCK_K=64 iterations.\n- Restructure tiling so each program produces a tile of `(BLOCK_OC \u00d7 BLOCK_POH \u00d7 BLOCK_POW)` pooled outputs by computing the underlying 2\u00d72 conv outputs directly into 4 accumulators tiled as a single `(BLOCK_OC, 4\u00b7BLOCK_POOLED)` matrix; one `tl.dot` per K-step against a shared `w` register tile. This collapses the current 4 dots into 1 and amortizes weight loads over 4\u00d7 more output points.\n- Persistent-kernel design: launch one block per SM, iterate over (n, oc_tile, sp_tile) tuples internally \u2014 this hides launch overhead and allows the weight tile to stay resident across multiple sp tiles for the same oc tile, which is the dominant reuse opportunity given OC=128 (small) and the spatial domain is large.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 16,
+    "global_best_node_id": 12,
+    "global_best_score": [
+        1,
+        1,
+        1.6815885468451244
+    ]
+}

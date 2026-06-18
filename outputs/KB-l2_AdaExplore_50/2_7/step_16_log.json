@@ -1,0 +1,31 @@
+{
+    "node_id": 16,
+    "parent_node_id": 14,
+    "context_node_ids": [
+        10,
+        13,
+        14
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4597616563024381,
+    "max_reward": 0.4597616563024381,
+    "avg_reward": 0.4597616563024381,
+    "score": [
+        1,
+        1,
+        0.5930336644951139
+    ],
+    "small_guidance": "- The conv dominates runtime (fast_p ~0.59 even with the activation epilogue fused). Tuning the activation kernel further has minimal headroom \u2014 at most ~10% of total time. If staying small, replace the per-(N,C) launch grid with a flat 1D grid over the full tensor, computing channel index via `(offs // channel_stride) % C` to load bias, which removes launch overhead and improves load balancing for large `BLOCK_SIZE`.\n- Add larger autotune configs (`BLOCK_SIZE=32768`, `num_warps=8`, `num_stages=2`) keyed on total numel, since this kernel is memory-bound and bigger tiles reduce launch and indexing overhead.\n- Avoid the redundant `relu` then `leaky_relu` chain \u2014 they collapse to `max(x, 0)` exactly, which the kernel already effectively computes; ensure the compiler sees this by writing `x = tl.maximum(x, 0.0)` and dropping the `tl.where` entirely.",
+    "large_guidance": "- The Conv3d is the bottleneck. Replace `nn.Conv3d` with a custom Triton kernel implementing implicit-im2col GEMM: one program per `(N, OC tile, output-spatial tile)`, K-loop over `IC*KD*KH*KW` with on-the-fly index math for the input gather. Fuse the entire activation chain (ReLU\u2192LeakyReLU\u2192GELU\u2192Sigmoid\u2192bias) into the epilogue on the accumulator before store.\n- Use `channels_last_3d` (NDHWC) layout so the GEMM-K dimension (input channels \u00d7 kernel volume) is contiguous and loads coalesce. Pre-pack weights to `(OC, IC*KD*KH*KW)` at init for a clean `tl.dot`.\n- Start with safe SMEM-fitting tiles for fp32 on Ampere: autotune over `(BLOCK_M, BLOCK_N, BLOCK_K) \u2208 {(32,32,16), (64,32,16), (32,64,16), (64,64,32)}` at `num_warps=4, num_stages=2`, keyed on `(OC, out_D*out_H*out_W, IC*KD*KH*KW)`. Algebraically simplify the activation chain in the epilogue: since ReLU then LeakyReLU(0.01) is just `max(x,0)`, and the rest follows on a non-negative input \u2014 apply `gelu(max(acc,0))` then sigmoid then add bias.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 17,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.95764876344086
+    ]
+}

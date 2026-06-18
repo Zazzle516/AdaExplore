@@ -1,0 +1,29 @@
+{
+    "node_id": 19,
+    "parent_node_id": 15,
+    "context_node_ids": [
+        15
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness bug is in the rowsum kernel: `tl.atomic_add` is called from every (pid_m, pid_n) program, but the rowsum buffer is initialized to zero only once \u2014 that's actually fine. The real bug is that `original_x = x` then `x = x.contiguous()` may alias; but more importantly, the GEMM uses `W.stride(0), W.stride(1)` with `w_ptrs = W_ptr + offs_n[None,:]*stride_wn + offs_k[:,None]*stride_wk` \u2014 for `nn.Linear`, W is (N,K) row-major so stride_wn=K, stride_wk=1, which is correct. The likely issue: rowsum atomic accumulates across N-tiles, but the kernel does `acc = tl.where(mask_n[None,:], acc, 0.0)` AFTER adding bias/sub \u2014 so out-of-bounds N columns get bias-sub values then zeroed, OK. Check that `rowsum` dtype matches atomic_add expected dtype (fp32 \u2014 OK). Most likely culprit: numerical drift from atomic_add ordering across many tiles producing different fp32 rounding per trial \u2014 switch to a deterministic two-stage reduction (write per-tile partial sums then reduce) instead of atomic_add.\n- Add `tl.atomic_add` only once per row by making the grid 1D over M and looping over N inside the kernel, eliminating cross-program races and float nondeterminism.\n- Autotune `BLOCK_S` for the gelu kernel and pass `BLOCK` via autotune rather than hardcoded 256.",
+    "large_guidance": "- Recognize the structural collapse: after GEMM the chain is mean(dim=1) \u2192 logsumexp(dim=1, size=1, no-op) \u2192 GELU \u2192 broadcast-add. So we only need a per-row scalar `g_i = GELU(mean_j(y_ij - s_j))`. The full (B,N) output never needs to be materialized. Design a single fused kernel: one program per row (or per (row, N-tile) with a second reduction stage), each program streams K and N to compute `sum_j (sum_k x_ik * W_jk + b_j - s_j)`. Reorder as `sum_k x_ik * (sum_j W_jk) + sum_j (b_j - s_j)` \u2014 but this is the forbidden algebraic shortcut. Instead, do a tiled GEMM-style reduction: one program per row, loop over N tiles, accumulate the row-sum of (y - s) deterministically in registers, then divide by N and apply GELU.\n- Better: split into two kernels \u2014 (1) deterministic per-row partial-sum kernel using a 2D grid (row, N-tile) writing partials to a (B, num_n_tiles) buffer, (2) final reduce + GELU + broadcast-add fused with the residual into the output write. Avoid atomic_add entirely so results are bit-reproducible across trials.\n- Fuse the final scalar-broadcast-add with the residual into one kernel that reads original_x, adds the per-row scalar, and writes output \u2014 already done; keep it but autotune BLOCK over K=8192 with num_warps=8 and num_stages=2.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 20,
+    "global_best_node_id": 10,
+    "global_best_score": [
+        1,
+        1,
+        1.5925164056531704
+    ]
+}

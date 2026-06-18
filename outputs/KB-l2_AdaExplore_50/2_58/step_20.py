@@ -1,0 +1,85 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import triton
+import triton.language as tl
+
+
+@triton.jit
+def fused_lse_hswish_sub_clamp_kernel(
+    x_ptr,      # input: [N, C, D, H, W]
+    bias_ptr,   # scalar bias
+    out_ptr,    # output: [N, 1, D, H, W]
+    n_elements, # N*D*H*W
+    C: tl.constexpr,
+    spatial_stride,  # D*H*W
+    BLOCK_SIZE: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    mask = offsets < n_elements
+
+    n_idx = offsets // spatial_stride
+    s_idx = offsets % spatial_stride
+    base = n_idx * (C * spatial_stride) + s_idx  # [BLOCK]
+
+    # Load all C channels as a [BLOCK, C] tile in one pass
+    c_idx = tl.arange(0, C)  # [C]
+    addrs = base[:, None] + c_idx[None, :] * spatial_stride  # [BLOCK, C]
+    m2 = mask[:, None] & tl.full([1, C], 1, tl.int1)
+    vals = tl.load(x_ptr + addrs, mask=m2, other=-float('inf'))  # [BLOCK, C]
+
+    max_val = tl.max(vals, axis=1)  # [BLOCK]
+    sum_exp = tl.sum(tl.exp(vals - max_val[:, None]), axis=1)  # [BLOCK]
+    lse = max_val + tl.log(sum_exp)
+
+    # HardSwish: x * sigmoid(x+3) / 6
+    hs = lse * tl.sigmoid(lse + 3.0) / 6.0
+
+    # Subtract bias (scalar)
+    b = tl.load(bias_ptr)
+    out = hs - b
+
+    # Clamp
+    out = tl.minimum(tl.maximum(out, -1.0), 1.0)
+
+    tl.store(out_ptr + offsets, out, mask=mask)
+
+
+def fused_lse_hswish_sub_clamp(x: torch.Tensor, bias: torch.Tensor) -> torch.Tensor:
+    assert x.is_cuda and x.dtype == torch.float32
+    x = x.contiguous()
+    N, C, D, H, W = x.shape
+    spatial = D * H * W
+    n_elements = N * spatial
+    out = torch.empty((N, 1, D, H, W), device=x.device, dtype=x.dtype)
+    bias_flat = bias.contiguous().view(-1)[:1]
+
+    BLOCK_SIZE = 2048
+    grid = lambda meta: ((n_elements + meta["BLOCK_SIZE"] - 1) // meta["BLOCK_SIZE"],)
+    fused_lse_hswish_sub_clamp_kernel[grid](
+        x, bias_flat, out,
+        n_elements, C, spatial,
+        BLOCK_SIZE=BLOCK_SIZE,
+        num_warps=4,
+        num_stages=2,
+    )
+    return out
+
+
+# Enable cuDNN benchmark / TF32 to speed up the heavy ConvTranspose3d
+torch.backends.cudnn.benchmark = True
+torch.backends.cudnn.allow_tf32 = True
+torch.backends.cuda.matmul.allow_tf32 = True
+
+
+class ModelNew(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride, padding, bias_shape):
+        super(ModelNew, self).__init__()
+        self.conv_transpose = nn.ConvTranspose3d(in_channels, out_channels, kernel_size, stride=stride, padding=padding)
+        self.bias = nn.Parameter(torch.randn(1, 1, 1, 1))
+
+    def forward(self, x):
+        x = self.conv_transpose(x)
+        x = fused_lse_hswish_sub_clamp(x, self.bias)
+        return x

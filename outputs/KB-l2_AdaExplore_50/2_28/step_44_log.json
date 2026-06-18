@@ -1,0 +1,29 @@
+{
+    "node_id": 44,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness bug: the kernel computes `(xn + y) * y` but the reference is `x_norm + y` then `*y`, which matches \u2014 however the issue is the normalization. InstanceNorm2d on `(M,1,1,N)` has C=1, so it normalizes over H*W=1*N=N elements per (batch,channel), but it uses `unbiased=False` variance (population). The current kernel uses population variance which is correct. The actual bug: `xm = tl.where(mask, x - mean, 0.0)` is fine, but `mean = s / N` where `N` is the kernel arg (int) \u2014 should ensure float division. Cast `N` to float: `mean = s / N.to(tl.float32)` or pass `N` as float. Also `var` similarly. Small numerical mismatch (~1e-3) suggests fp32 accumulation precision \u2014 try loading bias and accumulator already in fp32 (they are), but the GEMM accumulation should be fine.\n- Real issue likely: `InstanceNorm2d(out_features)` expects num_features=out_features=N as channels, but the reshape `(M,1,1,N)` gives C=1. PyTorch will likely error or run with C=1 and normalize over (H,W)=(1,N). Verify by running reference; if reference also normalizes over N elements, current logic is right. The 1e-3 max diff suggests fp32 roundoff in the wide reduction \u2014 split into two-pass with Welford or use higher-precision sum (e.g., tree reduction via `tl.sum` which already does this). Try `num_warps=16` for BLOCK_N=8192 to widen the reduction.\n- Pass `eps` as a 0-d tensor or ensure it's baked as constexpr float; current usage looks OK. Add autotune to `norm_residual_kernel` over `num_warps\u2208{8,16,32}`.",
+    "large_guidance": "- Keep the tiled GEMM-with-bias-epilogue structure (it is the dominant cost at M=K=N=1024\u00d78192\u00d78192). Consider fusing the per-row normalization directly into the GEMM epilogue when BLOCK_N spans the full N (set BLOCK_N=N so each program owns a full row tile and can compute mean/var without a second launch). Alternatively, split-K GEMM writing partial sums then a second kernel doing norm+residual+mul \u2014 current two-kernel design is reasonable.\n- For the norm kernel, use a persistent one-program-per-row design with BLOCK = next_pow2(N), num_warps=16, num_stages=2; do Welford-style two-pass (sum then sum-of-squares with mean subtracted) to reduce fp32 roundoff that is causing the 1e-3 mismatch.\n- Ensure W^T is precomputed once in `__init__` (cache `self.Bt`) instead of recomputing `W.t().contiguous()` each forward \u2014 currently it's recomputed per call, costing a full transpose copy of an 8192\u00d78192 matrix every step.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 45,
+    "global_best_node_id": 28,
+    "global_best_score": [
+        1,
+        1,
+        0.8257900886245404
+    ]
+}

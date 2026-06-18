@@ -1,0 +1,29 @@
+{
+    "node_id": 49,
+    "parent_node_id": 9,
+    "context_node_ids": [
+        9
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The atomic_add accumulation across N-tile programs is the correctness bug: multiple programs write to the same `out_1d[m]` and the buffer is zero-initialized, but the bigger issue is correctness shows mismatch \u2014 verify by switching to a single-program-per-row reduction or by ensuring `out_1d` is float32 and atomics are properly ordered (they should be). More likely: the OOB masking is fine, but check that `K=32768` and `N=32768` are exact multiples of BLOCK_K/BLOCK_N so no masking pathology \u2014 confirm by running with a non-atomic two-stage kernel.\n- Replace the atomic_add scatter with a deterministic two-pass design: stage-1 kernel writes a `[M, ceil(N/BLOCK_N)]` partials tensor (no atomics), stage-2 kernel reduces along the tile dim. This both fixes any atomic correctness/ordering issue and removes contention.\n- Once correct, add larger N tiles (BLOCK_N=256) with num_warps=8 and num_stages=4 since K=32768 is huge and benefits from deeper pipelining; also add a GROUP_M swizzle for L2 reuse across N tiles.",
+    "large_guidance": "- Redesign as a split-K / row-parallel GEMM-reduce: one program per (M-tile, N-tile) computes the GEMM tile, applies bias+sigmoid in the epilogue, reduces along its BLOCK_N to a `[BLOCK_M]` partial, and writes to a `[M, num_n_tiles]` scratch buffer (no atomics). A tiny second kernel reduces the scratch along the tile axis to `[M, 1]`. This removes the atomic_add (which is the likely source of the >2e6 numerical error) and is fully deterministic.\n- Alternatively, since hidden_size=32768 is huge and the final output is just `[M,1]`, make the kernel persistent per row: one program per M-row (or per small M-tile), looping over all N tiles internally, keeping a scalar/vector running sum in registers. This trades parallelism in N for zero cross-program communication; with M=128 and BLOCK_M=8 you get 16 programs \u2014 too few. So use BLOCK_M=16 + split-N into G groups with G programs per row, accumulating into a `[M, G]` scratch, then reduce.\n- Fuse the bias add and sigmoid strictly in the epilogue on the accumulator before any reduction, and use the numerically stable `1/(1+exp(-x))` form in fp32 to avoid the catastrophic mismatch currently observed.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 50,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

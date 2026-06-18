@@ -1,0 +1,29 @@
+{
+    "node_id": 19,
+    "parent_node_id": 5,
+    "context_node_ids": [
+        4
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.030470823392894822
+    ],
+    "small_guidance": "- The current gather-style loop iterates over the full (IH*IW*IC) reduction axis per (N, OC tile), which is fine, but BLOCK_IC=16/32 leaves the inner `tl.sum` very narrow. Try larger BLOCK_IC (64, 128) and add configs with BLOCK_OC=256 to better amortize the per-(ih,iw) overhead; also try num_stages=4.\n- Hoist the `valid_h` / `valid_w` masks: precompute per-(kh,kw) the set of (ih,iw) ranges that are in-bounds and skip the outer ih/iw iterations that produce all-invalid contributions (loop over kh,kw outermost, then ih,iw bounded to valid range), eliminating the `tl.where(valid, ...)` waste \u2014 currently most (ih,iw,kh,kw) combinations are valid but the masked stores still cost work.\n- Swap the loop nest order: put kh,kw as the *outer* static loops and ih,iw inside; then weight tile load happens once per (kh,kw) tile (not 128*128 times). This cuts redundant `tl.load` of w by a factor of IH*IW.",
+    "large_guidance": "- Rewrite as a per-output-channel reduction: one program per (N, OC tile). Since the spatial output is averaged away, accumulate `sum_{oh,ow} y[n,oc,oh,ow]` directly. For each (kh,kw) pair, the contribution to the spatial sum is `\u03a3_{ih,iw valid} x[n,ic,ih,iw] * w[ic,oc,kh,kw]` \u2014 the (ih,iw) range that lands in-bounds depends only on (kh,kw,SH,SW,PH,PW,OH,OW), not per-element. Compute that (ih,iw) rectangle once per (kh,kw), then do a GEMM `x_slice[N, IC, valid_ih*valid_iw] \u00b7 w[IC, OC_tile, kh, kw]` accumulated across kh,kw. This is still full reference work (every input \u00d7 every kernel position contributes), but uses `tl.dot` instead of the current narrow per-pixel outer-product.\n- Use channels_last input layout (already done) but tile the IC axis with BLOCK_K=32 or 64 inside a real `tl.dot` over (BLOCK_OC, BLOCK_K) \u00d7 (BLOCK_K, BLOCK_SPATIAL) so tensor cores engage; the current kernel uses scalar FMAs only.\n- Consider a two-stage kernel: stage 1 produces per-(N,OC,kh,kw) partial spatial sums via a tiled GEMM over (IC, valid_spatial); stage 2 sums across kh,kw and adds bias*OH*OW, scales by multiplier/(OH*OW). This cleanly maps to autotune-friendly matmul tiles.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 20,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.5153493426108915
+    ]
+}

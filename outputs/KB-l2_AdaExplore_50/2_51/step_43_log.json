@@ -1,0 +1,30 @@
+{
+    "node_id": 43,
+    "parent_node_id": 42,
+    "context_node_ids": [
+        41,
+        42
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5752336591321021,
+    "max_reward": 0.5752336591321021,
+    "avg_reward": 0.5752336591321021,
+    "score": [
+        1,
+        1,
+        1.5456776878398417
+    ],
+    "small_guidance": "- The GEMM dominates: 2048\u00d78192\u00d78192 fp32. Add larger autotune configs targeting K=8192 with BLOCK_K=64 and num_stages=4, e.g. {BLOCK_M:128,BLOCK_N:256,BLOCK_K:64,GROUP_M:8,num_warps:8,num_stages:4} and {BLOCK_M:64,BLOCK_N:256,BLOCK_K:64,GROUP_M:8,num_warps:8,num_stages:4}. Also try BLOCK_M:256,BLOCK_N:64.\n- Pre-transpose W to [K,N] contiguous once in `__init__` (store as buffer) so the inner load on W is fully coalesced along N instead of strided along K \u2014 currently W is [N,K] with stride_wk=1, so loading w[K,N] tile does a strided gather along N.\n- Drop `k_remaining` masking inside the K loop since K=8192 is divisible by BLOCK_K (32/64); unmasked loads remove a per-iter compare and let the compiler pipeline better. Keep tail handling behind a constexpr flag.",
+    "large_guidance": "- Replace the two-pass (GEMM writes partial row sums to global \u2192 reduce kernel) design with a single split-K GEMM that directly accumulates a per-row scalar: each program reduces its (BLOCK_M \u00d7 BLOCK_N) tile to a [BLOCK_M] vector and `tl.atomic_add`s into a [M] buffer. This halves the global write volume (no [M, num_tiles] partial tensor) and removes the second launch entirely.\n- Even better: since the final scalar per row only requires sum over N of (Wx+b-sub), and mean over N is just divide-by-N, fuse mean+GELU+residual-add into the GEMM epilogue using a persistent grid over M-rows: one program group owns a row-block, computes the full N-sum across all K via a K\u00d7N loop, then in-register applies /N, GELU, and broadcasts to the residual-add output tile. This eliminates the row-sum global roundtrip.\n- Use tf32 (`tl.dot(..., allow_tf32=True)`) \u2014 5e-2 tolerance easily permits it and it ~2\u00d7 the matmul throughput on the 4090.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 44,
+    "global_best_node_id": 36,
+    "global_best_score": [
+        1,
+        1,
+        1.66307092995426
+    ]
+}

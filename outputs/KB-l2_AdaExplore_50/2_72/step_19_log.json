@@ -1,0 +1,29 @@
+{
+    "node_id": 19,
+    "parent_node_id": 9,
+    "context_node_ids": [
+        9
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4147250694296805,
+    "max_reward": 0.4147250694296805,
+    "avg_reward": 0.4147250694296805,
+    "score": [
+        1,
+        1,
+        0.2214818227948639
+    ],
+    "small_guidance": "- The fused BN+avgpool kernel is fine but tiny relative to the ConvTranspose3d, which dominates the 26 ms runtime. Tuning BLOCK/num_warps in the tail cannot close the gap; at best save <1 ms. Skip further small-tuning here.\n- If staying small: ensure the avgpool kernel uses `channels_last_3d` reads and add larger BLOCK configs (2048) and `num_stages=3` so the long sequential 64-element gather is better pipelined. Also load `scale`/`shift` once per `c` via per-program tiling on the C axis (one program per (n,c,od) row) rather than per-element gather with mask.\n- Stop calling `F.batch_norm` in training \u2014 fold running stats once and reuse the eval path; the training branch currently does no fusion at all.",
+    "large_guidance": "- The heavy operator is `ConvTranspose3d` (input 64\u00d73\u00d732\u00b3 \u2192 output 64\u00d716\u00d763\u00b3 \u2248 16M outputs, with stride-2 scatter). Replace it with a custom Triton ConvTranspose3d kernel implemented as a scatter-add of the `input \u00d7 kernel` outer product (or equivalently, a gather where each output position sums the valid `(kd,kh,kw)` taps from input via the transposed-conv index map). One program per `(N, OC_tile, output-spatial tile)` with the GEMM-K dimension being `IC*KD*KH*KW=81`. Tiles like BM=32, BN=64, BK=32 fit SMEM easily.\n- Fuse BN affine (folded scale/shift) AND both 2\u00d7 avgpools (i.e. 4\u00d7 avg) into the ConvTranspose epilogue: have each program compute a 4\u00d74\u00d74 output tile of the conv-transpose, reduce it to a single pooled value, apply scale*x+shift, and write the final (N,C,OD,OH,OW) tensor directly. This eliminates the 16M-element intermediate entirely. Note: BN must be applied before pooling for numerical equivalence, but since BN is affine per-channel and avgpool is linear, pool-then-affine is identical \u2014 safe to fuse.\n- Use `channels_last_3d` for the output of conv-transpose so the OC axis is contiguous for the GEMM tile; precompute per-output-tile the list of contributing `(id, ih, iw, kd, kh, kw)` taps via integer arithmetic inside the kernel (stride=2, padding=1).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 20,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        0.36042383585251137
+    ]
+}

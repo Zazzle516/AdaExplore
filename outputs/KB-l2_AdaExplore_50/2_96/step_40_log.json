@@ -1,0 +1,30 @@
+{
+    "node_id": 40,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        8,
+        21
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4444273092053943,
+    "max_reward": 0.4444273092053943,
+    "avg_reward": 0.4444273092053943,
+    "score": [
+        1,
+        1,
+        0.4665253009445028
+    ],
+    "small_guidance": "- Add a `triton.autotune` over BLOCK \u2208 {256, 512, 1024}, num_warps \u2208 {2, 4, 8}, num_stages \u2208 {2, 3, 4} keyed on `(N, C, Dp*Hp*Wp)`; pooled_total here is 8*16*16=2048 so smaller BLOCK with more warps may win.\n- Use one program per `(N, C)` but parallelize the pooled axis across `tl.program_id(1)` with a tree reduction via `atomic_add` or a two-stage kernel \u2014 avoids the serial Python `for off in range` loop dominating latency.\n- Switch the conv output to `channels_last_3d` so the W axis is contiguous and the 8-point gather collapses to vector loads.",
+    "large_guidance": "- The 19.4 ms vs 9.05 ms baseline shows `nn.ConvTranspose3d` (cuDNN) is the bottleneck \u2014 the fused tail kernel is already cheap. Replace the conv-transpose with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)`, load input \u00d7 weight outer product, scatter-add into the output grid using stride/padding index math, and fuse the `* scale`, maxpool, global-avg, clamp epilogue into the same pipeline (or a directly-following kernel that consumes the conv output without writing the full (N,16,31,63,63) tensor to HBM).\n- Alternative design: implement conv-transpose as a *gather* GEMM \u2014 for each output voxel, gather contributing input \u00d7 weight pairs (im2col-on-the-fly), tile over `(N, OC, output-spatial)`. Fold the BN-free bias and `* scale` into the GEMM epilogue. This avoids atomics entirely and reuses the conv2d/3d skill recipe.\n- Since global-avg-pool collapses spatial to 1, consider skipping materializing the full conv-transpose output: compute the conv-transpose output voxel, immediately reduce within the 2\u00d72\u00d72 maxpool window, accumulate into a per-(N,C) sum, divide and clamp. This removes the large intermediate tensor (128*16*31*63*63 floats \u2248 1 GB write/read).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 41,
+    "global_best_node_id": 20,
+    "global_best_score": [
+        1,
+        1,
+        16.336806567370672
+    ]
+}

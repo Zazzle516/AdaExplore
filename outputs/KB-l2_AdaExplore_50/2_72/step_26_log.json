@@ -1,0 +1,29 @@
+{
+    "node_id": 26,
+    "parent_node_id": 11,
+    "context_node_ids": [
+        11
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4145216885088404,
+    "max_reward": 0.4145216885088404,
+    "avg_reward": 0.4145216885088404,
+    "score": [
+        1,
+        1,
+        0.2198039301979331
+    ],
+    "small_guidance": "- The current kernel materializes a `BLOCK_D\u00d7BLOCK_H\u00d7BLOCK_W = 2\u00d74\u00d78` tile but each output element loops over 4\u00d74\u00d74=64 sub-positions \u00d7 KD\u00b7KH\u00b7KW=27 \u00d7 IC=3 inside one program \u2014 way too much per-program work. Shrink the per-program output footprint (e.g. BLOCK_D=1, BLOCK_H=2, BLOCK_W=4) and parallelize harder along the (n,oc,od,oh,ow) grid; add `@triton.autotune` over `{(1,2,4),(1,4,4),(2,2,4),(1,4,8)}` with `num_warps\u2208{2,4}`, `num_stages\u2208{2,3}`.\n- Restructure the inner loops so the `(IC, KD, KH, KW)` reduction is the innermost loop and the 4\u00d74\u00d74 pool window is handled by accumulating into a single scalar/small accumulator per output (sum partial conv contributions across the 64 input-strided positions, then divide). Drop the `static_range(0,4)` triple-nest in favor of computing each sub-position's contiguous range and using vector loads along W.\n- Switch the input/output to channels_last (NDHWC) so the IC loop becomes a contiguous K-dim and can be replaced by a `tl.dot` against a packed weight tile; this alone should drop runtime substantially for IC=3 padded to 4/8.",
+    "large_guidance": "- Rewrite as a scatter-add ConvTranspose3d: one program per `(N, IC tile, ID\u00b7IH\u00b7IW tile)` reads input, computes the `input \u00d7 weight` outer product, and atomically (or via deterministic tiling on output) scatter-adds into the OC\u00d7OD\u00d7OH\u00d7OW grid. Then a second kernel fuses BN + 4\u00d74\u00d74 avg-pool (two avg_pool3d(2) collapse to one 4\u00d74\u00d74 mean) into a single reduction. This matches the reference work exactly and removes the redundant sub-position gather currently in the kernel.\n- Alternative: implicit-GEMM gather form \u2014 one program per `(N, OC tile, pooled-output tile)`, with the inner GEMM-K = IC\u00b7KD\u00b7KH\u00b7KW; accumulate the 64 contributing convT outputs into the pool sum inside registers. Tile `(BM=OC=16, BN=pool_tile=32, BK=IC*KD*KH*KW=81)` fits SMEM easily and uses `tl.dot`.\n- Fold BN scale/shift and the 1/64 pool factor into the kernel epilogue (already partly done), and precompute per-output valid-sub-position masks on the host to avoid the modulo arithmetic in the inner loop.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 27,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        0.36042383585251137
+    ]
+}

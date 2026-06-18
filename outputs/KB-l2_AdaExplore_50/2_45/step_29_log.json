@@ -1,0 +1,31 @@
+{
+    "node_id": 29,
+    "parent_node_id": 28,
+    "context_node_ids": [
+        19,
+        20,
+        28
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness failure likely stems from masking in gemm_sigmoid_kernel: loads use only `offs_m < M` / `offs_n < N` masks but ignore the K-tail (`offs_k + k*BLOCK_K < K`). Since K=2048 is divisible by BLOCK_K this should be benign, but the W mask should also include `offs_k[:, None] + k*BLOCK_K < K`. More importantly, gemm_lse_kernel masks Y/W loads only by m_mask/o_mask and not by H-tail; H=4096 is divisible too. Real bug: the running_sum initialization is 0 with running_max = -inf \u2014 first iteration's `scale = exp(-inf - new_max)` produces NaN if new_max is also -inf for fully-masked rows. Guard with `tl.where(m_mask, ...)` on the final store and ensure `running_max` updates only with finite block_max.\n- The atol issue (~0.012) suggests fp32 accumulation precision is fine; the bug is more likely the W2 transpose caching using `w2.detach().t().contiguous()` \u2014 if linear2.weight is updated this becomes stale, but for a single forward it should match. Verify by removing the cache and recomputing each call to isolate.\n- Once correct, expand autotune for gemm_sigmoid (M=16384, N=4096, K=2048): try BLOCK_M=128/BLOCK_N=256/BLOCK_K=64 num_warps=8 stages=3, and add a `tl.dot(..., allow_tf32=False)` if precision is the issue (or keep TF32 and tighten).",
+    "large_guidance": "- The fused gemm_lse kernel recomputes the full hidden\u2192output GEMM per row-block but cannot tile M and O simultaneously with tl.dot efficiency because online LSE requires reducing across all O for each M. Consider splitting into two kernels: (1) a standard tiled GEMM that produces Z=[M,O] (M=16384, O=1024 \u2192 64MB, fits easily), (2) a row-wise LSE kernel that reads Z once. This lets the GEMM use optimal 128\u00d7128\u00d732 tl.dot tiles with full L2 reuse, and the LSE pass is memory-bound but tiny.\n- Alternatively keep the fusion but restructure: persistent kernel where each program owns a row tile and streams W2 through shared memory, doing tl.dot with BLOCK_O sized to the full O=1024 (one pass, no online merge). Since O=1024 fits in a single tile column dimension via two 512-wide chunks, the online-LSE merge can be eliminated.\n- For gemm_sigmoid, since N=4096 and M=16384 are both large and K=2048, a split-K is unnecessary; focus on a 128\u00d7256\u00d764 tile with num_warps=8, num_stages=3, GROUP_M=8, and ensure W is loaded with offs_k contiguous (W is [N,K] row-major, so offs_k is contiguous \u2014 current layout is correct).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 30,
+    "global_best_node_id": 13,
+    "global_best_score": [
+        1,
+        1,
+        1.817030895189934
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 24,
+    "parent_node_id": 11,
+    "context_node_ids": [
+        11
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.43983604435261714,
+    "max_reward": 0.43983604435261714,
+    "avg_reward": 0.43983604435261714,
+    "score": [
+        1,
+        1,
+        0.4286473659090909
+    ],
+    "small_guidance": "- The softmax kernel is already memory-bound on a tiny output (S=32*64*64=131072 per row, 2048 rows). Real bottleneck is `ConvTranspose3d` (input post-pool 16x32x32 \u2192 output 32x64x64 with 64 out_channels, kernel 3\u00b3). Tuning BLOCK further won't help; current 22ms vs 9.4ms baseline shows torch's conv_transpose is fast and the softmax overhead doesn't dominate \u2014 verify by profiling. If softmax is the issue, try `BLOCK=8192, num_warps=8` and a single-pass (since S=131072 fits in two passes anyway, but a persistent kernel reusing loaded values via shared memory could halve global reads).\n- Fuse the `scale` multiply with a precomputed `log(scale)` add into the exponent to save one multiply, negligible but free.\n- Add channels-last memory layout for the conv_transpose output so the spatial reduction reads are contiguous along S (already are, since view is (B*C, S) on contiguous NCDHW \u2014 fine).",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile), computing the `input \u00d7 weight` outer product (kernel 3\u00b3=27 taps \u00d7 OC=64) and atomically scattering into the output grid with stride=2, padding=1, output_padding=1. This is the heavy op (~70% of runtime likely) and torch's cuDNN conv_transpose3d on a 4090 is known to be suboptimal for stride-2.\n- Fuse the avg_pool3d (pool_kernel_size=2, non-overlapping) directly into the conv-transpose input gather: each scatter program reads its 2\u00d72\u00d72 input window, averages on the fly, then multiplies by weights \u2014 eliminates the intermediate pooled tensor write/read entirely.\n- Fuse clamp + softmax-reduction (pass-1 max+sum) into the conv-transpose epilogue per output element if persistence allows; otherwise keep softmax as a separate fused kernel (already done) but ensure the conv writes directly to the (B*C, S) layout the softmax expects, avoiding the `.contiguous()` reshape.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 25,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.43060465981735163
+    ]
+}

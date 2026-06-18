@@ -1,0 +1,29 @@
+{
+    "node_id": 44,
+    "parent_node_id": 19,
+    "context_node_ids": [
+        19
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The GN kernel is incorrect: with `groups_per_row = G // GROUPS_PER_PROG`, `pid // groups_per_row` should give `n` only if dispatched as `(N * groups_per_row,)` \u2014 that part is fine, but verify the row offset uses `n * C`, which it does. The actual bug is likely numerical: `var = sum_x2/CG - mean*mean` can be negative due to fp32 cancellation. Switch to a two-pass (compute mean first, then `sum((x-mean)^2)`) or clamp `var = max(var, 0)` before `rsqrt`.\n- Also load gamma/beta once per group (shape `[CG]`) rather than re-broadcasting `[GROUPS_PER_PROG, CG]` \u2014 and consider casting bias/gamma/beta loads explicitly to fp32 before the affine; the current code is fine but make sure `eps` is passed as a constexpr or fp32 scalar (currently a Python float, OK).\n- Add autotune to `gn_lrelu_kernel` over `GROUPS_PER_PROG \u2208 {1,2,4,8}` and `num_warps \u2208 {2,4,8}` keyed on `(C, G)`; with C=8192, G=512, CG=16, larger `GROUPS_PER_PROG` (e.g. 16-32) would amortize launch overhead heavily.",
+    "large_guidance": "- The dominant cost is the 1024\u00d78192\u00d78192 GEMM. Consider replacing the hand-rolled GEMM with `torch.addmm` (cuBLAS) for the linear and only keeping a custom fused GN+LeakyReLU+double kernel \u2014 cuBLAS will outperform the current Triton GEMM on this shape on a 4090.\n- For the GN kernel, redesign as one program per `(row, group)` using the numerically-stable two-pass: pass 1 computes mean via `tl.sum`, pass 2 computes variance from `(x-mean)^2`. With CG=16 and G=512, batch multiple groups per program (e.g. 32 groups \u2192 tile of 32\u00d716 = 512 elements) and use `num_warps=4`.\n- Fuse the `x + x` (i.e. `2*y`) into the LeakyReLU epilogue as a single multiply-by-2 (or by `2*neg_slope` when negative) to save one op, and write contiguously in row order.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 45,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

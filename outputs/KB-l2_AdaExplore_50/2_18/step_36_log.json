@@ -1,0 +1,29 @@
+{
+    "node_id": 36,
+    "parent_node_id": 29,
+    "context_node_ids": [
+        29
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness issue is from atomic_add accumulation order causing non-determinism in fp32 sums across 8192 K, but more critically the bias init uses `bias_sum.item()` host sync and the atomic_add over partial N-tiles per row sums correctly only if every (m,n) tile contributes exactly once \u2014 verify total_tiles coverage and ensure `out` is zero-init plus add `bias_sum` once (e.g., add to a single tile or initialize per-row, which it does). The ~0.013 avg diff suggests TF32 precision loss; try `allow_tf32=False` or accumulate K in fp32 with BLOCK_K=64 and `num_stages=4`.\n- Switch the row-reduction off atomics: launch grid `(num_tiles_m,)` persistent over N tiles per row group, accumulate `acc` across all N tiles in registers, then do a single non-atomic store of `bias + sum(acc)` per row. This both fixes nondeterminism and removes atomic contention.\n- Add `triton.autotune` over `(BLOCK_M, BLOCK_N, BLOCK_K, num_warps, num_stages)` \u2208 {(128,128,32,8,3),(128,256,32,8,3),(64,128,64,4,4),(128,128,64,8,4)}.",
+    "large_guidance": "- Redesign: one program per row-tile of size BLOCK_M (grid = M/BLOCK_M). Inside, loop over N in BLOCK_N chunks; for each chunk compute the (BLOCK_M, BLOCK_N) GEMM tile via tl.dot accumulating over K, then immediately reduce along N into a (BLOCK_M,) register accumulator, then move to next N chunk. This fuses GEMM + row-sum with no atomics, no partial writes, and keeps the row resident.\n- Since M=1024, N=K=8192, the row-sum collapses the whole linear output to a (1024,) vector. After producing per-row sum, fuse the trivial trailing chain (max over dim=1 of size 1 = identity, mean over size 1 = identity, two logsumexp over size 1 = identity) directly in the epilogue and write the final (M,1) tensor. The downstream ops are all no-ops on a size-1 dim but must remain represented; just store `row_sum` as the final result (mathematically equivalent, not an algebraic shortcut \u2014 they're identity operations on singleton dims).\n- Consider splitting K across programs (split-K) with a second small reduction kernel if K-loop latency dominates; with K=8192 a single-program K loop at BLOCK_K=64 num_stages=4 should be enough on a 4090.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 37,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        0.8826896197781255
+    ]
+}

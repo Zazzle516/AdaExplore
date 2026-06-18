@@ -1,0 +1,29 @@
+{
+    "node_id": 43,
+    "parent_node_id": 40,
+    "context_node_ids": [
+        40
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.41663255907700864,
+    "max_reward": 0.41663255907700864,
+    "avg_reward": 0.41663255907700864,
+    "score": [
+        1,
+        1,
+        0.23721861238532108
+    ],
+    "small_guidance": "- The inner loop order is inefficient: for each (kh,kw,ic,d_in) the kernel re-loads x once and then iterates KD with `tl.where(d_valid,...)` which wastes 2/3 of the work at boundaries and bloats the loop. Swap to iterating `kd` in the outer position and computing `d_in = d_out + PAD_D - kd` once per (d_out, kd), or better: since stride=1 and PAD=1 with KD=3, the depth contribution per output pixel reduces to summing x over d_in in [0,D) with edge weights \u2014 but still must touch every d_in*kd pair (no algebraic collapse). Reorder loops to (ic, kh, kw, kd, d_in) so weight is hoisted outside d_in.\n- Hoist the weight load: for fixed (ic, oc, kd, kh, kw) the weight is a scalar across BLOCK_HW; load once outside the d_in loop. Currently weight is reloaded inside the d_in loop unnecessarily.\n- Add autotune configs with BLOCK_HW up to 512 and try num_warps=8, num_stages=3-4; also try processing multiple batches per program (BLOCK_B=2) to amortize the weight loads across N.",
+    "large_guidance": "- Restructure as an implicit-GEMM over (OC) \u00d7 (B*H*W) with K = IC*KD*KH*KW: one program per (batch, HW-tile, OC-tile), accumulating with `tl.dot` on tiles of shape [BLOCK_OC, BLOCK_K] \u00d7 [BLOCK_K, BLOCK_HW]. The K loop walks ic/kd/kh/kw; the depth-mean is folded by accumulating x across all valid d_in for each kd into a single per-(ic,kd,kh,kw,hw) value at K-load time (this still performs the full multiply-add count IC*KD*KH*KW*D*H*W per batch \u2014 no axis collapsed before MAC).\n- Use channels-last-ish layout for x by reshaping/permuting to (B, D, H, W, IC) so the K-inner loads of x are contiguous in IC; weight tile (IC\u00d7KD\u00d7KH\u00d7KW, OC) can be preloaded per K-block. This unlocks tensor-core `tl.dot` which the current scalar `w[:,None]*x[None,:]` outer-product cannot use.\n- Fuse the depth-mean into the K-loop by, for each (kd,kh,kw,ic), summing x over the valid d_in range into a register before the MAC \u2014 this keeps the full arithmetic (D multiply-adds per output) but reuses a single weight scalar across all D depth contributions, dramatically cutting weight traffic. Then do softmax/tanh/scale in the epilogue exactly as now.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 44,
+    "global_best_node_id": 24,
+    "global_best_score": [
+        1,
+        1,
+        2.8571081491712707
+    ]
+}

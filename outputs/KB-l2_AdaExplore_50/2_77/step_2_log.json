@@ -1,0 +1,29 @@
+{
+    "node_id": 2,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4526358177667082,
+    "max_reward": 0.4526358177667082,
+    "avg_reward": 0.4526358177667082,
+    "score": [
+        1,
+        1,
+        0.5342454965753425
+    ],
+    "small_guidance": "- The conv_transpose3d call dominates runtime (the fused avgpool+affine kernel is already trivial). Tuning BLOCK/num_warps on the tail kernels will not move fast_p; instead, consider replacing torch's convT3d with channels_last memory format (`y = self.conv_transpose(x.to(memory_format=torch.channels_last_3d))`) and pre-converting weights, which can sometimes hit faster cuDNN kernels on Ampere.\n- For the existing `_sum_pool_kernel`, bump BLOCK to 4096 with num_warps=8 (S = 20*36*36 \u2248 26k per (n,c)) to reduce loop iterations and improve memory throughput.\n- The `_affine_kernel` operates on only N*C = 2048 elements \u2014 fold it directly into the epilogue of `_sum_pool_kernel` (multiply `total/S` by `a[c]` and add `c[c]` before the single store) to eliminate one launch entirely.",
+    "large_guidance": "- The ConvTranspose3d is the bottleneck (~99% of runtime). Implement it as a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile) that loads x[n, ic, id, ih, iw] and scatters x*W[ic, oc, kd, kh, kw] into out[n, oc, id+kd, ih+kh, iw+kw] via atomic adds, with bias added in an epilogue. With kernel_size=5, stride=1, padding=0, the output is (20, 36, 36) and IC=64, OC=128.\n- Better: since the *only* downstream consumer is a global average pool, fuse the entire pipeline so the conv_transpose output is *never materialized*. Each program computes a partial sum-over-output-spatial for one (n, oc) by iterating ic and accumulating `sum_{kd,kh,kw} W[ic,oc,kd,kh,kw] * sum_{id,ih,iw} x[n,ic,id,ih,iw]` \u2014 but this is the algebraic shortcut forbidden by the safety contract.\n- Compliant alternative: implement convT3d as a gather-style GEMM (im2col on the input with dilated/zero-stuffed indexing for transpose semantics), tile over (N, OC_tile, output-spatial-tile) with BLOCK_M=64, BLOCK_N=64, BLOCK_K=32, and fuse scale+BN-affine+running global-sum into the epilogue using atomics on a per-(n,oc) accumulator. This actually computes the convT output values but never writes them to HBM.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 3,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.5342454965753425
+    ]
+}

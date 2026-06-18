@@ -1,0 +1,29 @@
+{
+    "node_id": 11,
+    "parent_node_id": 10,
+    "context_node_ids": [
+        10
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.43736188928243475,
+    "max_reward": 0.43736188928243475,
+    "avg_reward": 0.43736188928243475,
+    "score": [
+        1,
+        1,
+        0.4082355865800866
+    ],
+    "small_guidance": "- The fused softmax kernel is fine; runtime is dominated by ConvTranspose3d. Minor: switch to a 1-pass online softmax (track running max & sum together) to halve global loads on x_flat, and try BLOCK=1024 with num_warps=4 since S=32*64*64*... per (b,c) row is large but already well-fed.\n- Add `triton.autotune` over BLOCK \u2208 {1024, 2048, 4096} and num_warps \u2208 {4, 8} for the softmax kernel \u2014 it's a tiny win but free.\n- More importantly, do NOT keep the conv_transpose call \u2014 that's where ~95% of runtime sits. Tuning the softmax further cannot close the gap.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile) computing the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and atomically scattering into output at `(d*stride - pad + kd, ...)`. Fuse bias add + clamp into the epilogue write. This is the high-headroom move.\n- Alternatively, since stride=2/padding=1/output_padding=1 doubles spatial dims, implement gather-style: one program per (N, OC tile, output-spatial tile), iterate the (kd,kh,kw, ic) pairs that hit this output, accumulate in registers, then clamp \u2014 avoids atomics and maps cleanly to a GEMM tile (BLOCK_M=OC tile 64, BLOCK_N=spatial tile 64, BLOCK_K=IC=32).\n- Also fuse the AvgPool3d (pool_kernel=2, non-overlapping) directly into the conv-transpose input read: each conv-transpose load of `input[ic, d, h, w]` becomes an 8-element average of the pre-pool tensor. This removes one full kernel launch and one global write/read of the pooled tensor.\n- Keep the existing 3-pass softmax\u00d7scale kernel as the epilogue after the custom conv-transpose; it's already ~optimal for the post-conv shape.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 12,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.4286473659090909
+    ]
+}

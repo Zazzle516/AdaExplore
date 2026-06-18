@@ -1,0 +1,29 @@
+{
+    "node_id": 24,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        10
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.42262658817600635,
+    "max_reward": 0.42262658817600635,
+    "avg_reward": 0.42262658817600635,
+    "score": [
+        1,
+        1,
+        0.28666935245205205
+    ],
+    "small_guidance": "- The ConvTranspose2d dominates runtime (the min/sum/gelu kernels operate on a tiny tensor); tuning BLOCK_C/BLOCK_W/num_warps in the post-conv kernels cannot close the gap. If staying small, fuse min+sum+gelu+bias into a single kernel that loads each (n,c,h,w) once and reduces over both C (min) and H (sum) in one pass to remove the intermediate write of `min_out`.\n- For that fused kernel, use one program per (N, W-tile) with BLOCK_W=128, BLOCK_C=next_pow2(out_channels)=128, and loop over H inside the kernel keeping a per-w running sum of the channel-min; num_warps=8, num_stages=2.\n- Make sure the conv-transpose output is in contiguous NCHW and pre-cast bias to a scalar load; the current 2-kernel pipeline launches over the full HxW grid twice unnecessarily.",
+    "large_guidance": "- Replace `nn.ConvTranspose2d` with a custom Triton scatter-add kernel: one program per (N, IC-tile, input-spatial tile), compute the input\u00d7weight outer product and scatter-add into the output grid honoring stride=2, padding=1, output_padding=1. This is where ~all runtime lives (fast_p=0.29 with the tail already fused-ish).\n- Fuse the entire epilogue into the conv-transpose kernel's store path: as each output pixel's accumulator is finalized, atomically update a per-(N,W) running min over channels and a running sum over H. Concretely, keep an auxiliary buffer of shape (N, H, W) for the channel-min (atomicMin via int-reinterpret or two-pass), then a second small kernel does sum over H + GELU + bias. Alternatively, do the conv-transpose first into (N,OC,H,W) materialized output (satisfies the contract), then run a single fused min-over-C / sum-over-H / GELU / +bias kernel.\n- Use channels-last layout for the conv-transpose output so the min-over-C reduction is a contiguous load; tile (BLOCK_OC=128, BLOCK_HW=64) for the GEMM-like inner product across IC*kh*kw, num_warps=8, num_stages=3, and autotune over a small grid.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 25,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        0.8851829863250333
+    ]
+}

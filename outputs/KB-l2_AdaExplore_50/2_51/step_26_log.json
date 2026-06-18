@@ -1,0 +1,30 @@
+{
+    "node_id": 26,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        1,
+        23
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5826820179281054,
+    "max_reward": 0.5826820179281054,
+    "avg_reward": 0.5826820179281054,
+    "score": [
+        1,
+        1,
+        1.607126647906869
+    ],
+    "small_guidance": "- The GEMM dominates: B=2048, N=8192, K=8192. SPLIT_K=8 over N is unnecessary since we fully reduce N to a scalar per row anyway \u2014 try SPLIT_K=2 or 4 to reduce partial-store overhead and launch one larger M-tile kernel. Also add autotune configs with BLOCK_M=128/256 since B=2048 is large and M-parallelism is plentiful.\n- The W load uses `offs_n[None,:] * stride_wn + offs_k[:,None] * stride_wk` which is the natural [K,N] layout for `tl.dot`; verify W is transposed once outside (W is [N,K] from nn.Linear so stride_wn=K, stride_wk=1 \u2014 the K dim is contiguous along rows of W, which is fine). Consider pre-transposing W to [K,N] contiguous once in `__init__` to make the inner-K load fully contiguous along N.\n- Increase BLOCK_K to 64 or 128 with num_stages=4 to better hide global loads across the K=8192 loop; current configs are mostly BLOCK_K=32.",
+    "large_guidance": "- The whole pipeline reduces to: scalar per row = (sum over n of (x @ W^T + b - sub)) / N, then GELU(scalar), then broadcast-add to x. Mathematically this is `(x @ w_sum_K + bias_sum - sub_sum) / N` where w_sum_K = W.sum(dim=0) is a [K] vector \u2014 BUT that's a graph-level algebraic shortcut and is explicitly disallowed. The kernel must execute the full GEMM. Keep the full [B,N] matmul materializing (at least tile-wise) and just fuse the row-reduction in the epilogue, which the current kernel already does.\n- A redesign should make this a single persistent kernel: one program per M-tile that streams over all of N in BLOCK_N chunks, accumulating a per-row scalar in registers, then in the same kernel reads x and writes `x + GELU(scalar/N)` for its rows. This removes the partial buffer, the second kernel launch, and one full read of x. Persistence over N avoids the SPLIT_K partial reduction entirely.\n- Pre-transpose W to a [K,N] contiguous buffer in `__init__` so the inner `tl.dot` loads W with stride-1 along N \u2014 this is the biggest single layout win for an 8192\u00d78192 GEMM on Ada.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 27,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        1.6320820306383421
+    ]
+}

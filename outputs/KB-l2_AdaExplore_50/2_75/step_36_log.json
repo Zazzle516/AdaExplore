@@ -1,0 +1,29 @@
+{
+    "node_id": 36,
+    "parent_node_id": 31,
+    "context_node_ids": [
+        31
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM (1024\u00d78192\u00d78192 fp32) dominates runtime; F.linear via cuBLAS is the bottleneck. Try enabling TF32 explicitly via `x = x.to(torch.float32)` and cast weights, or cast inputs to fp16/bf16 for the matmul (since GN+min epilogue can re-cast to fp32) \u2014 this alone can cut the 1.96s substantially.\n- For the fused gn_min_bias kernel, try `num_warps=16` and `num_stages=2` since N=8192 is large; also consider `BLOCK_N_OUT=2048` or `4096` to reduce loop iterations on the bias-broadcast store.\n- The bias-broadcast store writes N*M = 8M values per row in a strided layout (`out + offs*M + row`) \u2014 this is uncoalesced. Output as `(M, N)` contiguous (i.e., `out[row*N + offs]`) and reshape/transpose afterwards, or skip materializing the broadcast entirely (return `(M,)` and broadcast in caller via `.view(1,1,M,1) + bias`).",
+    "large_guidance": "- Write a custom tiled Triton GEMM (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8, num_warps=8, num_stages=3) that fuses the linear bias-add in the epilogue. The 8192\u00d78192 matmul is the dominant cost and cuBLAS fp32 leaves significant headroom on a 4090; a TF32 `tl.dot` will be much faster than fp32.\n- Alternatively, keep cuBLAS GEMM but run it in fp16/bf16 with fp32 accumulation (cast weight once at init, cast activations per-forward), then do GN+min+bias in a single fp32 epilogue kernel. This is the simplest big win.\n- Eliminate the (N, M) broadcast materialization: the final tensor is `min_val[row] + bias[n]` \u2014 a rank-1 outer sum. Return the per-row min as a `(M,)` tensor and let PyTorch broadcast-add the `(1, N, 1, 1)` bias lazily, or fuse into whatever consumes it. Materializing 8M*4B = 32MB of broadcast output is pure memory traffic.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 37,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

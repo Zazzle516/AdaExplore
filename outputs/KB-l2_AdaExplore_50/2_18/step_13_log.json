@@ -1,0 +1,29 @@
+{
+    "node_id": 13,
+    "parent_node_id": 11,
+    "context_node_ids": [
+        11
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The atomic_add over splits is causing correctness failures \u2014 likely due to bias being added per-N-tile loop iteration inside the `if pid_k == 0` branch (bias gets added once per N tile, which is correct), but the row_acc accumulation across splits via atomics with float32 may have ordering issues. More likely: each split's inner loop iterates over ALL N tiles, so bias is added SPLIT_K times across splits \u2014 wait, only pid_k==0 adds bias, but pid_k==0 iterates all N tiles so bias added once per N tile = correct. The real bug: each split accumulates partial dot products but the N-loop runs fully in every split, so the same (m,n) output tile is computed SPLIT_K times with only partial K \u2014 summed across splits gives full K. That's correct. Suspect: `row_acc` is BLOCK_M-shape but atomic_add of a vector with mask \u2014 verify this works; try SPLIT_K=1 first to isolate.\n- Drop SPLIT_K entirely (set to 1, single grid dim) \u2014 K=8192 is fine for a single program to walk; this removes atomics and the correctness risk.\n- Once correct, autotune over BLOCK_M\u2208{64,128}, BLOCK_N\u2208{128,256}, BLOCK_K\u2208{32,64,128}, num_warps\u2208{4,8}, num_stages\u2208{3,4}.",
+    "large_guidance": "- Rewrite as a single fused kernel: one program per row tile (BLOCK_M rows), compute the full linear output for those rows by streaming over N in BLOCK_N tiles and over K in BLOCK_K tiles with `tl.dot`, accumulate (matmul + bias) into a per-row scalar sum directly in registers, then write one fp32 per row. No atomics, no split-K. The downstream max/mean/logsumexp/logsumexp on a (M,1) tensor are no-ops mathematically (max of 1 elem = that elem, mean = same, logsumexp of 1 elem = same), so the final output equals the row-sum of (X@W^T + B) \u2014 but still must be computed at runtime, which the fused kernel does.\n- Use BLOCK_M=64, BLOCK_N=128, BLOCK_K=32 with GROUP_M swizzle disabled (irrelevant since one program per row tile), num_warps=8, num_stages=4 to overlap K-loop loads for K=8192.\n- Pre-transpose W on the host once (store W^T contiguous in K) so the inner-loop B load is fully coalesced along K; bias is broadcast-added per N tile before the row reduction.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 14,
+    "global_best_node_id": 11,
+    "global_best_score": [
+        1,
+        1,
+        0.6167747552424558
+    ]
+}

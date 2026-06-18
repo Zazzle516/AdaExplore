@@ -1,0 +1,29 @@
+{
+    "node_id": 10,
+    "parent_node_id": 2,
+    "context_node_ids": [
+        2
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM dominates (M=1024, N=8192, K=8192). Add larger-tile autotune configs tuned for this exact shape: `BLOCK_M=128, BLOCK_N=256, BLOCK_K=32/64, num_warps=8, num_stages=3-4` and `BLOCK_M=64, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4`. Also try `BLOCK_M=256, BLOCK_N=128`. Drop masking on the K-loop interior iterations since K=8192 is divisible by BLOCK_K (use a peeled tail or assume divisibility) to remove per-iter mask compute.\n- The `gn_min_kernel` loads BLOCK_N=8192 floats per row into a single program \u2014 that's a 32KB tile per row plus reshape. Increase `num_warps` to 16 or split groups across programs (one program per (row, group_chunk)) then a second tiny min-reduce; alternatively keep one-program-per-row but use `num_stages=1` to reduce register pressure. Test `num_warps=16, num_stages=1`.\n- The final `bias_add_kernel` writes `[N, M]` with non-contiguous store pattern `out[n*M + row]` \u2014 for each program (row, n_block) the stores are coalesced along n but strided in memory by M between rows. That's fine, but consider writing output as `[M, N]` and viewing/permuting if downstream allows, or merge the bias-add into `gn_min_kernel`'s epilogue by having one program emit the full `[N]` row directly.",
+    "large_guidance": "- Fuse GroupNorm+min into the GEMM epilogue is hard (needs row-complete N), but you can fuse min+bias into a single kernel: after GN produces the scalar min per row, the bias-add is trivially memory-bound writing N*M=8M outputs. Have one kernel take `gemm_out [M,N]` and compute GN stats, normalize, take row-min, then scatter `min[m] + bias[n]` to output `[N, M]` \u2014 saves an intermediate write/read of the `[M]` tensor and a kernel launch.\n- The GEMM is the bottleneck (~70% of 1.91ms). Consider using `torch._C._cublas` / `torch.mm` for the GEMM (cuBLAS will beat hand-rolled Triton on a square 1024x8192x8192 on a 4090) and keep Triton only for the GN+min+bias fusion. The safety contract permits this \u2014 cuBLAS still executes the full matmul.\n- Alternatively, write a split-K GEMM since K=8192 is large relative to M=1024; a 2-way or 4-way split-K with atomic accumulation or a second reduction kernel can improve SM occupancy when M is small.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 11,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

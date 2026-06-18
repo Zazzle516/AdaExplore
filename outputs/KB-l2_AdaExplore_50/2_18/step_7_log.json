@@ -1,0 +1,29 @@
+{
+    "node_id": 7,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness fails because the kernel accumulates `acc + b` then masks with `tl.where(mask_n, acc, 0.0)`, which zeros real values when `mask_n` is False but also writes the bias into masked-out lanes before zeroing \u2014 works fine here, but the real issue is likely numerical: `tl.sum` over BLOCK_N then accumulated across N iterations is fine. The actual bug: max-diff ~0.05 suggests fp32 reduction accuracy across K=8192 with BLOCK_K=32 in many tile shapes. Try forcing larger BLOCK_K (64/128) and use `tl.dot(..., allow_tf32=False)` to disable TF32 which costs ~2% precision and trips the 5e-2 tolerance.\n- Add `allow_tf32=False` to the `tl.dot` call (or set the kernel input dtype path so accumulator is fp32 without TF32 truncation). On Ampere/4090 with K=8192 the TF32 mantissa loss compounds to ~0.05 abs error \u2014 exactly what's observed.\n- Drop the smaller-K configs (BLOCK_K=32) from autotune; keep BLOCK_K=64 with num_stages=4 to better overlap loads over the long K=8192 dimension.",
+    "large_guidance": "- Keep the fused-linear-then-rowsum strategy (it's the right design: M=1024, N=K=8192, the GEMM dominates and the trailing reductions are trivial since output is (M,1)). A from-scratch rewrite should compute `row_acc[m] = sum_n( sum_k x[m,k]*w[n,k] ) + sum_n b[n]` and observe that `sum_n w[n,k]` is *not* allowed to be precomputed (safety contract), so the inner work must remain a GEMM-shaped reduction.\n- Consider a split-K design: launch grid (M_tiles, K_splits), each program does a partial `sum_n (x @ w.T)` over its K slice writing to a partial buffer, then a tiny second kernel reduces over K_splits. This better utilizes the 4090's SMs given M=1024 is small (only 32 row-tiles of 32).\n- Ensure fp32 accumulation without TF32 in `tl.dot` to stay within the 5e-2 tolerance; alternatively use two-pass Kahan-ish or split-K which reduces per-tile K depth and thus rounding error.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 8,
+    "global_best_node_id": 6,
+    "global_best_score": [
+        1,
+        1,
+        0.09541046375595273
+    ]
+}

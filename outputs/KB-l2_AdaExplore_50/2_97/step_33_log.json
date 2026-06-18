@@ -1,0 +1,29 @@
+{
+    "node_id": 33,
+    "parent_node_id": 27,
+    "context_node_ids": [
+        27
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.474714346830051,
+    "max_reward": 0.474714346830051,
+    "avg_reward": 0.474714346830051,
+    "score": [
+        1,
+        1,
+        0.7163933613479205
+    ],
+    "small_guidance": "- The training path falls back to pure PyTorch (linear + BN + bias + div + swish), which is likely what's dominating the 3.41ms runtime since benchmarks typically run in train mode. Make the fused Triton GEMM path handle training too: compute per-column mean/var of the GEMM output (either via a second pass or batched reduction), update `running_mean`/`running_var` manually with momentum, then apply the fused scale/shift/swish epilogue.\n- Add larger tile autotune configs tuned for M=1024, N=8192, K=8192 (e.g. `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4` and `BLOCK_M=64, BLOCK_N=128, BLOCK_K=128`), and ensure `W` is pre-transposed once to `(K, N)` contiguous at init so the inner B loads are fully coalesced along N instead of strided by K.\n- Pass `INV_DIV` properly into the kernel and absorb it directly into `scale`/`shift` precomputation (already partially done) \u2014 remove the unused `INV_DIV` constexpr to simplify specialization.",
+    "large_guidance": "- Redesign so the eval-mode fused kernel is also used in training: do a two-pass GEMM strategy \u2014 first kernel writes pre-activation `acc` to a scratch buffer while also accumulating per-column sum/sum-of-squares using `tl.atomic_add` across M-tiles; a tiny second kernel finalizes mean/var, updates running stats, and computes fused scale/shift; a third kernel applies elementwise scale+shift+swish. This eliminates the PyTorch fallback entirely.\n- Alternatively, use a split-K-free single-pass design: launch one program per N-tile that loops over all M (persistent along M) to compute column stats and the GEMM output simultaneously, writing pre-activation to a scratch, then a second pass applies the epilogue. With N=8192 and M=1024 this fits well: ~8K column-stat reductions, each over 1024 rows.\n- Consider keeping the weight permanently transposed as a buffer (`self.register_buffer('W_t', ...)`) refreshed lazily, so the GEMM uses `(K, N)` contiguous layout with stride_bk=N, stride_bn=1 \u2014 this is the standard high-throughput layout for `tl.dot` on Ampere.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 34,
+    "global_best_node_id": 16,
+    "global_best_score": [
+        1,
+        1,
+        1.306364364810914
+    ]
+}

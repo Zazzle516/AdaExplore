@@ -1,0 +1,29 @@
+{
+    "node_id": 2,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure likely comes from the GEMM: B is passed as `weight` (shape [N,K], row-major) with `stride_bk = weight.stride(1) = 1` and `stride_bn = weight.stride(0) = K`. That mapping is correct but verify by transposing weight once into a (K,N) buffer at init and using natural strides \u2014 eliminates the transposed-stride confusion that's producing the ~0.26 average error.\n- After fixing correctness, widen the GN kernel: CPG = 8192/512 = 16, so BLOCK_C=16 with `num_warps=1` is enough; current `num_warps=4` wastes warps on a 16-element reduction. Process multiple groups per program (e.g. 8 groups \u00d7 16 channels = BLOCK=128) to amortize launch overhead \u2014 grid becomes (M, G/8).\n- Add an autotune over the GN kernel with `(GROUPS_PER_PROG, num_warps)` \u2208 {(4,1),(8,2),(16,2),(32,4)} keyed on (M,G,CPG).",
+    "large_guidance": "- Keep the tiled GEMM-bias as one kernel and write a second kernel that fuses GroupNorm + LeakyReLU + (x+x\u21922x) per row. With CPG=16 and 512 groups per row, a row-persistent kernel can load the whole 8192-wide row once into registers/SRAM, do a per-group reduction across 16 lanes via `tl.reshape` to (G_TILE, CPG) and `tl.sum(axis=1)`, then write back fused \u2014 avoids one full HBM round-trip vs. the current per-(sample,group) launch.\n- Alternative: fuse GN's first pass (mean/var) into the GEMM epilogue. After the BLOCK_M\u00d7BLOCK_N tile is computed, if BLOCK_N is a multiple of CPG=16, compute partial group sums on the tile and atomically accumulate into per-(m,group) mean/var buffers; second small kernel finalizes stats and applies affine+lrelu+double. Saves the GN read pass entirely.\n- Verify the GEMM's B-stride mapping with a tiny test before any further tuning \u2014 the 0.26 avg_difference is consistent with a layout/stride bug rather than a numerical issue, and no amount of block-size tuning will fix it.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 3,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

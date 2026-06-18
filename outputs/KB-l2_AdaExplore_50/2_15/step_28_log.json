@@ -1,0 +1,29 @@
+{
+    "node_id": 28,
+    "parent_node_id": 27,
+    "context_node_ids": [
+        27
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4207638894815953,
+    "max_reward": 0.4207638894815953,
+    "avg_reward": 0.4207638894815953,
+    "score": [
+        1,
+        1,
+        0.27130208822316104
+    ],
+    "small_guidance": "- The conv_transpose3d call is the dominant cost (baseline 1.78ms vs 6.57ms current \u2014 the BN+sub-mean fusion is fine but conv dominates). Tuning this kernel further won't help; focus must shift to replacing the torch ConvTranspose3d.\n- If staying with the current structure, at least try `BLOCK_S=4096`, `num_warps=4` for the BN kernel since `S = 31*63*63 \u2248 123K` per (N,C); but expected gain is <1% of total runtime.\n- Consider folding scale/shift computation into the kernel epilogue once a custom conv-transpose is in place, so BN+sub-mean is fused directly with the conv-transpose output write.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)`, computing the input \u00d7 kernel outer product and scattering into the output grid using stride/padding/output_padding index math. This is the high-headroom move since fast_p=0.27 with the conv unmodified.\n- Alternative: implement conv-transpose as a gather GEMM \u2014 one program per `(N, OC tile, output-spatial tile)`, where each output position gathers contributions from the valid input positions `(id, ih, iw)` such that `od = id*stride - pad + kd` (i.e. iterate kernel taps and check `(od + pad - kd) % stride == 0`). This avoids atomics and maps cleanly to a tiled GEMM with `K = IC * KD * KH * KW`.\n- Fuse the BN affine (precomputed scale/shift at eval) plus the per-(N,C) spatial mean subtraction into the conv-transpose epilogue. Since the mean requires a full reduction over the output spatial volume, use a two-pass approach: first kernel writes `y = x*scale + shift` and accumulates per-(N,C) sum via atomic_add into a small buffer; second tiny kernel subtracts `sum/S` in-place. Keep output in NCDHW or switch to channels_last_3d for coalesced channel loads in the GEMM-K dim.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 29,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.32290846370039283
+    ]
+}

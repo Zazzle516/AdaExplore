@@ -1,0 +1,29 @@
+{
+    "node_id": 17,
+    "parent_node_id": 8,
+    "context_node_ids": [
+        8
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness bug: GroupNorm's affine `gamma`/`beta` are per-channel (size C), not per-(group,CPG). The current indexing `gamma_ptr + grp*CPG + offs` is actually correct since channels are laid out as [g0_c0..g0_cCPG-1, g1_c0..]. But verify: the leaky_relu+double fusion gives `2*leaky_relu(y)`, which matches reference. The mismatch (~5e-3 max, ~2e-4 avg) suggests a numerical precision issue \u2014 try computing mean/var with a Welford-style or two-pass with higher precision, and ensure `tl.sum` mask uses 0.0 for masked lanes (already done). Double-check: load gamma/beta with proper offset \u2014 should be `gamma_ptr + grp*CPG + offs` only if gamma is stored grouped contiguously, which it is.\n- Increase `num_warps` to 8 for the GN kernel when CPG is small (16) \u2014 actually with CPG=16 a single warp suffices; try `num_warps=1` or 2 to reduce overhead, since one program handles only 16 elements.\n- Pack multiple groups per program (e.g., process 8 groups per program block) to amortize launch/scheduling overhead \u2014 N*G = 1024*512 = 524288 programs is excessive for tiny per-program work.",
+    "large_guidance": "- Redesign the GN kernel: with CPG=16 and 512 groups per row, launching 524288 tiny programs is the bottleneck. Use one program per row (or per row-tile), load the whole row (8192 floats) into registers/SRAM, do all 512 group reductions with a 2D layout `[G_TILE, CPG]`, fuse gamma/beta + leaky_relu + double, and store. This collapses launches from 524k \u2192 ~1k.\n- Consider a persistent kernel that processes multiple rows per program with `tl.reduce` along the CPG axis of a 2D tile, keeping the row resident.\n- For the GEMM, M=N=K=8192 is large; ensure autotune includes 128x256x32 and 256x128x32 with num_stages=3, num_warps=8, and consider splitting K only if needed (not necessary here). Also try storing to fp32 directly into the GN input buffer to avoid any extra memory traffic, and consider fusing the GN's first-pass mean reduction into the GEMM epilogue (write per-group partial sums) \u2014 but that's complex; the bigger win is fixing GN launch granularity.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 18,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

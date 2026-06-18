@@ -1,0 +1,29 @@
+{
+    "node_id": 6,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        4
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4440305732414397,
+    "max_reward": 0.4440305732414397,
+    "avg_reward": 0.4440305732414397,
+    "score": [
+        1,
+        1,
+        0.46325222924187726
+    ],
+    "small_guidance": "- The current gather kernel iterates all KD*KH*KW=27 taps per output but only ~1/8 are valid (stride=2). Restructure by computing tap validity from `(od+PD) % SD` etc. once per output and only iterating the single valid (kd,kh,kw) per spatial axis \u2014 i.e. derive `kd = (od+PD) % SD`, `id_ = (od+PD)//SD`, dropping the outer static loops over kd/kh/kw and just looping over valid taps (1 per axis when in range). This cuts dot calls by ~8\u00d7.\n- Add larger autotune configs targeting the GEMM shape (OC=128, IC=64 \u2192 small K): try `BLOCK_OC=128, BLOCK_SP=64, IC_TILE=64` (full IC in one tile, removes inner ic loop), and `BLOCK_OC=64, BLOCK_SP=256, IC_TILE=64` with num_warps=8, num_stages=2-4.\n- Cache the reordered weight as `(OC, KD*KH*KW*IC)` so the per-tap K dimension can be flattened into one GEMM-K loop, eliminating the per-tap dot overhead and letting Triton pipeline the K loop.",
+    "large_guidance": "- Switch from gather to scatter-add: one program per `(N, IC tile, input-spatial tile)` computes `x[n, ic, id, ih, iw] \u00b7 W[ic, :, kd, kh, kw]` outer product and `tl.atomic_add`s into the output grid at `(od=id*SD-PD+kd, ...)`. For ConvTranspose3d with stride=2 this matches the natural data flow \u2014 each input contributes to exactly KD*KH*KW=27 output points \u2014 and avoids the wasted 7/8 zero-tap work the gather form does.\n- Alternatively, since stride=2 means each output position `(od,oh,ow)` is touched by exactly one `(kd,kh,kw)` determined by parity, write a parity-specialized gather: 8 sub-kernels (or a single kernel keyed on `(od%2, oh%2, ow%2)`) each doing a pure GEMM with K=IC (no kernel-tap loop, no validity mask on taps). This collapses the conv-transpose to 8 plain GEMMs of shape (OC, IC) \u00d7 (IC, sub-volume).\n- Fuse the bias+clamp+divide epilogue (already done) and ensure the output store uses channels-last-style coalescing on the OW axis; consider persistent-CTA over the spatial tile so weight tiles stay in registers across multiple output tiles for the same OC block.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 7,
+    "global_best_node_id": 6,
+    "global_best_score": [
+        1,
+        1,
+        0.46325222924187726
+    ]
+}

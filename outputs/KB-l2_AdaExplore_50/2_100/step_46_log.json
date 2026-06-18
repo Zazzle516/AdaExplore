@@ -1,0 +1,30 @@
+{
+    "node_id": 46,
+    "parent_node_id": 42,
+    "context_node_ids": [
+        9,
+        38
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.43296297496706193,
+    "max_reward": 0.43296297496706193,
+    "avg_reward": 0.43296297496706193,
+    "score": [
+        1,
+        1,
+        0.3719445434782609
+    ],
+    "small_guidance": "- The current code falls back to `F.conv_transpose3d` + a tiny epilogue kernel; the epilogue is already cheap so tuning it further won't help. If staying with cuDNN, try `torch.backends.cudnn.benchmark=True` and `channels_last_3d` memory format on x/weight to pick a faster cuDNN algo.\n- For the epilogue kernel, increase `BLOCK_SIZE` to 8192 and `num_warps=4`; replace the `(offsets // channel_stride) % n_channels` integer-div with a precomputed channel index by launching a 2D grid over (C, spatial_tile) so the bias load is broadcast (one `tl.load` per program).\n- Drop the masked bias load on a per-element `mask` (only the channel index matters); load `bias[c]` unmasked once per program tile.",
+    "large_guidance": "- Replace the cuDNN call with the custom scatter-add ConvTranspose3d kernel that's already drafted: one program per (N, OC tile, output spatial tile), implicit im2col gather over (IC, KD, KH, KW) collapsed into the GEMM-K dim, and fuse bias+clamp+divide into the epilogue so the output is written once. The current 69 ms vs 25 ms baseline shows cuDNN's transposed-conv path is the bottleneck \u2014 a direct gather-style kernel with `tl.dot` over IC*KD*KH*KW (=1728) should beat it.\n- Use a `triton.autotune` over BLOCK_OC \u2208 {32,64,128}, BLOCK_SP \u2208 {32,64,128}, BLOCK_K \u2208 {16,32,64}, num_warps \u2208 {4,8}, num_stages \u2208 {2,3,4}; key on (OC, OD*OH*OW, IC). Make IC the inner GEMM-K with `BLOCK_K=32` and accumulate via `tl.dot` for tensor-core utilization.\n- Lay weight out as `[KD,KH,KW,IC,OC]` (precomputed once in `__init__`) so the inner-loop weight loads are contiguous along OC, and hoist the (kd,kh,kw)\u2192(id,ih,iw) validity masks out of the IC loop. Fuse bias add, clamp, and \u00d7inv_divisor in the same kernel epilogue \u2014 no second pass.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 47,
+    "global_best_node_id": 39,
+    "global_best_score": [
+        1,
+        1,
+        0.6546983035714286
+    ]
+}

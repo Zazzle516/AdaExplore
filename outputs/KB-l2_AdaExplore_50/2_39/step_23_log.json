@@ -1,0 +1,29 @@
+{
+    "node_id": 23,
+    "parent_node_id": 22,
+    "context_node_ids": [
+        22
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.48033968637423186,
+    "max_reward": 0.48033968637423186,
+    "avg_reward": 0.48033968637423186,
+    "score": [
+        1,
+        1,
+        0.7628024125874125
+    ],
+    "small_guidance": "- The addmm (16384\u00d74096\u00d74096 GEMM) dominates runtime; the scale+BN epilogue is cheap. Focus tuning on replacing `torch.addmm` with a fused Triton GEMM that absorbs bias+scale (and possibly the BN apply in eval). For the current stats kernel, try BLOCK_M=2048, BLOCK_N=128, M_CHUNKS=8, num_warps=8, num_stages=3 to better saturate memory bandwidth on the 16384\u00d74096 read.\n- For `fused_scale_bn_apply_inplace_kernel`, increase tile to BLOCK_M=128, BLOCK_N=128 with num_warps=4, num_stages=3, and drop GROUP_M swizzle (pure elementwise \u2014 swizzle adds index math without L2 benefit). This should cut the apply pass time.\n- Consider doing the stats pass in two kernels with a tree reduction (partial sums to a [num_chunks, N] buffer, then a small reduction kernel) instead of atomic_add into N=4096 \u2014 atomics on float32 across many programs can serialize.",
+    "large_guidance": "- Replace `torch.addmm` with a custom tiled Triton GEMM (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8, num_warps=8, num_stages=3) that loads bias and scale once per N-tile and writes `(x@W^T + b) * scale` directly. This removes one full read/write pass over the 256MB activation tensor and fuses the scale multiply into the GEMM epilogue.\n- In eval mode, additionally fuse the BN affine (a, b precomputed on host) into the GEMM epilogue so the entire forward is one kernel. In training mode, write the GEMM output to global, then run a single fused stats+apply pipeline (or use a two-stage reduction so the BN-apply kernel can be fused with the GEMM via a second pass).\n- For the BN training stats, use a tree-reduction (partial [num_chunks, N] buffer) followed by a small per-column reduction kernel rather than atomic_add \u2014 eliminates contention and matches the column-wise nature of the reduction. Combine the final mean/var/invstd computation and the (a, b) precompute into one tiny kernel over N.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 24,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.7791481785714286
+    ]
+}

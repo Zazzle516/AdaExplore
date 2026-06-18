@@ -1,0 +1,29 @@
+{
+    "node_id": 36,
+    "parent_node_id": 33,
+    "context_node_ids": [
+        33
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The atomic_add accumulates into fp32 partial sums across N tiles, but with N=32768 and BLOCK_N=128 there are 256 atomic adds per row of summed sigmoids \u2014 this is fine numerically but the correctness failure suggests something else. Check that `W.stride(0), W.stride(1)` are passed correctly: for `nn.Linear`, weight is `(N, K)` row-major so `stride_wn = K, stride_wk = 1`; the kernel loads `w_ptrs = w_ptr + offs_n[:,None]*stride_wn + offs_k[None,:]*stride_wk` which is correct. The issue may be the `partial_ptr` strides `stride_pm, stride_pn` are passed as `1, 1` but the kernel never uses them \u2014 verify and remove.\n- More likely cause of failure: `out_flat = torch.zeros(...)` is created fresh each forward but autotune may rerun the kernel multiple times during tuning, accumulating into the same buffer and producing inflated results. Use `reset_to_zero=['partial_ptr']` in the autotune decorator, or make the autotune key stable and zero the buffer just before launch.\n- Once correctness is fixed, drop redundant configs and bias toward `BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, num_warps=8, num_stages=3` since M=128 fits in one M-tile.",
+    "large_guidance": "- Since M=128 is small and N=K=32768 is huge, restructure as a split-K / split-N reduction kernel: one program per (M-row-group, N-tile) computes the GEMM tile, applies bias+sigmoid, reduces over BLOCK_N to a scalar per row, and atomic-adds into a length-M output. This is what the current kernel attempts; the cleaner alternative is a two-stage kernel (stage 1 writes per-tile partial sums of shape `[M, num_n_tiles]`, stage 2 reduces along the tile axis) to avoid atomics entirely.\n- Consider a persistent-M kernel: with M=128 and a single BLOCK_M=128, launch only along the N dimension, each program loads its slice of x once into SRAM, streams through K, and writes a partial sum \u2014 eliminates redundant x loads across pid_m tiles.\n- Use `triton.autotune(reset_to_zero=['partial_ptr'])` to guarantee correctness during autotuning when accumulating via atomic_add.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 37,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

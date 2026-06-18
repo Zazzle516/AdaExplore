@@ -1,0 +1,30 @@
+{
+    "node_id": 30,
+    "parent_node_id": 29,
+    "context_node_ids": [
+        5,
+        29
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4735195870875657,
+    "max_reward": 0.4735195870875657,
+    "avg_reward": 0.4735195870875657,
+    "score": [
+        1,
+        1,
+        0.7065365934724169
+    ],
+    "small_guidance": "- The conv (F.conv2d) dominates runtime now that the epilogue is fused; tuning BLOCK_PH/BLOCK_PW or num_warps further won't move fast_p meaningfully. If staying small, try fusing the conv bias into the epilogue (skip the separate bias add) and switch conv_out to channels_last memory format to improve coalescing for the GN stats reduction.\n- For gn_stats_kernel, with SPATIAL=16384 and CH_PER_GROUP=4, try BLOCK_SP=2048 with num_warps=8/num_stages=4, or split the reduction across multiple programs per group and combine, to overlap memory latency.\n- For fused_epilogue_kernel, try BLOCK_PH=8/BLOCK_PW=16 with num_warps=4 (output tile is 32x32 \u2192 fewer wasted threads), and hoist the scale/mean loads outside the pool loop (already done).",
+    "large_guidance": "- Replace F.conv2d with a custom Triton im2col-GEMM kernel: one program per (N, OC tile, output-spatial tile). With IC=8, KH=KW=3, GEMM-K is only 72, so use BLOCK_K=72 (single iteration) and BLOCK_M=64 (OC) \u00d7 BLOCK_N=64-128 (spatial). This is where the headroom is \u2014 conv is ~70% of runtime.\n- Fuse the entire pipeline: conv \u2192 GN \u2192 scale \u2192 maxpool \u2192 clamp. Since GN needs per-group stats, use a two-phase approach: (1) custom conv kernel writes conv_out AND per-group partial sums/sumsq directly (atomic-add into per-(N,group) accumulators, or one program per (N,group) accumulates across its channels); (2) second kernel does normalize+scale+pool+clamp reading conv_out. Avoid the separate F.conv2d launch entirely.\n- Alternative: a fully persistent per-(N, group) kernel that loads the IC\u00d7H\u00d7W input tile once, computes the conv for all CH_PER_GROUP=4 output channels of that group in registers, reduces stats in-kernel, then normalizes+pools+clamps before writing out. Input volume per group is 8\u00d7130\u00d7130 \u2248 540KB which is too large, so tile the spatial axis and do two passes (first pass: conv + stats; second pass: conv + normalize + pool), reusing the conv weights resident in SMEM.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 31,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        0.9287336140344138
+    ]
+}

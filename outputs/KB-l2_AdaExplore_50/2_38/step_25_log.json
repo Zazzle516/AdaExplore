@@ -1,0 +1,29 @@
+{
+    "node_id": 25,
+    "parent_node_id": 7,
+    "context_node_ids": [
+        7
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.43983604435261714,
+    "max_reward": 0.43983604435261714,
+    "avg_reward": 0.43983604435261714,
+    "score": [
+        1,
+        1,
+        0.4286473659090909
+    ],
+    "small_guidance": "- The conv_transpose kernel is the bottleneck: it loops over IC serially with scalar loads per program and only parallelizes over (N, OD, OH, OW). Add a second tile dimension over OC (BLOCK_OC=64 covers full OC in one program already) and merge IC into a vectorized `tl.arange(0, BLOCK_IC)` load + dot, with BLOCK_IC=32 (=IC). This turns the inner IC loop into a single `tl.sum(x[:,None]*w[:,:], axis=0)`.\n- Wrap the conv_transpose launch in `triton.autotune` over `BLOCK_OW \u2208 {4,8,16}`, `num_warps \u2208 {2,4,8}`, `num_stages \u2208 {2,3}` so each program covers a tile of OW outputs and amortizes the weight loads across the tile.\n- Fuse clamp into the conv_transpose epilogue (write clamped output) so softmax only does min/max bookkeeping; you already skip a separate clamp launch, but the current code clamps inside softmax twice \u2014 clamp once in conv kernel and drop it from softmax_scale_kernel2.",
+    "large_guidance": "- Rewrite ConvTranspose3d as a gather-style direct kernel where each program computes a tile of output voxels for a fixed (n, oc_tile) using the closed-form `id=(od+pad-kd)/stride` mapping (as now) \u2014 but tile along OC (BLOCK_OC=64) and OW (BLOCK_OW=8) so the inner reduction is a real GEMM-shaped `tl.dot` of input[BLOCK_OW, IC] \u00d7 weight[IC, BLOCK_OC] for each (kd,kh,kw). With IC=32, OC=64 this is one 8x32 @ 32x64 dot per kernel tap, fully utilizing tensor cores.\n- Alternatively, formulate ConvTranspose3d as input-driven scatter-add: one program per (n, ic_tile, id, ih, iw_tile) computes `input \u00d7 weight[ic,:,kd,kh,kw]` outer products and atomic-adds into the output grid at `(od=id*stride-pad+kd, ...)`. This avoids the divisibility test and is friendlier when stride>1 makes most gather taps invalid (here only 1/8 of (kd,kh,kw) combinations are valid per output, so the current gather wastes work).\n- Fuse avg_pool3d into the conv_transpose input fetch: since pool_kernel=2 with no overlap, the kernel can load 8 raw-input voxels and average them on the fly instead of materializing the pooled tensor \u2014 eliminates one full pass over the (32,32,32,64,64) input.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 26,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.43060465981735163
+    ]
+}

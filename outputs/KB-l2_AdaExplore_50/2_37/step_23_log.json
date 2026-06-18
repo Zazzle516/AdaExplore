@@ -1,0 +1,29 @@
+{
+    "node_id": 23,
+    "parent_node_id": 22,
+    "context_node_ids": [
+        4
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The GEMM kernel lacks masking on M/N tails and K-loop bounds \u2014 with M=32768, N=4096, K=1024 these are divisible by common tile sizes so likely fine, but the correctness failure (max_diff ~0.0017) suggests an FP32 precision issue from `allow_tf32=True` in `tl.dot`. Try `allow_tf32=False` or cast inputs explicitly; the loose tol is 5e-2 so this should pass, but verify the test isn't using a tighter tolerance.\n- GroupNorm: CPG = 4096/64 = 64, so BLOCK_CPG=64 fits in one warp easily. Bump `num_warps=4` and consider fusing the affine load with the normalization to avoid extra register pressure. Also consider using `tl.where(mask, x, 0.0)` before computing sum to be safe.\n- Add more autotune configs targeting M=32768, N=4096, K=1024 \u2014 try BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4 which often wins on 4090 for large K.",
+    "large_guidance": "- Fuse the entire pipeline (GEMM + swish + bias + GroupNorm) by having the GEMM kernel write to a temp, then a single GroupNorm kernel; or better, since CPG=64 is small, design a persistent kernel that computes one row's full output (N=4096) in BLOCK_N=256 tiles, accumulates partial group statistics per tile in shared memory, then does a second pass to normalize \u2014 eliminating the materialization of `y`.\n- Alternatively, since the GEMM dominates (M*N*K*2 = 274 GFLOPs vs. ~500MB norm bandwidth), focus a redesign on a high-quality split-K or stream-K GEMM with epilogue (swish+bias) and let GroupNorm be a separate well-tuned reduction kernel. The current GEMM may be leaving perf on the table due to suboptimal swizzling \u2014 add `GROUP_M=8` block-swizzle for L2 reuse.\n- For correctness: the max_diff of 0.0017 with avg 9e-5 is suspicious \u2014 likely a TF32 precision issue or a subtle bug in the bias/swish ordering. Double-check that `bl` (linear bias) is added before swish and `bp` (extra bias) after, matching the reference.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 24,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

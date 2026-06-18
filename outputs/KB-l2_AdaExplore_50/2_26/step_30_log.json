@@ -1,0 +1,29 @@
+{
+    "node_id": 30,
+    "parent_node_id": 8,
+    "context_node_ids": [
+        8
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.43664469226243013,
+    "max_reward": 0.43664469226243013,
+    "avg_reward": 0.43664469226243013,
+    "score": [
+        1,
+        1,
+        0.4023187111650485
+    ],
+    "small_guidance": "- The fused add+hardswish kernel is already memory-bound and trivial; further tuning won't help since ConvTranspose3d dominates (~20ms vs ~8ms baseline). Tuning the elementwise tail is wasted effort.\n- If keeping current structure, also fuse the `self.bias` add into the elementwise kernel (currently the bias isn't even applied \u2014 check correctness contract: the reference doesn't use self.bias in forward, so this is fine).\n- Consider channels_last_3d memory format for the output of conv_transpose so the fused kernel coalesces better, but gains will be marginal.",
+    "large_guidance": "- The ConvTranspose3d is the bottleneck. Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile) computing the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and scatter-adding into the strided output grid with proper stride=2/pad=1/output_padding=1 index math. Fuse the conv bias, the external `add_input`, and the `v * hardswish(v)` epilogue into the same kernel's final write (after all scatter-adds complete \u2014 requires a two-pass design or atomic adds followed by a separate epilogue pass).\n- Alternative: implement as im2col-style gather GEMM where each output voxel gathers from input positions `(od+pad-kd)/stride` (only valid when divisible). One program per (N, OC tile, output-spatial tile), accumulate over (IC, kd, kh, kw), then fuse bias+add_input+hardswish in the epilogue \u2014 this avoids atomics and is generally faster for ConvTranspose.\n- Fold conv bias into the epilogue add; the output volume is 128*64*32^3 \u2248 268M elements, so an autotuned GEMM with BLOCK_M=64 (OC), BLOCK_N=64-128 (spatial), BLOCK_K=32 over IC*kd*kh*kw=864 should comfortably beat cuDNN's ConvTranspose3d.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 31,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        0.7818646650943397
+    ]
+}

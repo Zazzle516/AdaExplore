@@ -1,0 +1,29 @@
+{
+    "node_id": 14,
+    "parent_node_id": 10,
+    "context_node_ids": [
+        10
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.41571574589646465,
+    "max_reward": 0.41571574589646465,
+    "avg_reward": 0.41571574589646465,
+    "score": [
+        1,
+        1,
+        0.22965490364583332
+    ],
+    "small_guidance": "- The LN+GELU+scale kernel is already memory-bound and tiny relative to ConvTranspose3d (which dominates the 38.4ms). Tuning ROWS_PER_PROG (try 4/8/16) and num_warps (4 vs 8) for BLOCK_C=64 is unlikely to move the needle more than ~1%.\n- If keeping the current structure, fuse the conv_transpose bias add into the LN kernel's pre-normalization step to remove one full read/write of the post-conv tensor (currently bias is applied inside the cuDNN call, so this requires disabling bias in conv and adding it in the kernel's load step).\n- Use `channels_last_3d` memory format for the conv output so the LN reduction axis is contiguous; the reshape to (N*D*H*W, C) is then a true contiguous view.",
+    "large_guidance": "- The bottleneck is `nn.ConvTranspose3d` itself (output shape 32\u00d764\u00d731\u00d763\u00d763 \u2248 250M elements, with stride=2/pad=1/k=4). Replace it with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile) computing the input\u00d7weight outer product and atomically scattering into the output grid, handling stride/padding in index math. This is where the >4\u00d7 headroom lives.\n- Alternative design: gather-style direct ConvTranspose3d kernel \u2014 one program per (N, OC tile, output-spatial tile), where each output position iterates the (kd,kh,kw) positions whose stride-2 footprint reaches it, gathers the corresponding input voxel, and accumulates. Fuse bias add + LayerNorm (per-output-channel-vector reduction across the spatial dims is wrong \u2014 LN here is over the C=64 axis, so a second kernel pass over channels-last output is appropriate) + GELU + scale.\n- Fusion boundary: emit the conv-transpose output in channels_last_3d (NDHWC) so the subsequent LN+GELU+scale kernel reads contiguous C=64 rows. Keep LN as a separate kernel (it needs all C values per spatial position, which conflicts with OC-tiled conv output), but ensure the conv kernel writes NDHWC directly to avoid a layout transpose.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 15,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.22965490364583332
+    ]
+}

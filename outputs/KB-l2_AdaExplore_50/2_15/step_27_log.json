@@ -1,0 +1,29 @@
+{
+    "node_id": 27,
+    "parent_node_id": 24,
+    "context_node_ids": [
+        24
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4207638894815953,
+    "max_reward": 0.4207638894815953,
+    "avg_reward": 0.4207638894815953,
+    "score": [
+        1,
+        1,
+        0.27130208822316104
+    ],
+    "small_guidance": "- The current kernel only fuses BN+mean-subtract; the ConvTranspose3d dominates runtime (fast_p=0.27 with baseline 1.78ms vs 6.57ms \u2014 actually the custom is *slower* than baseline, meaning torch's cuDNN ConvTranspose3d is fast and the bn_sub_mean tail is fine but doesn't help). Increase BLOCK_S to 2048 or 4096 (S = 32*64*64 = 131072 here, so larger blocks reduce loop iterations) and bump num_warps to 8.\n- Try a two-pass approach where the first pass computes only the mean (without writing) and the second pass writes \u2014 same arithmetic but avoids re-loading x in scaled form; or cache scale*x in registers via a single-pass Welford-like accumulator.\n- Use `tl.sum(x, axis=0)` directly with masked loads (other=0.0 already handles masking) instead of `tl.where(mask, y, 0.0)` \u2014 the where is redundant.",
+    "large_guidance": "- The torch ConvTranspose3d is the bottleneck (~1.7ms baseline, the custom is 6.57ms \u2014 something else is wrong; likely the eval-path BN folding triggers but conv_transpose itself dominates and the custom path adds overhead). Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile), computing the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and scatter-adding into the output grid at `(d*stride+kd-pad, h*stride+kh-pad, w*stride+kw-pad)`. Fold the conv bias, BN affine (eval-time folded scale/shift), and mean-subtraction into the epilogue.\n- Alternatively, implement ConvTranspose3d as a gather-style GEMM: output position `(od,oh,ow)` reads from input positions where `(od+pad-kd) % stride == 0`; one program per `(N, OC tile, output-spatial tile)`, GEMM-K = IC * KD * KH * KW. This gives clean coalesced output writes and lets BN+mean-sub fuse trivially in the epilogue (mean still needs a second pass over D*H*W).\n- Use channels_last_3d layout so the IC reduction axis is contiguous; autotune (BLOCK_M, BLOCK_N, BLOCK_K) over {(32,32,16),(64,32,16),(32,64,16)} with num_warps=4, num_stages=2 to stay within SMEM.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 28,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.32290846370039283
+    ]
+}

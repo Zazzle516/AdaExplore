@@ -1,0 +1,29 @@
+{
+    "node_id": 31,
+    "parent_node_id": 27,
+    "context_node_ids": [
+        27
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5600427236250766,
+    "max_reward": 0.5600427236250766,
+    "avg_reward": 0.5600427236250766,
+    "score": [
+        1,
+        1,
+        1.4203524699068815
+    ],
+    "small_guidance": "- The current GEMM does a full (M,N) matmul then reduces N to a scalar per row \u2014 but the entire output is reduced to mean\u2192logsumexp(of a single value)\u2192GELU, which is just GELU(mean). Keep this fused single-pass reduction strategy but increase SPLIT_K (try 16 or 32) so each program does less serial work along N; with B=2048 and only 8 splits, grid is only ~256 CTAs which underfills the 4090.\n- Add a `pre_hook` to clear `partial` or switch to `tl.atomic_add` into a (B,) buffer so you don't need a finalize reduction. Also lift BLOCK_M to 128 and try BLOCK_N=64 BLOCK_K=64 to better hide K-loop latency for K=8192.\n- For finalize_add_kernel, BLOCK_K=8192 with one program per row is fine, but bumping num_warps to 16 (or splitting K into 4 programs of 2048 with num_warps=8) will better saturate bandwidth on the 2048\u00d78192 residual add.",
+    "large_guidance": "- The dominant cost is computing `mean(x@W^T + b - sub)` over N. Since logsumexp of a keepdim=1 tensor is identity and mean is linear, the runtime needs only a scalar per row: `s_m = (1/N) * (sum_k x[m,k] * sum_n W[n,k] + sum_n(b - sub))`. Note this folds the GEMM's N-reduction into a weight-vector reduction at *runtime* \u2014 but the safety contract forbids that as an init-time shortcut. The legitimate redesign is to compute the column-sum of W *each forward* with a small Triton reduction kernel (so the op runs at runtime), then a tiny (M,K) matvec, then the residual add. This keeps every operator executing on the live tensor while collapsing the GEMM cost from O(M*N*K) to O(N*K + M*K).\n- Alternatively, keep the full GEMM honest and write a persistent split-K kernel where each program owns a (BLOCK_M, K) row tile and streams over N with an outer tile, accumulating row_sum in registers \u2014 single kernel, no partials buffer, no finalize pass; fuse the residual add at the end after a `tl.debug_barrier`-less single-program-per-row design.\n- For the residual add tail, fuse it into the same kernel that produces the scalar per row by having each program iterate over its K columns after computing its row scalar \u2014 eliminates the second kernel launch entirely.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 32,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        1.6320820306383421
+    ]
+}

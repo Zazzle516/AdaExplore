@@ -1,0 +1,31 @@
+{
+    "node_id": 40,
+    "parent_node_id": 28,
+    "context_node_ids": [
+        3,
+        18,
+        28
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The Linear (1024\u00d78192\u00d78192 GEMM) is now the dominant cost at ~3.3ms; the GN+LeakyReLU+double row kernel is tiny by comparison. Tuning the existing GN kernel further (num_warps sweep 2/4/8, num_stages 2/3) will not move the needle \u2014 the FC dominates.\n- If staying small, try fusing the bias-add of `self.fc` into the GN row kernel by skipping `nn.Linear`'s bias and applying it inside the kernel after the matmul \u2014 but the matmul itself is the bottleneck, so gains are marginal.\n- Ensure the GN kernel uses 2D block `[NUM_GROUPS=512, CH_PER_G=16]` = 8192 lanes per row; current num_warps=8 is reasonable, try num_warps=16 to see if occupancy improves on the wide reduction.",
+    "large_guidance": "- Replace `nn.Linear` with a custom tiled Triton GEMM (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8, num_warps=4, num_stages=3-4) \u2014 this is the heavy operator and the only path to large speedup. M=1024, N=8192, K=8192 is a standard GEMM shape well-suited to `tl.dot`.\n- Fuse the bias add, GroupNorm (compute mean/var across the 16 channels of each group inside the GEMM epilogue or in a second tiny kernel), LeakyReLU, and the `x+x` doubling into the GEMM epilogue. Since each group spans only 16 contiguous output channels and BLOCK_N=128 covers 8 full groups, the per-group reduction can be done within the N-tile without a separate launch.\n- Alternative: split into two kernels \u2014 (1) a tuned GEMM+bias that writes a temporary, (2) the existing GN row kernel (already cheap). Even without epilogue fusion of GN, replacing cuBLAS sgemm with an autotuned Triton GEMM may not beat cuBLAS, so prefer the fused-epilogue design where the win comes from eliminating the extra read of the 1024\u00d78192 tensor.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 41,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

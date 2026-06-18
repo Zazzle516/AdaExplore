@@ -1,0 +1,30 @@
+{
+    "node_id": 43,
+    "parent_node_id": 40,
+    "context_node_ids": [
+        37,
+        40
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM is M=N=K=8192 \u2014 sweep larger tiles like `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4` and `BLOCK_M=256, BLOCK_N=128, BLOCK_K=64` as the top candidates; drop the tiny 64x128 / 128x128x32 configs that won't win at this size.\n- Cache `w_t` once at init (move to a registered buffer in `__init__` after computing `self.gemm.weight.t().contiguous()`) so the first-call transpose cost and the per-forward `data_ptr` check both vanish.\n- In `gn_min_bias_kernel`, the bias write loop iterates `N/BLOCK_BIAS = 8` times per row scattering with stride M \u2014 increase `BLOCK_BIAS` to 4096 or 8192 (whole N fits) and use `num_warps=8` so the scatter becomes a single vectorized store pass.",
+    "large_guidance": "- The dominant cost is the 8192\u00b3 GEMM (~1.1 TFLOP); restructure it as a split-K or stream-K kernel so the K=8192 reduction is parallelized across SMs rather than serialized within one program. RTX 4090 has 128 SMs and current `(M/128)*(N/128)=4096` tiles oversubscribe but each does K=8192 serially \u2014 split-K with 2-4 way reduction (atomic adds or a second small reduction kernel) should expose more parallelism.\n- Skip the explicit `w_t` transpose: write the GEMM to consume `weight` in its natural `[N, K]` layout by swapping the B-load to `B[offs_n[:, None]*K + offs_k[None, :]]` and transposing in registers via `tl.dot(a, b.T)` semantics, removing one full out_features\u00d7in_features materialization and improving cache reuse on weight.\n- Fuse the GN+min epilogue's bias broadcast differently: the output shape `[1, N, M, 1]` means each (row, n) gets `min_row + bias[n]`. Instead of one program per row scattering N values with stride M, launch a 2D grid `(M, N/BLOCK_N)` where each program computes its row's min (reuse across N tiles via shared `row_min`) and writes contiguously \u2014 or compute `row_min` in a first kernel writing `[M]`, then a tiny broadcast-add kernel with coalesced N-major stores.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 44,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

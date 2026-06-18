@@ -1,0 +1,29 @@
+{
+    "node_id": 49,
+    "parent_node_id": 46,
+    "context_node_ids": [
+        24
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The kernel is incorrect (output mismatch ~5e-3 avg 5e-5). The likely bug is the `tl.reshape` broadcast trick using `mean[:, :, None] + tl.zeros((1,1,CPG))` \u2014 verify shapes and instead broadcast via gather: compute `mean_b = tl.sum(...)/CPG` then index with `group_in_block` (i.e. `mean[:, group_in_block]`) to avoid the reshape/broadcast pattern that may misalign data.\n- Also confirm masked loads use `other=0.0` consistently and that `sum_x / CPG` divides by an fp32 constant (CPG is constexpr int \u2014 cast to float). The variance bias from masked-zero rows can pollute reductions; gate the reduction on `row_mask` by masking `x_r` to mean before the var pass, or only launch grid tiles where rows exist (N=1024, BLOCK_N divides cleanly so this should be fine \u2014 keep BLOCK_N a power of 2 dividing 1024 like 16 or 32).\n- After fixing correctness, increase BLOCK_N to 16-32 and try `num_warps=4` with `GROUPS_PER_BLOCK=4` (BLOCK_C=128) for better occupancy on the (1024, 8192) tensor.",
+    "large_guidance": "- Restructure the norm kernel to one program per (row, group) \u2014 each program handles one row \u00d7 CPG=32 channels, computing mean/rstd with a single small reduction and immediately applying gamma/beta/swish/mw/swish in registers. With G=256 groups and N=1024 that's 256K programs, plenty of parallelism, and avoids the fragile 3D reshape broadcast entirely.\n- Alternatively, one program per row handling all C=8192 channels with a per-group reduction loop: load the full row in BLOCK_C=256 tiles, compute group stats incrementally, then a second pass applies normalization+activations. This maximizes data reuse (each row loaded once) and is well-suited to the (1024,8192) shape on a 4090.\n- For the GEMM, M=N=K=8192 with batch=1024 collapses to a single big square GEMM \u2014 consider `BLOCK_M=128,BLOCK_N=256,BLOCK_K=64, num_warps=8, num_stages=3-4` as the primary config, and ensure weight_t is preallocated in __init__ (currently lazy on first forward, costing one call's worth of t().contiguous()).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 50,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

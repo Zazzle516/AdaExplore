@@ -1,0 +1,30 @@
+{
+    "node_id": 15,
+    "parent_node_id": 10,
+    "context_node_ids": [
+        3,
+        8
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4524148040128245,
+    "max_reward": 0.4524148040128245,
+    "avg_reward": 0.4524148040128245,
+    "score": [
+        1,
+        1,
+        0.532422133105802
+    ],
+    "small_guidance": "- The eval-path GAP+affine kernel is fine; the dominant cost is `self.conv_transpose(x)` via cuDNN. Tuning `BLOCK_S`/`num_warps` further won't move the needle \u2014 conv_transpose is ~95% of runtime.\n- If keeping the current structure, try `channels_last_3d` memory format on `x` before calling `conv_transpose` to get cuDNN's faster algo, and pre-fold conv bias into B so the GAP kernel does one fused affine.\n- Use `torch.cuda.amp`-free fp32 path but ensure `x.contiguous(memory_format=torch.channels_last_3d)` and weight similarly converted at init.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, ID*IH*IW tile)` that loads an input tile and the full `[OC, KD, KH, KW]` weight slice for those IC, then scatter-adds the outer product into the output grid (output shape `(D+KD-1, H+KH-1, W+KW-1)` since stride=1, pad=0). With kernel_size=5, stride=1 this is a dense, well-shaped problem.\n- Better: fuse conv_transpose + scale + BN-affine + global average pool into a single kernel. Per-`(N, OC)` program accumulates `sum over (od,oh,ow) of conv_out[n,oc,od,oh,oh]` directly by iterating `(ic, kd, kh, kw)` and reducing input over the valid spatial region for each kernel offset \u2014 this is a legitimate gather (every MAC executes; the spatial sum reduces input over the windowed region per kernel tap, not a constant-folding shortcut). Output shape is `(N, OC)` directly, skipping the 3D output materialization.\n- For the fused kernel, tile IC with `BLOCK_IC=16/32`, unroll `KD*KH*KW=125` taps, use `tl.dot` if reshaping inputs to `[KD*KH*KW, IC] x [IC, OC_tile]` form (im2col-style), and fold scale\u00b7\u03b3\u00b7inv_std + bias terms into the epilogue. Target: one launch, no intermediate tensors.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 16,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.5342454965753425
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 47,
+    "parent_node_id": 43,
+    "context_node_ids": [
+        10,
+        43
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4571170210943356,
+    "max_reward": 0.4571170210943356,
+    "avg_reward": 0.4571170210943356,
+    "score": [
+        1,
+        1,
+        0.5712154240282685
+    ],
+    "small_guidance": "- The epilogue is already memory-bound and tiny relative to the conv; further tuning here (BLOCK_SIZE sweeps, num_warps=8) will not move the needle. If staying in this structure, try autotuning `BLOCK_SIZE` in {2048, 4096, 16384} with `num_warps` in {4,8} and `num_stages=2`, but expect <5% gain.\n- Replace the `(offsets // channel_stride) % num_channels` div/mod (expensive) with a 4D grid launch where channel index is a program axis, eliminating integer division in the hot path.\n- Use `tl.sigmoid` for Mish via `x * tl.tanh(tl.log1p(tl.exp(-tl.abs(x))) + tl.maximum(x,0))` \u2014 but really, fuse this into the conv producer instead.",
+    "large_guidance": "- The dominant cost (>95%) is `nn.ConvTranspose2d` itself (128\u00d764\u00d7128\u00d7128 \u2192 128\u00d764\u00d7256\u00d7256, stride=2). The epilogue fusion is correct but irrelevant. Replace ConvTranspose2d with a custom Triton scatter-add kernel: one program per (N, OC-tile, output H-tile, output W-tile); for each output pixel, gather contributions from input positions `(oh + pad - kh)/stride` that divide evenly, accumulate over IC and valid (kh,kw), then apply bias+Mish+add+Hardtanh+scale in the epilogue before the store. This is the gather formulation of conv_transpose \u2014 avoids atomics.\n- Use channels-last (NHWC) layout for both input and output so the IC reduction is the contiguous GEMM-K axis; tile BLOCK_OC=64, BLOCK_HW=64, BLOCK_IC=32 with `tl.dot` over the IC dimension. Weight layout should be (IC, OC, kH, kW) reshaped to a (IC, OC*kH*kW) matrix indexed by the valid kernel taps per output pixel.\n- Autotune over `(BLOCK_OC, BLOCK_HW, BLOCK_IC, num_warps, num_stages)` \u2208 {(64,64,16),(64,128,32),(128,64,32)} \u00d7 {4,8} \u00d7 {2,3}. Pre-compute per-output-pixel which (kh,kw) taps are valid (stride/padding mask) and unroll the small 3\u00d73 kernel loop fully via `tl.static_range`.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 48,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        1.4695815
+    ]
+}

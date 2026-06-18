@@ -1,0 +1,29 @@
+{
+    "node_id": 7,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.47574503595706896,
+    "max_reward": 0.47574503595706896,
+    "avg_reward": 0.47574503595706896,
+    "score": [
+        1,
+        1,
+        0.7248965466458187
+    ],
+    "small_guidance": "- The eval-path GEMM is M=1024, N=8192, K=8192 \u2014 try larger M tiles like `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3` and `BLOCK_M=256, BLOCK_N=128, BLOCK_K=32` aggressively; current best config likely under-utilizes the 4090's L2 with `BLOCK_M=64`. Add `BLOCK_M=128, BLOCK_N=128, BLOCK_K=128` with `num_stages=3` for more K-overlap.\n- The K-loop loads use only `mask_m` / `mask_n` and ignore the K bound; since K=8192 is divisible by all BLOCK_K values this is fine, but mark M, N, K as divisible (e.g., `tl.multiple_of`/specialization) or expose `EVEN_K: tl.constexpr` to drop masks and unlock better scheduling.\n- Cache `scale`, `shift` as fused tensors at eval (already done) but also pre-add `bn.bias - rm*scale + bias_param/divide` collapse, then in-kernel only do one `acc*scale + shift_combined`, skipping the scalar bias load and the `inv_div` multiply (fold `inv_div` into `scale` and `shift_combined`). Saves a few epilogue ops and a global load.",
+    "large_guidance": "- The benchmark likely runs in training mode (model.train() default), in which case `forward` falls back entirely to PyTorch (`self.matmul(x); self.bn(y); ...`) and the Triton kernel never fires \u2014 that explains runtime \u2248 baseline + overhead (3.37 vs 2.44). A from-scratch design must handle the training path: implement the GEMM+bias in Triton, then a separate Welford reduction kernel over the M axis to compute per-feature mean/var (updating running stats from Python), then a fused normalize+bias+div+swish epilogue kernel. Three kernels, all custom.\n- Alternatively, override `train()`/always run the fused eval-style kernel and update `running_mean`/`running_var` manually with the batch stats computed in a small reduction kernel \u2014 this avoids cuDNN's BN entirely.\n- For the GEMM itself at (1024, 8192, 8192) \u2248 137 GFLOPs, target split-K or stream-K since M=1024 only yields 8 row-tiles at BLOCK_M=128, leaving SMs (128 on 4090) underutilized; a stream-K or split-K with atomic add into fp32 accumulator can saturate all SMs.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 8,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        0.7248965466458187
+    ]
+}

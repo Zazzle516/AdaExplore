@@ -1,0 +1,29 @@
+{
+    "node_id": 30,
+    "parent_node_id": 29,
+    "context_node_ids": [
+        29
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.03474744764805649
+    ],
+    "small_guidance": "- The scatter kernel is the bottleneck (atomic_add per output cell, IC=3 inner loop). Drop atomics by inverting the loop: have each program own an output tile and gather contributions from input. As a smaller fix, raise BLOCK_OC handling and add an autotune over (BLOCK_OC \u2208 {16,32}, num_warps \u2208 {2,4}) keyed on (OC, ID, IH*IW); current OC=16 means BLOCK_OC=16 already, so the win comes from removing atomics.\n- For `bn_avgpool4_kernel`, the inner 4\u00d74\u00d74=64 loads per output are strided; switch to a 2-stage fusion (avg_pool 2 then avg_pool 2) is unnecessary, but you can vectorize the innermost `ww` dim by loading a contiguous IW-row of 4 floats with `tl.arange(0,4)` and summing, cutting load count 4\u00d7.\n- Try `num_stages=3` and `BLOCK \u2208 {1024, 2048}` for the fused BN+pool kernel; it is memory-bound and benefits from more in-flight loads.",
+    "large_guidance": "- Replace the scatter-add ConvTranspose3d with a gather-style kernel: one program per (N, OC tile, OD*OH*OW tile) computing `out[n,oc,od,oh,ow] = \u03a3_{ic,kd,kh,kw} x[n, ic, (od+PD-kd)/SD, ...] * w[ic,oc,kd,kh,kw]` with stride-divisibility masks. This eliminates `tl.atomic_add` entirely and lets you fuse bias + BN affine + first avg_pool (or both pools) into the epilogue, since each program already owns its output region.\n- Better: fuse the entire pipeline into one kernel that emits the final (N, OC, OD/4, OH/4, OW/4) tensor directly. Each program computes a small output tile of the doubly-pooled result; for each of the 64 contributing ConvTranspose output positions, do the gather-conv, accumulate into a local sum, then apply scale/shift once. This dramatically reduces memory traffic (intermediate (N,OC,OD,OH,OW)=64\u00b716\u00b765\u00b765\u00b765 fp32 \u2248 1.1GB never materialized).\n- Use channels_last (NDHWC) layout for the conv-transpose weight and output to coalesce the OC dimension as GEMM-K; cast the gather into an im2col-style matmul `(OC) \u00d7 (IC*KD*KH*KW)` with output-tile rows, then `tl.dot` for the inner product instead of a scalar IC loop.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 31,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        0.36042383585251137
+    ]
+}

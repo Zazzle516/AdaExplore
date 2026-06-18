@@ -1,0 +1,29 @@
+{
+    "node_id": 18,
+    "parent_node_id": 2,
+    "context_node_ids": [
+        2
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM is M=1024, N=8192, K=8192 \u2014 extend the autotune space with larger K-tiles (BLOCK_K=128) and BLOCK_M=64/BLOCK_N=256 with num_stages=4, num_warps=8; the current best config is likely K-bound and benefits from deeper pipelining. Also drop the per-iter K masking by peeling the last iteration (K is a multiple of 32) so the inner loop uses unmasked loads.\n- In `gn_min_kernel`, pass `eps` as `tl.constexpr` (or 0-d tensor) rather than a raw Python float arg; also avoid the `tl.reshape` round-trip by computing group stats directly with `group_id`-segmented sums \u2014 reshape of a 8192-vector into (512,16) forces a large register tile.\n- Fuse the final `+ self.bias` broadcast into `gn_min_kernel`'s store: write directly into the `[1,N,M,1]` output by having each row-program iterate over N tiles and emit `min_val + bias[n]`, eliminating the separate broadcast-add kernel launch.",
+    "large_guidance": "- Fuse GroupNorm+min into the GEMM epilogue using a split-K / 2-stage scheme: stage-1 GEMM writes per-group partial sums (sum, sumsq) alongside the [M,N] output tile in one kernel; stage-2 a single small kernel per row computes mean/rstd from already-reduced group stats, then re-reads the tile to normalize+affine+min. This removes the second full read of the 1024\u00d78192 GEMM output that currently dominates after GEMM.\n- Better: since GROUP_SIZE=16 (N=8192, groups=512), one program can own one (row, group) \u2014 a 1024\u00d7512 grid where each program loads only 16 elements, computes mean/var/normalize/affine locally, and atomically min-reduces into a per-row scratch. This replaces the BLOCK_N=8192 monolithic row kernel (which forces 8 warps to spill) with tiny coalesced programs and a cheap atomic-min epilogue.\n- Consider cuBLAS for the GEMM (via `torch.addmm`) and only keep custom kernels for GN+min+bias fusion; on a 4090, hand-tuned Triton GEMM at M=1024,N=K=8192 will struggle to beat cuBLAS, and GEMM is >80% of the 1.65 ms runtime.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 19,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 40,
+    "parent_node_id": 39,
+    "context_node_ids": [
+        38,
+        39
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4383163141980592,
+    "max_reward": 0.4383163141980592,
+    "avg_reward": 0.4383163141980592,
+    "score": [
+        1,
+        1,
+        0.4161095921339884
+    ],
+    "small_guidance": "- The kernel uses `input_precision='ieee'` which disables TF32 / tensor cores on the dot \u2014 removing this (or setting `'tf32'`) is the single biggest win since M=N=K=8192 is squarely tensor-core territory; this alone should drop runtime several-fold.\n- After enabling TF32, sweep larger tiles for this square 8192\u00b3 shape: add configs like `BLOCK_M=128, BLOCK_N=256, BLOCK_K=32, num_warps=8, num_stages=3` and `BLOCK_M=256, BLOCK_N=128, BLOCK_K=32, num_warps=8, num_stages=4`; since M,N,K are all multiples of 256 the boundary masks can also be elided via a no-mask fast path.\n- Drop the per-iteration `k_remaining` mask (K=8192 is divisible by all candidate BLOCK_K), so the inner loop becomes unmasked `tl.load` \u2014 this lets the compiler pipeline the K loop more aggressively with `num_stages=4`.",
+    "large_guidance": "- Rewrite as a tensor-core GEMM epilogue-fused kernel that explicitly enables TF32 (`allow_tf32=True` / `input_precision='tf32'`) on `tl.dot`; the current `ieee` setting forces FP32 CUDA cores and is why a hand-tuned kernel is 2.4\u00d7 slower than cuBLAS. Target \u2265 cuBLAS by matching its tiling (128\u00d7256\u00d732 with 8 warps, stages=3-4) and using a persistent / split-K only if K-loop dominates (it won't for K=8192 with these tiles).\n- Since weight is `(N,K)` row-major (i.e. B^T contiguous along K), structure the kernel as `A @ W.T` directly: load A rows and W rows with both inner axes contiguous (stride-1 on K) so both loads coalesce, and use `tl.dot(a, b.T)` or equivalently swap the dot operands \u2014 avoids the strided B access pattern the current code creates by treating W as (K,N).\n- Keep multiplier+bias+LeakyReLU fused in the epilogue (already done), and consider a 2D grid `(pid_m, pid_n)` with L2 swizzle plus `tl.multiple_of`/`tl.max_contiguous` hints on the offset arithmetic to help the compiler emit wide vectorized loads.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 41,
+    "global_best_node_id": 32,
+    "global_best_score": [
+        1,
+        1,
+        1.6697731068966457
+    ]
+}

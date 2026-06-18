@@ -1,0 +1,29 @@
+{
+    "node_id": 35,
+    "parent_node_id": 8,
+    "context_node_ids": [
+        8
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness failure: GroupNorm affine weight/bias are per-channel of length `N` (out_features), and `mul_w` is also length `N`. Current indexing uses `w_offs = pid_g * GROUP_SIZE + offs` which is correct, but verify `eps` default matches `nn.GroupNorm` (1e-5 \u2713). The diff ~0.003 suggests a numerical/precision issue \u2014 try computing mean/var in fp32 with Welford or use `tl.sum` on fp32 explicitly and use `x - mean` mask-zeroed before squaring. Also ensure the second swish uses fp32 sigmoid.\n- The mismatch likely stems from `x_masked = tl.where(mask, x, 0.0)` then `sum_x2` uses masked x \u2014 fine. More likely: when `BLOCK > GROUP_SIZE` the mean divisor should be `GROUP_SIZE` (it is) \u2713. Re-examine: `nn.GroupNorm(256, 8192)` \u2192 group_size=32, BLOCK=32, no masking issue. Suspect the GEMM tail mask `(offs_k[None, :] < k_remaining)` \u2014 when K=8192 and BLOCK_K=32 this is fine, but accumulation in fp32 should be exact enough. Try forcing `tl.dot(a, b, allow_tf32=False)` to rule out TF32 drift causing the 5e-3 diff.\n- Add autotune to the norm kernel over `num_warps \u2208 {1,2,4}` with `BLOCK=32` since group_size=32 is tiny; one program per (M, group) gives 1024*256=262144 programs which is huge \u2014 consider merging multiple groups per program.",
+    "large_guidance": "- Restructure the norm-fusion kernel: with group_size=32 and 256 groups, launching M*G=262k programs is wasteful. Use one program per row (pid_m), loop over groups inside the kernel with `BLOCK_N = out_features` loaded as a 2D tile `[NUM_GROUPS, GROUP_SIZE]`, compute per-group mean/var via `tl.sum(..., axis=1)`, then apply affine+swish+mul+swish in registers and store. This cuts launch overhead and improves L2 reuse of weight/bias/mul vectors.\n- Alternative: persistent kernel where each program handles a tile of rows and all groups, keeping `gn_w, gn_b, mul_w` resident in shared memory (they're only 8192*3 fp32 = 96KB, fits if tiled).\n- For the GEMM (M=1024, N=8192, K=8192), the dominant cost \u2014 add larger tiles to autotune: `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3` and `BLOCK_M=256, BLOCK_N=128, BLOCK_K=32`. Also enable `allow_tf32=True` explicitly via `tl.dot(a, b, allow_tf32=True)` only after confirming correctness with `False` first.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 36,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

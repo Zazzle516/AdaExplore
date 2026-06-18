@@ -1,0 +1,29 @@
+{
+    "node_id": 23,
+    "parent_node_id": 6,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4626036880532403,
+    "max_reward": 0.4626036880532403,
+    "avg_reward": 0.4626036880532403,
+    "score": [
+        1,
+        1,
+        0.6164804264392324
+    ],
+    "small_guidance": "- Autotune `conv3d_kernel` over `BLOCK_M \u2208 {64, 128, 256}`, `num_warps \u2208 {2, 4, 8}`, `num_stages \u2208 {2, 3, 4}`; with OC=16 the per-program output tile is small so a larger BLOCK_M plus 2 warps may improve occupancy.\n- In `fused_gn_min_clamp_kernel`, the inner `tl.where(mask, ...)` is redundant since `tl.load` with `other=0.0` already zeros tail; drop it and also fuse the redundant `min(y, min_value)` then `max(y, min_value)` into a single `clamp(y, min_value, max_value)` (since `min_value \u2264 max_value`, the `min(x, min_value)` then clamp collapses to `clamp(x, min_value, min_value)` only if min==max \u2014 keep correct semantics but remove dead ops).\n- Try `BLOCK_S = 4096` (S = 14\u00d762\u00d762 = 53816, big) and `num_warps=8` for the GroupNorm pass to reduce loop iterations per program.",
+    "large_guidance": "- The conv3d kernel currently loops `KD*KH*KW*IC = 81` scalar loads per spatial element and does a rank-1 outer product per iter; restructure as an explicit GEMM where the K-axis is `IC*KD*KH*KW=81`: load an `[BLOCK_M, BLOCK_K]` im2col tile and an `[BLOCK_K, BLOCK_N]` weight tile, then `tl.dot`. With OC=16, pad BLOCK_N to 16 and use `tl.dot` (which needs \u226516 on each axis) to leverage tensor cores.\n- Switch to `channels_last_3d` layout for the conv input/output so the IC axis (GEMM-K) and OC axis (GEMM-N) are contiguous, enabling vectorized loads in the im2col gather and contiguous writes for the downstream GroupNorm.\n- Fuse the conv epilogue with GroupNorm: since GN normalizes over `(C/groups, D, H, W)`, a two-pass scheme can write conv output to a scratch buffer and then have a single GN kernel that also does min/clamp \u2014 currently fine, but consider computing partial sums of conv output inside the conv kernel itself (atomic-add into per-group sum/sumsq buffers) so the GN pass only reads once instead of twice.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 24,
+    "global_best_node_id": 20,
+    "global_best_score": [
+        1,
+        1,
+        0.83563387283237
+    ]
+}

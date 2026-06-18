@@ -1,0 +1,27 @@
+{
+    "node_id": 1,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.42061441174703706,
+    "max_reward": 0.42061441174703706,
+    "avg_reward": 0.42061441174703706,
+    "score": [
+        1,
+        1,
+        0.2700688969130558
+    ],
+    "small_guidance": "- The sub_mean kernel is fine; the bottleneck is `nn.ConvTranspose3d` (1.78ms baseline vs 6.6ms current means ConvT dominates). Tuning sub_mean further won't help \u2014 fast_p=0.27 means we're 4x slower than baseline.\n- If staying with this structure, at minimum fold BatchNorm (eval-mode running stats) into the ConvT bias/weight scale and absorb the mean-subtraction into a single epilogue pass over the ConvT output, but this still leaves ConvT untouched.\n- Use channels_last_3d memory format on the ConvT output so the spatial reduction in sub_mean coalesces better; bump BLOCK_SIZE to 2048 with num_warps=8 since S = 33*65*65 is large.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)` computing the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and scattering into the output grid at `(d*stride - pad + kd, h*stride - pad + kh, w*stride - pad + kw)` using `tl.atomic_add`. This is the high-headroom move since ConvT3d dominates ~5ms of the 6.6ms runtime.\n- Fold BatchNorm (eval-mode: running_mean/var, weight, bias are constants) into per-output-channel scale/shift applied in the ConvT kernel epilogue before the atomic_add, so BN becomes free.\n- Fuse the spatial mean subtraction by launching a second kernel that does a two-pass reduce (sum then subtract) over the `(D_out, H_out, W_out)` axis per `(N, C)` row \u2014 keep this separate from the scatter-add since the ConvT output must be fully materialized before the reduction.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 2,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.2700688969130558
+    ]
+}

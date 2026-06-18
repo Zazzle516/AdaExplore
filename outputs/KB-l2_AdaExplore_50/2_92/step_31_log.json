@@ -1,0 +1,29 @@
+{
+    "node_id": 31,
+    "parent_node_id": 30,
+    "context_node_ids": [
+        30
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5063152722470264,
+    "max_reward": 0.5063152722470264,
+    "avg_reward": 0.5063152722470264,
+    "score": [
+        1,
+        1,
+        0.977100996037968
+    ],
+    "small_guidance": "- The fused_lse kernel reloads x_conv from global memory for every group iteration even though it's the same tensor \u2014 restructure the loop to load each channel's x once, compute its normalized value using the per-group (mean, invstd) looked up by channel index, and accumulate into the online LSE state. This halves global memory traffic for the dominant kernel.\n- Add larger BLOCK_S configs (e.g. 8192) and try num_warps=16; with S=15876 per (N), fewer blocks per row reduces per-program overhead and lets the conv epilogue dominate.\n- Preload gamma/beta and mean/invstd for all C channels into registers at kernel start (C=64 is tiny) instead of issuing tl.load inside the channel loop \u2014 removes 64\u00d72 scalar loads per program.",
+    "large_guidance": "- Conv2d (128\u00d78\u00d7128\u00d7128 \u2192 128\u00d764\u00d7126\u00d7126, kernel 3\u00d73) is the heaviest op and is still being run by cuDNN. Replace it with a custom Triton im2col-GEMM kernel using channels_last layout (BLOCK_M=64/128 over output spatial, BLOCK_N=64 over OC, BLOCK_K=IC*kh*kw=72), and fuse the entire GN+Tanh+HardSwish+residual+LSE epilogue into the conv kernel by writing one program per (N, output-spatial tile) that computes all 64 output channels in registers, then reduces along C to a single LSE value \u2014 eliminating the x_conv materialization (128\u00d764\u00d7126\u00d7126 fp32 \u2248 500MB of read/write traffic).\n- Alternatively, do a two-pass design where pass 1 = conv-GN-stats producing only mean/invstd (single program per (N,G) doing conv on the fly), pass 2 = conv-GN-activate-LSE producing the final output. This keeps the LSE pass register-resident across all 64 channels (4 channels per warp \u00d7 16 warps fits) and removes the intermediate x_conv tensor entirely.\n- If keeping the current 3-kernel structure, at minimum fuse the groupnorm_stats pass with a single read of x_conv that also feeds the LSE pass via shared global writes \u2014 currently x_conv is read twice (stats + LSE), which is the main bandwidth tax.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 32,
+    "global_best_node_id": 31,
+    "global_best_score": [
+        1,
+        1,
+        0.977100996037968
+    ]
+}

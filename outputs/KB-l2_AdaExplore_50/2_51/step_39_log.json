@@ -1,0 +1,29 @@
+{
+    "node_id": 39,
+    "parent_node_id": 6,
+    "context_node_ids": [
+        6
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5653179417120102,
+    "max_reward": 0.5653179417120102,
+    "avg_reward": 0.5653179417120102,
+    "score": [
+        1,
+        1,
+        1.463873019124084
+    ],
+    "small_guidance": "- The residual_add kernel writes a (B, IN_F)=(2048, 8192) tensor \u2014 64MB write that dominates runtime. Increase BLOCK to 2048 or 4096 with num_warps=8 to better saturate bandwidth, and consider a 1D grid over total elements rather than 2D.\n- In fused_gemm_rowsum_kernel, since we only need row sums, try larger BLOCK_N (e.g. 256/512) with smaller BLOCK_M (32/64) \u2014 output tile is reduced to a vector so larger N reduces grid size and partial buffer size.\n- Add autotune configs with BLOCK_K=128 (num_stages=3) since K=8192 is large; this halves the K-loop iterations and improves pipelining.",
+    "large_guidance": "- The scalar `s_b` is just `mean_n(W[n,:] @ x[b,:] + bias[n] - subtract[n])`. Mathematically this equals `(1/N) * x[b,:] @ sum_n(W[n,:]) + (1/N)*sum_n(bias - subtract)`. **However** per the safety contract this rewrite is forbidden \u2014 every operator must execute. So keep the full GEMM but redesign the kernel as a single-pass split-K GEMM where each program handles a (BLOCK_M, BLOCK_K) tile and reduces fully across N inside the kernel using a persistent N-loop, eliminating the partial buffer and the second reduce_gelu pass.\n- The dominant cost is now the residual add (writing 64MB output). Fuse the GELU+residual into one kernel that takes the per-row scalar and adds it while producing the output, but the residual_add kernel already does this \u2014 focus on making it bandwidth-optimal: use vectorized 4xfp32 loads/stores, single 1D grid, BLOCK=4096, num_warps=8.\n- Consider an in-place residual add (write back into x) to halve memory traffic if the reference allows \u2014 but original_x is cloned, so out must be separate. Alternatively, fuse the scalar broadcast-add directly with a copy of x using `tl.load`+add+`tl.store` with maximal vectorization; this kernel should hit ~1TB/s effective bandwidth on a 4090.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 40,
+    "global_best_node_id": 36,
+    "global_best_score": [
+        1,
+        1,
+        1.66307092995426
+    ]
+}

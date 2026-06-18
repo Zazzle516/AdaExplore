@@ -1,0 +1,29 @@
+{
+    "node_id": 6,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        4
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.48704629933774846,
+    "max_reward": 0.48704629933774846,
+    "avg_reward": 0.48704629933774846,
+    "score": [
+        1,
+        1,
+        0.8181319695364243
+    ],
+    "small_guidance": "- The conv3d kernel is the bottleneck: increase BLOCK_OC from 4 to 8 or 16 so the inner FMA becomes a real [BLOCK_OC, BLOCK_W] outer product (OC=16 means BLOCK_OC=16 covers all channels in one program, eliminating the OC tiling axis entirely). Add autotune configs over BLOCK_OC \u2208 {8, 16} \u00d7 BLOCK_W \u2208 {16, 32, 64} \u00d7 num_warps \u2208 {2, 4, 8}.\n- Hoist the `ow_offs` addition out of the innermost (kh, kw) loop by precomputing `x_row_base = x_base_dt + ow_offs` once per (kt) and then adding compile-time `kh*IW + kw` scalar offsets; this turns the inner load address into a strided vector + constexpr scalar, helping the compiler coalesce.\n- For `fused_norm_clamp_max_kernel`, S=14*30*30=12600 per (N,C); keep BLOCK_C=16 (exactly C, no masking on c) and try BLOCK_S \u2208 {128, 256, 512} with num_warps \u2208 {4, 8}; also drop the `tl.where(c_mask,...)` since C is fully covered.",
+    "large_guidance": "- Reformulate conv3d as an implicit-GEMM: one program per (N, OD*OH*OW tile of size BLOCK_M, OC tile of size BLOCK_N=16), with GEMM-K = IC*KT*KH*KW=81. Load a [BLOCK_M, BLOCK_K] im2col tile of x and a [BLOCK_K, BLOCK_N] weight tile, then `tl.dot`. The 81-element K dim fits in a single BLOCK_K=128 (padded) iteration, making this a pure tensor-core matmul instead of scalar FMAs.\n- Fuse the entire post-conv chain (multiply, instance-norm stats, normalize, clamp, multiply, max-reduce over C) into one persistent kernel keyed on N: since OC=16 is tiny, hold the full [C, S_tile] tile in registers per program, do a two-pass reduction (sum/sumsq, then normalize+max) without materializing the [N,C,S] intermediate at all. This removes the separate stats_kernel launch and the intermediate writeback of the conv output's post-multiplied form.\n- Better still, fuse the conv epilogue's `x*multiplier` and partial sum/sumsq accumulation directly into the conv3d kernel's store path (write y = conv_out*m and atomically accumulate per-(N,C) sum/sumsq), so the second kernel only needs to read x once for normalize+clamp+mul+max.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 7,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.9527247729854249
+    ]
+}

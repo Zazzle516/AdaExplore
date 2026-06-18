@@ -1,0 +1,29 @@
+{
+    "node_id": 19,
+    "parent_node_id": 18,
+    "context_node_ids": [
+        18
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness issue is likely numeric: GroupNorm uses Welford or a higher-precision two-pass; current code computes `mean = sum(x)/G` then `var = sum((x-mean)^2)/G` in fp32 which should be fine, but max_diff ~4e-3 suggests precision drift. Try disabling TF32 in the GEMM (`allow_tf32=False`) or use higher precision accumulation \u2014 TF32 on `tl.dot` may be the source of mismatch since downstream norm amplifies error.\n- Verify GroupNorm tile layout: with `out_features=8192` and `num_groups=256`, group_size=32. The kernel tile is `(G_PER_PROG=8, GROUP_SIZE=32)` = 256 elements per program, which is fine, but ensure the load uses `n_offs` correctly with bounds (no mask needed since N is divisible). Double-check the `multiply_weight` broadcast \u2014 it's per-channel along N and currently loaded as `MUL_ptr + n_offs` which is correct.\n- After fixing correctness, expand autotune for the GEMM with M=1024, N=8192, K=8192: try `BLOCK_M=128,BLOCK_N=256,BLOCK_K=64,num_warps=8,num_stages=4` and `BLOCK_M=64,BLOCK_N=256,BLOCK_K=64`. Also raise `num_stages` to 4 for the largest K loop.",
+    "large_guidance": "- Tolerance is `5e-2` and max_diff is `4e-3` \u2014 correctness should pass. The \"correctness_issue: Output mismatch\" with such small diffs suggests the harness is stricter or there's a shape/stride bug. Investigate: ensure `triton_gemm_bias` returns a contiguous tensor that exactly matches `F.linear(x, weight, bias)`; double-check `weight.stride(1), weight.stride(0)` vs `(stride_bk, stride_bn)` mapping (B is treated as KxN but weight is NxK, so passing `stride(1)` as `stride_bk` and `stride(0)` as `stride_bn` is the transpose trick \u2014 verify this is correct).\n- Consider fusing the entire pipeline into one persistent kernel: GEMM tile produces a row chunk of shape (BLOCK_M, BLOCK_N) where BLOCK_N covers a whole group multiple \u2014 then GroupNorm reduction can happen in-kernel only when BLOCK_N >= group_size and aligned. With group_size=32 small, this is feasible: emit a kernel that computes GEMM for a full row (M tile, all N) and then normalizes per-group in shared memory, eliminating the intermediate write/read of an 8192*1024 fp32 tensor (~32MB).\n- Alternative: keep GEMM separate but use cuBLAS via `torch.addmm` (often faster than custom Triton GEMM at this size on RTX 4090) and only Triton-fuse the GN+Swish+Mul+Swish epilogue. The epilogue is the cheap part; an inferior GEMM is the bigger risk.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 20,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

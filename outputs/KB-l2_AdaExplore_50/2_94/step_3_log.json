@@ -1,0 +1,27 @@
+{
+    "node_id": 3,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (avg diff ~2e-4, max ~2.7e-3) is consistent with the GroupNorm kernel using `tl.sum` over a masked-zero region but dividing by `n = CG`; check whether `CG=32` is producing precision drift from the masked subtraction. Cast x to fp32 explicitly before the reduction (`x_f = x.to(tl.float32)`) and ensure the mean/var computation uses fp32 throughout, then cast back at store.\n- More likely root cause: the GEMM output is allocated `torch.float32` but if the input later flows through `group_norm` whose weights/bias are fp32 it should be fine \u2014 instead check that `bias_lin + bias_extra` broadcasting is correct (both shape `(out_features,)`). The numeric drift looks like an accumulation order issue; try `BLOCK_K=64` with `num_stages=4` and force `tl.dot(a, b, allow_tf32=False)` to rule out TF32 rounding (RTX 4090 is Ada and TF32 is on by default for `tl.dot`).\n- Add `triton.Config({'BLOCK_M':128,'BLOCK_N':256,'BLOCK_K':32}, num_warps=8, num_stages=3)` and a `GROUP_M=8` block-swizzle for L2 reuse on the M=1024, N=8192 shape.",
+    "large_guidance": "- The dominant cost is the 1024\u00d78192\u00d78192 GEMM (~137 GFLOPs); the GroupNorm over (1024, 8192) with 256 groups of 32 elements is tiny by comparison. A redesign should focus all tuning effort on the GEMM epilogue and accept a simple second kernel for GroupNorm. Consider a persistent GEMM with split-K disabled (K=8192 fits a standard reduction) and `tl.dot(allow_tf32=False)` to match PyTorch's fp32 reference within 5e-2 trivially while still being fast.\n- For GroupNorm with CG=32, one program per (row, group) wastes a warp (32 lanes do 32 elements). Pack multiple groups per program: e.g. process 4 groups per program with `BLOCK=128`, doing 4 independent reductions via reshape `(4, 32)` and `tl.sum(axis=1)`. This cuts launch count 4\u00d7 on the M*G=262144 grid.\n- Alternatively fuse GroupNorm into the GEMM epilogue is hard because reductions cross BLOCK_N tiles, but you could write a fused (mish + groupnorm) second kernel that takes the GEMM output and does normalization in one pass, avoiding a full read/write of the intermediate.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 4,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

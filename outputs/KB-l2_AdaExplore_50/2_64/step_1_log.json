@@ -1,0 +1,27 @@
+{
+    "node_id": 1,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness bug is in the two-stage reduction: partial buffers are sized for `MIN_BLOCK_N=64` tiles, but autotune may pick `BLOCK_N=128/256`, producing fewer tiles and leaving stale `-inf`/0 entries \u2014 but worse, the partial kernel writes to `pid_n * stride_max_n` indexed against a buffer sized for a *different* tile count. Fix by either (a) forcing a single fixed `BLOCK_N` (drop autotune over N, or split into two kernels \u2014 one tuned GEMM + a separate reduction), or (b) sizing the partial buffer using the chosen meta and passing the actual ntiles into the final reduce.\n- Simpler and likely faster: do a single-pass kernel where each program handles one row's full N (persistent per-row online softmax/LSE), since N=8192 and M=1024 \u2014 one program per row, loop over K then loop over N tiles to compute LSE online, fuse activations, store one scalar.\n- Add `GROUP_M` swizzle and try `BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, num_warps=8, num_stages=4` for the GEMM stage if keeping the two-stage design.",
+    "large_guidance": "- Redesign as a single fused kernel: one program per output row (M=1024 programs). Each program streams the K=8192 dot product against all N=8192 weight columns using a tiled inner loop with `tl.dot` (BLOCK_N=128, BLOCK_K=32), maintaining a running max and running sum-of-exp (online LSE) across N-tiles. After the N-loop, apply bias (already added per tile), compute `lse = max + log(sum)`, fuse the two LeakyReLUs (collapses to slope 0.01*0.01 for negative, identity for positive \u2014 but apply sequentially to keep the contract) and two GELUs in registers, and store one scalar. This avoids the partial-buffer sizing bug entirely and skips a global write/read.\n- Alternative: keep the two-stage split but allocate the partial buffer *after* the autotuner has chosen a config \u2014 use `gemm_partial_lse_kernel.best_config` or hardcode a single non-autotuned `BLOCK_N` so `ntiles = cdiv(N, BLOCK_N)` is known at allocation time. Pass the actual `ntiles` (not `max_ntiles`) into the final reduce.\n- For the row-persistent design, since K=8192 is large, the inner GEMM tile should still use `tl.dot` with `BLOCK_M=1` (or process 8 rows per program: `BLOCK_M=8`) to amortize weight-tile loads \u2014 i.e. one program per group of 8 rows, sharing the B-tile load across the 8 rows' dot products.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 2,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

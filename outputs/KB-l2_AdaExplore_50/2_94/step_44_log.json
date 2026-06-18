@@ -1,0 +1,29 @@
+{
+    "node_id": 44,
+    "parent_node_id": 43,
+    "context_node_ids": [
+        4
+    ],
+    "depth": 5,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Fix the correctness bug: the cached `_cached_bias = gemm.bias + self.bias` is computed before moving params to CUDA, and more importantly it's only cached once \u2014 but if `self.gemm.bias` or `self.bias` change (e.g. after `.cuda()`), staleness occurs. Drop the cache or invalidate it on device/version change; recompute `Wt` and `bias_sum` per-forward or guard with `data_ptr()` checks.\n- The Mish formula uses `exp(2*softplus(x))` which is `(1+exp(x))^2` \u2014 numerically fine for x\u2208[-1,1] but verify: `tanh(softplus(x))` should match torch.nn.Mish exactly. Consider replacing with `acc * tl.tanh(tl.log1p(tl.exp(acc)))` style but using `(e2-1)/(e2+1)` is OK; double-check sign and no fp32 cast issues.\n- In `group_norm_row_kernel`, `inv_n = 1.0 / CG.to(tl.float32)` \u2014 `CG` is a Python int kernel arg; ensure it's passed as int and the cast works, otherwise precompute `inv_n` on host and pass as float constexpr/scalar.",
+    "large_guidance": "- Restructure to avoid stale-cache correctness bugs: pass `gemm.weight` directly and add bias inside the GEMM epilogue by loading `gemm.bias[n] + self.bias[n]` (or a single fused bias tensor recomputed each forward, not cached across param updates). Transpose-on-the-fly via strides rather than maintaining a `_cached_Wt`.\n- Consider fusing GroupNorm's first reduction pass with the GEMM epilogue: since each group has CG=32 channels and BLOCK_N=128 covers 4 groups, you could compute partial sums per group within the GEMM tile and use atomics or a second pass. Simpler: keep GroupNorm separate but use one program per (row, group) with CG=32 contiguous loads \u2014 very cheap.\n- For M=1024, N=8192, K=8192: this is a large GEMM (~137 GFLOPs); ensure `BLOCK_M=128, BLOCK_N=256, BLOCK_K=32-64` configs are in the autotune set (they are). The dominant cost is the GEMM; GroupNorm over 1024\u00d78192 is bandwidth-bound and small.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 45,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

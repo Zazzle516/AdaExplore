@@ -1,0 +1,29 @@
+{
+    "node_id": 24,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        23
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The autotune key references `IC_C` which is a `tl.constexpr` (not a runtime arg); remove `IC_C` from the `key=[...]` list or make `key=['OH','OW','OC']` only. The `IndexError` comes from `key_idx` referencing a constexpr arg position that isn't in `_args`.\n- Also add `BLOCK_N` to the autotune config dict (or drop it from configs entirely) since you currently pass `BLOCK_N=32` as a kwarg while autotune doesn't know about it \u2014 keep it as a plain `tl.constexpr` kwarg, that's fine, just ensure key list only contains runtime (non-constexpr) integer arguments like `N`, `OC`, `OH`, `OW`.\n- Once compiling, sweep `BLOCK_M \u2208 {64,128,256}` with `num_warps \u2208 {4,8}`; OHW=254*254\u224864k per batch is large so bigger BLOCK_M with num_warps=8 should win.",
+    "large_guidance": "- The conv kernel gathers input per-(kh,kw) with a stride-1 sliding window \u2014 this re-loads heavily overlapping pixels. Restructure as an im2col-style GEMM with the K-dimension (`IC*KH*KW=72`) fully unrolled and BLOCK_M tiling output spatial positions; load a tile of input once per (ic,kh,kw) using vectorized contiguous loads across BLOCK_M, and keep weights in registers (OC=32 fits entirely, so BLOCK_N=32 with no N-tiling).\n- Fuse GroupNorm into the conv epilogue via a two-pass persistent kernel: first pass writes fused conv+bias+scale+sigmoid to scratch while accumulating per-group sum/sum\u00b2 into a small (N, num_groups) buffer using `atomic_add` (or a separate reduction launch over the scratch); second pass applies `(x-mean)*rstd*gw+gb`. This removes the extra full read/write of the 128\u00d732\u00d7254\u00d7254 tensor that the current standalone GN kernel performs.\n- Alternative: since OC=32 and num_groups=8 (CPG=4) are tiny, consider a single persistent kernel per (N, group) that computes the conv output for those 4 channels on the fly, reduces in registers, then re-computes (or reads from scratch) to normalize \u2014 eliminates the intermediate entirely for the GN pass.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 25,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        1.0321006582633052
+    ]
+}

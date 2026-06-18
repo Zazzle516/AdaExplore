@@ -1,0 +1,29 @@
+{
+    "node_id": 6,
+    "parent_node_id": 2,
+    "context_node_ids": [
+        2
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.40197679481380977,
+    "max_reward": 0.40197679481380977,
+    "avg_reward": 0.40197679481380977,
+    "score": [
+        1,
+        1,
+        0.11630855721393035
+    ],
+    "small_guidance": "- The conv_transpose3d kernel loops `for ic in range(0, IC)` inside the K-loop, doing a scalar load per IC per spatial \u2014 this is the bottleneck. Try BLOCK_OC=64, BLOCK_S=128, num_warps=8 and load IC in tiles (BLOCK_IC=16/32) using `tl.dot` on `[BLOCK_S, BLOCK_IC] @ [BLOCK_IC, BLOCK_OC]` per kernel position.\n- Wrap the conv kernel in `triton.autotune` over (BLOCK_OC \u2208 {32,64,128}, BLOCK_S \u2208 {64,128,256}, num_warps \u2208 {4,8}, num_stages \u2208 {2,3}) keyed on (OC, S_out, IC).\n- For the GN kernel, BLOCK_S=2048 with S=34\u00b3\u224839k forces a serial inner Python loop of ~20 iterations per group; raise BLOCK_S to e.g. 4096 and/or split the reduction across multiple programs with atomics or a two-pass scheme.",
+    "large_guidance": "- Rewrite ConvTranspose3d as a gather-GEMM (input-stationary im2col-on-the-fly): one program per (N, OC tile, output-spatial tile), with an inner GEMM-K loop over (IC \u00d7 KD \u00d7 KH \u00d7 KW). Inside the K-loop, compute input coordinates `id_=od-kd, ih=oh-kh, iw=ow-kw`, mask out-of-bounds, and use `tl.dot` to accumulate `[BLOCK_S, BLOCK_K] @ [BLOCK_K, BLOCK_OC]`. This replaces the scalar IC loop and enables tensor-core-style throughput.\n- Fuse ReLU directly into the conv-transpose epilogue (apply `tl.maximum(acc, 0.0)` before the store) so GroupNorm can read pre-activated output without a second pass; alternatively store conv output and have GN apply ReLU on load (already done) but eliminate the redundant double-read by computing partial group sums in the conv kernel via atomics.\n- Reshape weight once at init to `[OC, IC*KD*KH*KW]` (with the transpose-conv index flip baked in) so the inner GEMM-K dimension is contiguous and the weight load is a single coalesced tile per K-step \u2014 avoids the strided per-element `w_offset` arithmetic.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 7,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.3333471482889734
+    ]
+}

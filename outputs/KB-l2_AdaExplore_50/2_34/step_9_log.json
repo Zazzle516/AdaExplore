@@ -1,0 +1,29 @@
+{
+    "node_id": 9,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        5
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.41571574589646465,
+    "max_reward": 0.41571574589646465,
+    "avg_reward": 0.41571574589646465,
+    "score": [
+        1,
+        1,
+        0.22965490364583332
+    ],
+    "small_guidance": "- The LN/GELU/scale kernel is already memory-bound and tiny (C=64, BLOCK_C=64). With `fast_p=0.23` and runtime 38.4ms vs baseline 8.8ms, the bottleneck is the torch ConvTranspose3d, not the LN epilogue. Tuning the LN kernel cannot close the gap.\n- If staying small, try `num_warps=1` for C=64 (one warp suffices for 64 lanes) and `num_stages=2`; also fold the LN into NCDHW->channels-last reshape so the kernel reads contiguous channel rows directly.\n- Add `@triton.autotune` over `{num_warps\u2208{1,2,4}, num_stages\u2208{1,2}}` keyed on C \u2014 but expected gains are <5% of total runtime since LN is a small fraction.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: for each input element `x[n,ic,d,h,w]`, scatter-add the outer product `x * W[ic,oc,kd,kh,kw]` into output positions `(n, oc, d*stride+kd-pad, ...)`. Stride=2, pad=1, ksize=4 means each input contributes to a small dense set of output voxels; use one program per (N, OC-tile, output-spatial-tile) with a GEMM-style accumulator over (IC, KD, KH, KW).\n- Alternatively implement ConvTranspose3d as a gather-style direct kernel: per output voxel `(n, oc, od, oh, ow)`, accumulate over `(ic, kd, kh, kw)` where `(od+pad-kd)` is divisible by stride and the resulting input index is in-range. Tile as GEMM with M=output-spatial, N=OC, K=IC*KD*KH*KW; SMEM-safe starter `(BM,BN,BK)=(64,32,16)`, num_warps=4, num_stages=2.\n- Fuse bias-add + LayerNorm(over C) + GELU + scale into the conv-transpose epilogue. Use channels_last (NDHWC) output layout so the LN reduction over C is contiguous; the conv kernel writes one full channel row per output voxel and immediately runs the in-register LN/GELU/scale before storing. This eliminates the separate LN pass entirely.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 10,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.22965490364583332
+    ]
+}

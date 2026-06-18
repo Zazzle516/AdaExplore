@@ -1,0 +1,30 @@
+{
+    "node_id": 29,
+    "parent_node_id": 25,
+    "context_node_ids": [
+        20,
+        25
+    ],
+    "depth": 5,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure stems from the GN finalize: `out_val = gamma * (c_mean - mean) * inv_std + beta` is wrong \u2014 GroupNorm normalizes each spatial element then averages; since affine (gamma/beta) is applied per-channel *before* mean reduction, the correct closed form is `gamma * (c_mean - mean) * inv_std + beta` only if mean over spatial of `(x-mean)*inv_std*gamma+beta` \u2014 actually that IS correct mathematically. The bug is likely that `S` is passed as an int but used in float division producing integer issues, or atomic_add nondeterminism with fp32 accumulation across many spatial tiles producing NaN on one trial. Switch `N = CHANNELS_PER_GROUP * S` to float (`N = (CHANNELS_PER_GROUP * S).to(tl.float32)` via `float(...)` on host or cast `S` to float in kernel).\n- More likely cause of intermittent NaN: when `BLOCK_SP=1024` and SP_TOTAL=8112, tail tile loads have `sp_mask=False` but indices `id_ = od + kd` etc. use uninitialized `od/oh/ow` from out-of-range `sp_offs` \u2014 those compute huge indices that, despite `mask=0.0`, can still trigger illegal memory in some builds. Clamp `sp_offs` with `tl.where(sp_mask, sp_offs, 0)` before decomposing into od/oh/ow.\n- Add `num_warps=8, num_stages=3` config with BLOCK_SP=256 for better latency hiding given the small spatial tile per program.",
+    "large_guidance": "- Restructure to one program per `(B, OC)` covering the full spatial volume (SP=8112 fits in registers across a loop), eliminating the atomic_add accumulation entirely. Loop over spatial tiles inside the kernel, accumulating `sum` and `sumsq` in scalar registers, then write once. This removes the atomic non-determinism that's causing the NaN trial and removes the need for a separate finalize launch barrier on the sum buffers.\n- Fuse GroupNorm directly: after the spatial loop, do a small cross-channel reduction across the group via a second kernel that only reads `(B, OC)` sums \u2014 or use `tl.atomic_add` to a per-group accumulator and a final tiny kernel. The current two-kernel split is fine; the issue is the conv kernel's atomic contention across spatial tiles.\n- Consider an im2col + GEMM approach: with B=1024, OC=16, SP=8112, IC*KD*KH*KW=192, the GEMM is `(B*SP, OC) = (8306688, 16) \u00d7 (16, 192)` which is memory-bound; a direct-conv per `(B,OC)` persistent kernel is probably better here since OC is tiny. Keep the direct-conv structure but make each program persistent over the entire spatial output for its `(B,OC)` pair.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 30,
+    "global_best_node_id": 12,
+    "global_best_score": [
+        1,
+        1,
+        0.8509946528898934
+    ]
+}

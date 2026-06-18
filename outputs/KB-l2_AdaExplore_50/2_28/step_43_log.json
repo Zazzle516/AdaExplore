@@ -1,0 +1,32 @@
+{
+    "node_id": 43,
+    "parent_node_id": 19,
+    "context_node_ids": [
+        1,
+        2,
+        12,
+        19
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.48561936164825226,
+    "max_reward": 0.48561936164825226,
+    "avg_reward": 0.48561936164825226,
+    "score": [
+        1,
+        1,
+        0.8063597335980807
+    ],
+    "small_guidance": "- Replace `torch.addmm` with the custom `gemm_bias_kernel` that's already defined but unused \u2014 the GEMM dominates runtime at M=1024, N=8192, K=8192, and a fused bias-add saves a pass. Add larger tile configs (e.g. BLOCK_M=128/BLOCK_N=256/BLOCK_K=64, num_warps=8, num_stages=4) tuned to this shape.\n- The norm kernel uses BLOCK_N=8192 which forces 8192-wide vectors per program; try a two-pass (reduction split into tiles) or increase num_warps to 16/32 with num_stages=2 to better hide the long row reduction. Also fold y-load with the x-load streaming and avoid materializing `xm` twice.\n- Consider fusing bias-add + InstanceNorm + residual + multiply into the GEMM epilogue: since N=out_features=8192 fits along the N-tile boundary poorly, instead emit GEMM output to an intermediate and immediately launch the fused norm \u2014 but ensure the GEMM tile in N spans the entire row (BLOCK_N=N) so per-row stats are computable inline. Otherwise keep them separate but ensure the GEMM is the autotuned Triton one.",
+    "large_guidance": "- The bottleneck is a 1024\u00d78192\u00d78192 GEMM (~137 GFLOPs); a from-scratch design should prioritize a split-K or stream-K Triton GEMM, since M=1024 with BLOCK_M=128 only yields 8 row-tiles, leaving many SMs idle on a 4090 (128 SMs). Stream-K or split-K with atomic accumulation would saturate the device.\n- Alternatively, since K=N=8192 and M is modest, a persistent GEMM kernel where each SM iterates over multiple (M,N) tiles would amortize launch and improve L2 reuse of the weight matrix.\n- Fuse the entire epilogue (bias + InstanceNorm-over-row + (x+y)*y) into the GEMM by tiling such that BLOCK_N==N (one program per row group) \u2014 this requires only M=1024 programs, each computing a full row's GEMM partial-sums then normalizing in-register. With K=8192 and N=8192 the row's accumulator is 8192 floats (32KB), which fits in registers/shared memory per program. This avoids a second kernel launch entirely.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 44,
+    "global_best_node_id": 28,
+    "global_best_score": [
+        1,
+        1,
+        0.8257900886245404
+    ]
+}

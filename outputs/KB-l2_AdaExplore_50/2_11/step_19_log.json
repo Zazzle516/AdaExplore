@@ -1,0 +1,30 @@
+{
+    "node_id": 19,
+    "parent_node_id": 14,
+    "context_node_ids": [
+        13,
+        14
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.47257196220046094,
+    "max_reward": 0.47257196220046094,
+    "avg_reward": 0.47257196220046094,
+    "score": [
+        1,
+        1,
+        0.6987186881538028
+    ],
+    "small_guidance": "- The conv-transpose GEMM kernel currently uses `tl.dot(w_tile, tl.trans(x_tile))` \u2014 load `x_tile` as `[BLOCK_K, BLOCK_SP]` directly (swap the index order so K is the row) so the dot is `tl.dot(w_tile, x_tile)` without an explicit transpose; this saves a shared-memory shuffle and unlocks larger tiles.\n- Add autotune configs with `BLOCK_OC=128, BLOCK_SP=256, BLOCK_K=32` and `BLOCK_OC=256, BLOCK_SP=64, BLOCK_K=32` (num_warps=8, num_stages=3) \u2014 with H_OUT=W_OUT=34 (1156 spatial) and OC=128, larger SP tiles cut the per-program K-loop overhead and amortize the weight loads.\n- Pre-pack `w_packed` as a registered buffer in `__init__` (not lazily on first forward) and store it in `[OC, IC*KH*KW]` already-contiguous; also consider pre-permuting to `[K_TOTAL, OC]` so the weight load in the K-loop is contiguous along K and the dot becomes `tl.dot(tl.trans(w_tile), x_tile)` only once outside the loop is unnecessary \u2014 pick whichever layout makes both loads coalesce on the K axis.",
+    "large_guidance": "- With `stride=1, padding=1, kernel=5`, ConvTranspose2d is equivalent to a *regular* Conv2d with padding=`KH-1-padding`=3 and a spatially-flipped weight \u2014 rewrite as a standard im2col conv (gather, not scatter), which has a much simpler index pattern (no `ih = oh+pad-kh` sign games) and lets you use a straight GEMM with `BLOCK_M=OC, BLOCK_N=spatial, BLOCK_K=IC*KH*KW`. This is the single biggest structural win available.\n- Switch the conv kernel to channels-last (NHWC) input/output layout: the K dimension of the GEMM is `IC*KH*KW`, and contiguous IC makes the inner K stride unit-stride for both x and w loads. Materialize NHWC once at the start of forward and keep it through to the fused BN+tanh+pool+GN epilogue (which then also reads channel-contiguous data).\n- Fuse the conv epilogue (BN scale/shift + tanh + 2\u00d72 maxpool) directly into the conv GEMM kernel: produce a 2\u00d72 output tile per program and reduce to a single pooled value before storing, eliminating a full N\u00d7OC\u00d7H\u00d7W read/write between the two kernels. GroupNorm stays as a separate kernel since it needs a cross-spatial reduction.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 20,
+    "global_best_node_id": 16,
+    "global_best_score": [
+        1,
+        1,
+        0.9062588925559223
+    ]
+}

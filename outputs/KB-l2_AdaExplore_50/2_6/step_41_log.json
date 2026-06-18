@@ -1,0 +1,29 @@
+{
+    "node_id": 41,
+    "parent_node_id": 40,
+    "context_node_ids": [
+        40
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.45280400354939526,
+    "max_reward": 0.45280400354939526,
+    "avg_reward": 0.45280400354939526,
+    "score": [
+        1,
+        1,
+        0.5356330292825106
+    ],
+    "small_guidance": "- Add more autotune configs for the fused conv+softmax+pool kernel: include BLOCK_OC=16 with num_warps=1, and try num_stages=4. The current K_TOTAL=128 (IC=3, KD*KH*KW=27 \u2192 padded to 32, times... actually K_REAL=81\u2192K_TOTAL=128) is small, so num_warps=1 or 2 likely wins; key on POOL too.\n- Hoist the weight tile + bias load outside any inner work and precompute the static offset table for the POOL^3=64 window positions; also cache `oc_mask` once. Consider keying autotune on N as well so different launches don't recompile.\n- Switch grid to 2D `(N, Dp*Hp*Wp)` and have each program handle multiple output spatial points (tile the spatial dim) to amortize the weight load \u2014 one weight tile reused across several `(dp,hp,wp)` neighbors increases arithmetic intensity.",
+    "large_guidance": "- Restructure as an im2col-style GEMM: one program per `(N, output-spatial tile of size BLOCK_M, OC tile)` over the full conv output (D_out\u00b7H_out\u00b7W_out = 14\u00b730\u00b730), with K = IC\u00b7KD\u00b7KH\u00b7KW = 81 as the GEMM-K. Compute conv via `tl.dot` on BLOCK_M\u00d7BLOCK_K \u00b7 BLOCK_K\u00d7BLOCK_N tiles, then perform softmax-over-OC and the 4\u00d74\u00d74 (POOL\u00b2=4 per dim, two pools combined) max reduction in the epilogue. With OC=16 only, keep BLOCK_N=16 and push BLOCK_M up to 64/128 to get tensor-core utilization.\n- Fuse both MaxPool3d layers into a single 4\u00d74\u00d74 window (pool_kernel_size\u00b2=4 effective per dim). Currently the kernel already does this but iterates 64 inner positions sequentially with redundant input loads; instead, load a single `(BLOCK_M=64 output points)` tile that covers the 4\u00d74\u00d74 window contiguously and reduce in registers \u2014 drastically cutting redundant x loads (currently each input element is reloaded ~27 times).\n- Use channels_last (NDHWC) layout for the conv output staging so the OC axis is the contiguous fastest dim, making the softmax reduction a single coalesced register reduction across OC=16 (one warp). Persist weights in shared memory across the spatial tile loop.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 42,
+    "global_best_node_id": 22,
+    "global_best_score": [
+        1,
+        1,
+        2.689860190720031
+    ]
+}

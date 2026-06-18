@@ -1,0 +1,29 @@
+{
+    "node_id": 2,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5029678464899782,
+    "max_reward": 0.5029678464899782,
+    "avg_reward": 0.5029678464899782,
+    "score": [
+        1,
+        1,
+        0.9494847335423198
+    ],
+    "small_guidance": "- The pool+sum kernel is already tiny (16\u00b7~5\u00b75\u00b75 outputs); the 11ms is dominated by the ConvTranspose3d. Tuning BLOCK_C / num_warps on the pool kernel will not move the needle \u2014 focus tuning effort on the conv. If keeping the pool kernel, try collapsing the 6\u00b3 static_range into a single flat static_range of 216 with precomputed (dd,hh,ww) to reduce compiler unroll cost, and bump num_warps to 2 (only 64 channels) with num_stages=2.\n- Verify channels_last_3d is actually being honored \u2014 the code calls `x.contiguous()` (default layout) right before the pool kernel, which strips the channels_last format possibly set by cuDNN's output. Either keep channels_last throughout or stop forcing contiguous between conv and pool.",
+    "large_guidance": "- The ConvTranspose3d dominates runtime (fast_p \u2248 0.95 means we are essentially at cuDNN baseline). Replace it with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile) computing the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and scatter-adding into output positions `(d*stride - pad + kd, \u2026)`. Fuse the bias add into the same epilogue. With kernel=5, stride=2, padding=2 and OC=64, this is a heavy op with lots of headroom.\n- Even better: fuse the transposed conv directly with the 6\u00d76\u00d76 max-pool + channel sum. Since each output of the pool/sum depends on a 6\u00b3 window of conv outputs, you can launch one program per (N, od, oh, ow), compute the 6\u00b3 conv-transpose output patch on the fly via gather (loop over IC, kd, kh, kw with the inverse index mapping), maintain a per-channel running max across the 216 spatial positions, and reduce across OC at the end. This eliminates the entire ~16\u00b764\u00b764\u00b764\u00b764 intermediate write.\n- If full fusion is too complex, at minimum fuse bias+conv_transpose into a custom kernel and keep the existing pool/sum kernel; the conv is where the 5%+ headroom lives.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 3,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.9494847335423198
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 26,
+    "parent_node_id": 25,
+    "context_node_ids": [
+        13,
+        25
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.45337352298510236,
+    "max_reward": 0.45337352298510236,
+    "avg_reward": 0.45337352298510236,
+    "score": [
+        1,
+        1,
+        0.540331564627094
+    ],
+    "small_guidance": "- The fused conv+softmax+pool kernel computes softmax once per spatial position but only keeps the max \u2014 redundantly recomputing exp/sum. Since max-pool of softmax preserves argmax (softmax is monotonic per-position only across C, not across positions), but across the pool window positions softmax denominators differ. Still, you can fuse: compute logits, take max of logits across the window per OC (no), actually pool must commute carefully. Instead, tune the existing kernel: add autotune configs varying num_warps\u2208{2,4,8} and num_stages\u2208{2,3,4}, and try launching grid as (OD*OH*OW, N) with one program handling all OC in a single tile to improve occupancy.\n- K_PAD is 128 (IC=3,K=27 \u2192 K_VOL=81, padded to 128) and OC=16 \u2014 the [OC, K_PAD]=16\u00d7128 weight reload is fine, but the inner P^3=8 iterations each do a [K_PAD] gather. Coalesce by laying out x in channels_last (NDHWC) so ic varies fastest, making the 81-wide gather contiguous on the IC axis for fixed (kd,kh,kw).\n- Add a BLOCK_OW tile (e.g., 2 or 4 along OW) so a single program amortizes weight loads over multiple output positions; sweep BLOCK_OW\u2208{1,2,4} via autotune.",
+    "large_guidance": "- Rewrite as an im2col-style GEMM: one program per (N, OC-tile=16, output-spatial-tile). With OC=16 always fitting in one tile and pre-pool spatial = 14\u00d730\u00d730 = 12600 per batch, tile spatial in chunks of BLOCK_M=64 or 128, K=IC*KD*KH*KW=81 (pad to 128). Then do softmax across the OC=16 axis in-register (trivial, one row of 16), then 2\u00d72\u00d72 then 2\u00d72\u00d72 max-pool reduction (effective 4\u00d7 per spatial dim) in a second small kernel or as an epilogue indexed by output-pool coords.\n- Note pool1\u2218pool2 with kernel=2 each = a single 4\u00d74\u00d74 max-pool with stride 4. Fuse both pools as one kernel over the post-softmax tensor: one program per (N, C, out-spatial-tile), gather a 4\u00d74\u00d74=64-element window, reduce max. This halves launches and reads.\n- Since softmax is per-spatial-position over OC=16, and max-pool is monotonic-friendly (max of softmax over a window \u2260 softmax of max, so must keep softmax), structure as: kernel A computes conv\u2192softmax into a tensor of shape (N,16,14,30,30); kernel B does the fused 4\u00d74\u00d74 pool. Kernel A can be a tight GEMM with channels_last weight reshape (OC,K) @ (K, N*Dout*Hout*Wout) tile, with the 16-wide softmax as the epilogue. This is much closer to peak than the current per-output-position scalar reduction.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 27,
+    "global_best_node_id": 22,
+    "global_best_score": [
+        1,
+        1,
+        2.689860190720031
+    ]
+}

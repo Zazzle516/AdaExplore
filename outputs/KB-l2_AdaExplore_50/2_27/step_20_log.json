@@ -1,0 +1,27 @@
+{
+    "node_id": 20,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4664469716346943,
+    "max_reward": 0.4664469716346943,
+    "avg_reward": 0.4664469716346943,
+    "score": [
+        1,
+        1,
+        0.6481875159862274
+    ],
+    "small_guidance": "- The fused GN+mean kernel reads x twice (once for stats, once for per-channel mean). Since the per-channel sum equals the group sum split across channels, compute per-channel sums in the first pass (accumulate into a small `[CHANNELS_PER_GROUP]` register array), then derive group mean/var from those \u2014 eliminating the second read pass entirely.\n- Fuse the hardswish into the GN+mean kernel's first load (apply `x*relu6(x+3)/6` on the loaded values before accumulating sum/sumsq). This removes the separate hardswish launch and the intermediate write/read of the conv output (B\u00b7C\u00b7S = 1024\u00b716\u00b72197 \u2248 36M elements).\n- Add `triton.autotune` over `BLOCK_S \u2208 {256, 512, 1024, 2048}`, `num_warps \u2208 {2, 4, 8}`, `num_stages \u2208 {2, 3}`; with S=2197 and CHANNELS_PER_GROUP=4 the inner-loop trip count is small, so smaller warps may win.",
+    "large_guidance": "- The conv3d (1024\u00d73\u00d716\u00d732\u00d732 \u2192 1024\u00d716\u00d713\u00d729\u00d729) almost certainly dominates the 10.7 ms runtime; the GN+mean tail is small. Replace `nn.Conv3d` with a custom Triton im2col-style GEMM kernel: one program per `(N, OC_tile, out_spatial_tile)`, K=IC\u00b7kD\u00b7kH\u00b7kW=192, with the hardswish epilogue fused in. With IC=3 and a 4\u00b3 kernel, K is tiny and a direct (non-im2col) gather per output also works well.\n- Fold the entire pipeline into two kernels: (1) conv+hardswish writing channels-last `[B, D', H', W', C]`, (2) GN+mean over the channels-last layout where the channel reduction is contiguous and only `B\u00b7num_groups` programs are launched. This removes a 36M-element intermediate roundtrip.\n- Alternatively, since out_spatial = 13\u00b729\u00b729 = 10933 and C=16 is small, a persistent single-kernel \"conv \u2192 hardswish \u2192 GN \u2192 mean\" per `(B, group)` is feasible: each program loads weights once, computes conv outputs for its 4 channels over all spatial positions while accumulating sum/sumsq, then a second pass computes normalized mean. This eliminates writing the full conv output to DRAM entirely.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 21,
+    "global_best_node_id": 12,
+    "global_best_score": [
+        1,
+        1,
+        0.8509946528898934
+    ]
+}

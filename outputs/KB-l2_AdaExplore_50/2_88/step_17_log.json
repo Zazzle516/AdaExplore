@@ -1,0 +1,29 @@
+{
+    "node_id": 17,
+    "parent_node_id": 6,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness fails because `weight_t` is registered as a buffer snapshot of `self.gemm.weight.t()` at init; if weights change (or even at the loose tolerance, the snapshot can drift) the GEMM uses stale weights. Recompute `weight_t = self.gemm.weight.t().contiguous()` inside `forward` (or just pass `self.gemm.weight` and swap the strides so the kernel reads it transposed) so the kernel always sees the current parameter.\n- After fixing correctness, narrow the autotune space for the actual shape M=1024, N=8192, K=8192: keep only `BLOCK_M=128,BLOCK_N=128,BLOCK_K=32 (warps=4,stages=3)`, `128x256x32 (warps=8,stages=3)`, `128x128x64 (warps=8,stages=4)`, and add a `GROUP_M=8` block-swizzle for L2 reuse across N tiles.\n- For the GroupNorm-Swish-Mul-Swish kernel with C/G=32, BLOCK=32 with `num_warps=1` underuses the SM. Bump `GROUPS_PER_PROG` to 16 (or process a whole row of 256 groups per program if shared-memory budget allows) and try `num_warps=4` so each program does more work and amortizes launch/index math.",
+    "large_guidance": "- Drop the pre-transposed weight buffer entirely; design the GEMM kernel to consume `self.gemm.weight` directly in (N, K) layout by swapping which axis is the inner contiguous load (B is loaded as `weight[n, k]` with `stride_bn=K, stride_bk=1`). This removes the staleness bug and the extra transpose memory.\n- Consider fusing the bias add + first Swish into the GEMM epilogue (compute `y = acc + bias; y*sigmoid(y)`) and write that to a scratch tensor, then run a single GroupNorm+mul+Swish kernel. But note the reference applies Swish *after* GroupNorm, so the safe fusion boundary is: GEMM+bias in one kernel, GN+Swish+Mul+Swish in the second (current split is correct \u2014 just fix correctness and tune).\n- For the norm kernel, since C=8192 and G=256 (CH_PER_G=32), a persistent kernel that keeps an entire row resident in registers (8192 elements = 32KB per row, too large) is infeasible; instead use one program per (row, group-tile) with vectorized 4-wide loads and `tl.dot`-free reductions, and increase `GROUPS_PER_PROG` aggressively to cut launch count from 1024\u00d7256 to e.g. 1024\u00d716.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 18,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

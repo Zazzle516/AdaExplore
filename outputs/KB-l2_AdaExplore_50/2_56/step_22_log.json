@@ -1,0 +1,29 @@
+{
+    "node_id": 22,
+    "parent_node_id": 21,
+    "context_node_ids": [
+        20
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The atomic_add output is initialized but the kernel uses atomic_add into a float32 accumulator; correctness is failing because multiple pid_n programs write to the same row but the per-tile masking with `tl.where(..., 0.0)` plus `tl.sum` should be fine \u2014 the real bug is likely that `out` is not zeroed across runs or the rowsum overflows with 32768 sigmoids summing near 16384. Verify `out = torch.zeros` is fp32 and ensure no NaN; add an explicit cast `acc.to(tl.float32)` before sigmoid.\n- Replace the atomic-add scatter with a two-stage reduction: first kernel writes per-(pid_m, pid_n) partial sums to a `(num_m_tiles, num_n_tiles, BLOCK_M)` buffer, second kernel reduces across the N-tile axis. This avoids atomic contention and the precision loss from many atomics on the same address.\n- Add larger-N autotune configs (BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4) since K=N=32768 is huge and the K-loop dominates; also consider BLOCK_M=16 since M=128 only needs 8 row tiles.",
+    "large_guidance": "- Redesign as a row-persistent kernel: one program per row (M=128 rows total, perfectly small grid), each program iterates over all N output columns in BLOCK_N chunks, computing the dot(x_row, w_col) for each column, applying sigmoid, and accumulating a single scalar row-sum in registers. Since K=32768 is large, load x_row once into shared/registers in BLOCK_K chunks reused across all N tiles \u2014 but better: stream through (n, k) where for each (BLOCK_N, BLOCK_K) tile load x[BLOCK_K] and W[BLOCK_N, BLOCK_K], do tl.dot, accumulate column logits in registers, and after the K-loop apply sigmoid+reduce.\n- Avoid atomics entirely. With M=128, launch grid=(M,) or (M, num_n_splits) and reduce N-splits with a small second kernel or torch.sum. A single non-atomic reduction will be both faster and numerically stable (atomics on fp32 with 32768 contributions per row near magnitude 0.5\u20131.0 lose precision and explain the 4e6 error magnitude \u2014 actually that magnitude suggests the output isn't being zeroed or the kernel is being launched twice).\n- Consider that 4090 has ample SMEM; a tile of BLOCK_M=128, BLOCK_N=128, BLOCK_K=64 with num_warps=8, num_stages=3 and a GROUP_M swizzle is the standard high-throughput GEMM shape. Fuse sigmoid+row-reduce into the epilogue and write per-(M-tile, N-tile) partial row-sums to a workspace, then a tiny launch reduces the N-tile axis.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 23,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

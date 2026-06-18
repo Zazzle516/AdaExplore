@@ -1,0 +1,30 @@
+{
+    "node_id": 15,
+    "parent_node_id": 8,
+    "context_node_ids": [
+        3,
+        8
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness bug is that `1/divide_by` was folded into the conv weights/bias *before* InstanceNorm. InstanceNorm normalizes away that scale, so the final division by `divide_by` is lost. Remove the weight/bias pre-scaling and instead pass `inv_div = 1.0 / divide_by` to the kernel so it's applied as the epilogue scale.\n- After fixing, sweep `BLOCK` \u2208 {1024, 2048, 4096} with `num_warps` \u2208 {4, 8} and `num_stages` \u2208 {2, 3} via `triton.autotune` keyed on `HW` (HW=15876 here, single program per (N,C)).\n- Consider a single-pass Welford or just keep two-pass but cache `x` in registers if `HW` fits \u2014 for 126\u00d7126=15876, two-pass reload from HBM is the dominant cost; using `tl.cdiv(HW, BLOCK)` tiles with larger BLOCK (e.g., 4096) reduces loop overhead.",
+    "large_guidance": "- The conv (128\u00d764\u00d73\u00d73 over 128\u00d7128 with batch 128) dominates runtime. Replace `nn.Conv2d` with a custom Triton im2col-GEMM kernel: one program per (N, OC-tile, output-spatial-tile), implicit im2col gather, tile sizes BLOCK_M=64/BLOCK_N=64/BLOCK_K=32 as a starting point, channels_last layout for coalesced IC loads.\n- Fuse the InstanceNorm + divide as an epilogue *after* a separate per-(N,C) reduction kernel \u2014 keep the conv-GEMM kernel writing fp32 NCHW output, then run the existing norm/div kernel. Do NOT fold the divisor into conv weights (it's cancelled by InstanceNorm).\n- If pursuing further fusion, write the conv output to a scratch buffer plus simultaneously accumulate per-(N,C) sum and sum-of-squares via `atomic_add` into a small `[N,C]` stats buffer, then a second kernel applies `(x-mean)*rstd/divide_by`. This avoids a full reload pass over the conv output.",
+    "evaluator_direction": "large",
+    "evaluator_valid": false,
+    "total_nodes": 16,
+    "global_best_node_id": 9,
+    "global_best_score": [
+        1,
+        1,
+        1.0381787802419356
+    ]
+}

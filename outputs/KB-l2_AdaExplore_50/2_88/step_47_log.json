@@ -1,0 +1,29 @@
+{
+    "node_id": 47,
+    "parent_node_id": 46,
+    "context_node_ids": [
+        24
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness fails because GroupNorm groups channels as `C/G = 8192/256 = 32` per group, but the kernel assumes contiguous CPG-channel groups \u2014 verify CPG=32 matches and double-check that `gamma`/`beta`/`mw` are loaded for the same `c_idx` range. The likely bug: numerical precision of `diff = x - mean` when `var` is computed as `sum((x-mean)^2)/CPG` \u2014 this is fine, but the GEMM output `y` may differ slightly from torch's; tighten GEMM accumulation by ensuring `acc` stays in fp32 (it does). Try using a two-pass `E[x^2] - E[x]^2` formula or, better, match torch by computing `mean = sum/CPG` then `var = sum(x*x)/CPG - mean*mean` to reduce one pass through memory.\n- The 5e-2 tolerance should easily pass \u2014 the 0.004 max diff is well under. Re-examine the correctness harness; the failure may be due to `self.gemm.bias` not being passed as contiguous, or the buffer `weight_t` going stale when `self.gemm.weight` is re-initialized. Drop the `register_buffer` caching and just do `self.gemm.weight.t().contiguous()` lazily but recompute when `weight.data_ptr()` changes.\n- Add autotune to the fused GN kernel over `ROWS_PER_PROG \u2208 {4,8,16,32}` and `num_warps \u2208 {2,4,8}` keyed on `N`.",
+    "large_guidance": "- The GEMM (1024\u00d78192\u00d78192 = 137 GFLOPs) dominates runtime; a from-scratch rewrite should focus on a split-K or persistent GEMM with `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4` and fuse the bias into the epilogue (already done). Consider using tf32 (`tl.dot(a, b, allow_tf32=True)`) \u2014 RTX 4090 has strong tf32 throughput and the 5e-2 tolerance permits it.\n- For the fused GN+Swish+Mul+Swish, since CPG=32 is small, use one program per `(row_block, group)` with `ROWS_PER_PROG=32` or `64` to amortize the gamma/beta/mw loads across rows; keep the entire row-group tile resident in registers.\n- Investigate whether the correctness failure is caused by the buffer `weight_t` becoming detached from the trained `gemm.weight` (registered as non-persistent buffer at init, but `nn.Linear.weight` may be re-randomized between init and forward by the test harness reseeding). The fix: compute `weight_t` inside `forward` from the current `self.gemm.weight`, no caching.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 48,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

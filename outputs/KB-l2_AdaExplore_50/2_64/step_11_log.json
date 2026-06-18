@@ -1,0 +1,29 @@
+{
+    "node_id": 11,
+    "parent_node_id": 8,
+    "context_node_ids": [
+        9
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.40972985269436035,
+    "max_reward": 0.40972985269436035,
+    "avg_reward": 0.40972985269436035,
+    "score": [
+        1,
+        1,
+        0.18027128472847284
+    ],
+    "small_guidance": "- The current kernel parallelizes only over M (1024 rows / BLOCK_M \u2248 8-16 programs), which severely underutilizes the 4090's SMs given K=N=8192. Add a split-K / split-N strategy: launch a 2D grid (pid_m, pid_n_group) where each program handles a contiguous chunk of N tiles, then do a second small kernel to combine partial (max, sum) pairs across N-groups via the log-sum-exp merge rule.\n- Avoid the explicit `Wt = W.t().contiguous()` transpose (8192\u00d78192 fp32 = 256MB copy each forward); instead pass W directly and swap strides in the kernel so B is loaded with stride_bk = K, stride_bn = 1 (or use tl.dot's transpose-friendly layout).\n- Add larger autotune configs tuned for K=N=8192 (e.g. BLOCK_M=32/64, BLOCK_N=256, BLOCK_K=64/128, num_warps=8, num_stages=4) since BLOCK_M can be small (M=1024) and we want big N/K tiles for arithmetic intensity.",
+    "large_guidance": "- Restructure as a two-pass design: Pass 1 is a standard tiled GEMM that writes the full (M, N) logits to a scratch buffer using a 2D (pid_m, pid_n) grid with GROUP_M swizzling for L2 reuse \u2014 this fully utilizes all SMs (64\u00d764 = 4096 tiles). Pass 2 is a row-wise online-LSE+activation kernel reading the logits and producing the (M,1) output. The current single-program-per-row-tile design starves the GPU.\n- Alternatively, a split-N persistent kernel: each program computes partial (running_max, running_sum) over a slice of N for its row tile, writes them to a small (M, num_splits) scratch, then a tiny reduction kernel merges them with the LSE combine formula and applies the fused LeakyReLU/LeakyReLU/GELU/GELU epilogue. This keeps fusion but recovers parallelism over N.\n- Eliminate the W.t().contiguous() materialization by writing the GEMM with W in its native [N, K] layout (load W[n, k] directly), saving a 256MB transpose per forward call.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 12,
+    "global_best_node_id": 10,
+    "global_best_score": [
+        1,
+        1,
+        1.9067155115511552
+    ]
+}

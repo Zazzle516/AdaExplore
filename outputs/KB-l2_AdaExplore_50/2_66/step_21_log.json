@@ -1,0 +1,30 @@
+{
+    "node_id": 21,
+    "parent_node_id": 11,
+    "context_node_ids": [
+        8,
+        11
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM is the dominant cost (128\u00d716384\u00d716384 \u2248 68 GFLOPs); add larger tile configs to the autotune list (e.g. `BLOCK_M=64/BLOCK_N=256/BLOCK_K=64 num_warps=8 num_stages=4`, `BLOCK_M=32/BLOCK_N=256/BLOCK_K=64`) \u2014 M=128 means BLOCK_M>128 is wasted, so favor small M / large N tiles. Also try `num_stages=5` for the K=16384 loop.\n- Add a GROUP_M block-swizzle (group size 8) for L2 reuse across N tiles, and drop the `k_remaining` masking in the K loop since K=16384 is divisible by all BLOCK_K choices \u2014 unconditional `tl.load` lets the compiler pipeline better.\n- For the softmax, BLOCK_N=4096 forces 4 iterations per pass over a 16384-wide row; try BLOCK_N=8192 with num_warps=8 or even BLOCK_N=16384 (single-pass persistent, row fits in regs) to halve the global-memory traffic from 3\u00d7 read to 2\u00d7 read.",
+    "large_guidance": "- Fuse softmax into the GEMM epilogue using a split-N two-pass strategy: pass 1 has each `(pid_m)` program stream the full K-loop across all N tiles to compute per-row max and sum (writing the GEMM output to a scratch buffer or recomputing); pass 2 normalizes. Better: since M=128 is tiny, use a persistent per-row kernel \u2014 one program per row, iterate N tiles, do GEMM-of-row \u00d7 full-weight with `tl.dot` over (1\u00d7BLOCK_K)\u00b7(BLOCK_K\u00d7BLOCK_N), maintain running max/sum online, then a second pass over N to write normalized outputs. This eliminates the full 128\u00d716384 intermediate write+read.\n- Alternatively, keep the GEMM separate but write its output in tiles directly consumed by a fused softmax that runs as the epilogue of the last K-block \u2014 requires storing partial GEMM tile to shared and immediately reducing, but with M=128 the whole output row (16384 fp32 = 64KB) doesn't fit in SMEM, so the persistent-row approach above is preferable.\n- Consider using tensor cores via tf32 (`allow_tf32=True` / `tl.dot(..., input_precision='tf32')`) \u2014 for this dropout+softmax pipeline the loose 5e-2 tolerance easily accommodates tf32 and it ~2\u00d7 the GEMM throughput on Ampere.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 22,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

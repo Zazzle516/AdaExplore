@@ -1,0 +1,29 @@
+{
+    "node_id": 27,
+    "parent_node_id": 24,
+    "context_node_ids": [
+        25
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (~0.002 max diff, ~0.0003 avg) is consistent with a single-pixel spatial misalignment: the kernel computes `ih = oh + kh; iw = ow + kw` against an NHWC input whose `stride_xh` corresponds to W (not the full row of the un-tiled layout). Double-check that `x_nhwc.stride(1)` is indeed `W*IC` and `stride(2)` is `IC` \u2014 the names `stride_xh`/`stride_xw` are assigned in that order, which is correct, but verify that `b_ptr` (conv bias) is added BEFORE `tl.minimum(., constant_value)` per the reference: the reference does `min(conv(x), c) + bias_param`, so conv bias must be folded inside conv (it is) then clamped, then bias_param added. That ordering looks right \u2014 so the remaining suspect is reduction precision: switch `allow_tf32=True` to `allow_tf32=False` to rule out TF32 drift as the source of the 2e-3 error.\n- Once correct, prune the autotune list: at OC=128, OH*OW=126*126=15876, IC=64, KH*KW=9, the K-loop is only IC=64 so `BLOCK_K=64` covers it in one iter \u2014 prefer `(BLOCK_M=64, BLOCK_N=128, BLOCK_K=64, num_warps=8, num_stages=2)` and `(128,64,64)` as the top candidates and drop `BLOCK_K=32` configs.\n- Hoist the `oh`/`ow` decomposition and `ih*stride_xh + iw*stride_xw` base outside the `ic_start` loop (already partly done), and consider swapping the loop order so the IC-loop is the outermost reduction and KH/KW are inside \u2014 this lets a single `BLOCK_K=IC` load be reused across the 9 kernel positions via register tiling.",
+    "large_guidance": "- Restructure as a true im2col GEMM with K = IC*KH*KW = 576 as the reduction axis and M = OC = 128, N = N*OH*OW tiled. One program per (OC tile, output-spatial tile) across the full batch-flattened N dimension; this gives much larger N tiles and better SM occupancy than the current per-batch grid (which launches 128 batch slices serially in the grid-z dim).\n- Keep NHWC for input and OHWI for weight, but compute K-index \u2192 (ic, kh, kw) inside the kernel via integer division by KH*KW; mask the spatial tail rather than branching. Fuse `+conv_bias \u2192 min(., c) \u2192 +bias_param \u2192 *scale` in the epilogue exactly as now.\n- Use fp32 accumulator with `allow_tf32=False` to match the reference numerics (the current 2e-3 error likely comes from TF32 in `tl.dot`). Autotune over `(BLOCK_M \u2208 {64,128}, BLOCK_N \u2208 {64,128,256}, BLOCK_K \u2208 {64,128})` with `num_warps \u2208 {4,8}`, `num_stages=2`, staying under the 132 KB SMEM budget.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 28,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.686288845766129
+    ]
+}

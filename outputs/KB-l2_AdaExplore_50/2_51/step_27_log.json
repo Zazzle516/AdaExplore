@@ -1,0 +1,31 @@
+{
+    "node_id": 27,
+    "parent_node_id": 26,
+    "context_node_ids": [
+        1,
+        23,
+        26
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5591171110673008,
+    "max_reward": 0.5591171110673008,
+    "avg_reward": 0.5591171110673008,
+    "score": [
+        1,
+        1,
+        1.4127161663052317
+    ],
+    "small_guidance": "- The GEMM tile is reducing over N to a scalar per row, so BLOCK_N can be very large (e.g. 256/512) with BLOCK_K=64 to amortize the reduction; add configs with BLOCK_M=256, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4 and consider SPLIT_K=4 vs 8 vs 16 as autotune keys.\n- Cache the transposed weight once in `__init__` (or use a flag) instead of the per-forward `is None`/shape check that forces re-evaluation; also drop the `.cuda()` call inside forward since the buffer is already on device.\n- The finalize kernel does B*ceil(K/BLOCK) launches just to broadcast a scalar add \u2014 increase BLOCK_K to 4096 or 8192 (K=8192) so it's a single program per row, and consider 2D tiling (BLOCK_M rows \u00d7 full K) to better saturate bandwidth on the residual add.",
+    "large_guidance": "- Fuse the entire pipeline into a single persistent kernel per row: each program handles one (or a tile of) row(s), streams the GEMM K-loop accumulating only the row-sum (BLOCK_N tile reduced immediately to a scalar), then computes mean\u2192logsumexp\u2192GELU in registers and writes `x + scalar` for that row's K elements \u2014 eliminates the partial buffer and second kernel launch entirely.\n- Since the output of mean\u2192logsumexp(dim=1 of size 1)\u2192GELU is just GELU(mean), and the residual add is bandwidth-bound on a 2048\u00d78192 tensor (~64MB R+W), the dominant cost after GEMM is the residual add; fuse it into the same kernel that produces the scalar so x is read/written exactly once.\n- Consider doing the GEMM with weights kept in original (N,K) layout but transposed-load via `tl.dot(x, w.T)` using `trans_b=True` semantics \u2014 avoids the K*N materialization of W_T and saves 256MB of memory traffic on first call; or store W_T once at init as a Parameter buffer.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 28,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        1.6320820306383421
+    ]
+}

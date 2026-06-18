@@ -1,0 +1,29 @@
+{
+    "node_id": 41,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4328278968855219,
+    "max_reward": 0.4328278968855219,
+    "avg_reward": 0.4328278968855219,
+    "score": [
+        1,
+        1,
+        0.3708301493055555
+    ],
+    "small_guidance": "- The softmax_sigmoid epilogue is fine; the bottleneck is the torch ConvTranspose3d. Tuning the existing softmax kernel (e.g., BLOCK_C=64, num_warps=4) will yield negligible gains since fast_p=0.37 and conv dominates.\n- If keeping current structure, at least try `num_warps=4` with `num_stages=2` for the softmax kernel and consider a 2D grid `(N*S_outer, S_inner)` to improve occupancy, but expect <5% improvement.\n- Ensure `channels_last_3d` memory format on the conv output so the softmax-over-C reduction reads contiguous channels \u2014 currently strided loads with stride S hurt the epilogue.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input D*H*W tile)` computing the input\u00d7weight outer product and atomically scattering into the output grid, handling stride=2, padding=1, output_padding=1 in the index math. This is the dominant op (~5ms baseline) and has the most headroom.\n- Alternatively implement ConvTranspose3d as a gather-style GEMM: one program per `(N, OC tile, output spatial tile)` where each output position iterates over the (kh,kw,kd,ic) taps that map to it (input index = (out+pad-k)/stride with divisibility check). Use im2col-style implicit indexing, tile `BLOCK_M=32, BLOCK_N=32, BLOCK_K=16`, num_warps=4, num_stages=2 to fit SMEM.\n- Fuse the softmax-over-channels and sigmoid into the conv-transpose epilogue: have the conv kernel produce a full channel-vector per output spatial location (one program owns all OC for a spatial tile), then in-register compute max, exp, sum, divide, sigmoid, and store. Since OC=64 fits easily in registers, this eliminates the second kernel launch and the extra read/write of the conv output entirely.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 42,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.5287083316831683
+    ]
+}

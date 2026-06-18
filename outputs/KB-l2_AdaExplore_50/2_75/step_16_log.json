@@ -1,0 +1,30 @@
+{
+    "node_id": 16,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        3,
+        4
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The atomic_min over groups per row is the likely bottleneck; switch to a single-program-per-row GN+min kernel that reduces all `num_groups=512` groups of `C_PER_G=16` (total N=8192 elements) in registers/shared, eliminating atomics entirely. Then `tl.min` across the full row in one shot.\n- Drop the separate `add_bias_kernel` path (already done via torch broadcast). Better: fuse the bias-add into the GN+min kernel by writing directly to the final `(1, N, M, 1)` output layout \u2014 broadcast min across channels and add bias inside the same kernel, eliminating the extra elementwise launch and the intermediate `min_buf`.\n- For the GEMM autotune, add `BLOCK_M=64, BLOCK_N=128, BLOCK_K=64, num_warps=4` and `BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, num_warps=8, num_stages=5` configs \u2014 M=1024 is small so smaller M tiles may improve occupancy.",
+    "large_guidance": "- Fuse GN + min + bias-add into one kernel: one program per row, load the full 8192-element row into registers (BLOCK=8192, num_warps=16 or use a tiled two-pass within one persistent program), compute per-group mean/var via reshaped reduction (`tl.reshape` to `[num_groups, C_per_g]` then `tl.sum(axis=1)`), normalize+affine, take `tl.min` across the whole row, then loop over channel tiles writing `min + bias[c]` directly into the output `(1, N, M, 1)` buffer. This removes the atomic-min, the `min_buf` allocation, and the separate bias broadcast-add.\n- Consider fusing the GEMM epilogue's row directly into GN when batch-per-tile aligns, but given M=1024 vs N=8192 the GEMM is large enough that a separate GEMM kernel is fine \u2014 focus fusion effort on the GN+min+bias stage which currently launches 3 ops (GN-min kernel, torch broadcast-add, output materialization).\n- The GEMM at 1024\u00d78192\u00d78192 is ~137 GFLOPs and should run in ~1.5\u20132 ms on a 4090; if the GEMM dominates total runtime, try a split-K variant or compare against `torch.matmul` (cuBLAS) \u2014 for fp32 on Ada, cuBLAS may beat hand-rolled Triton, so consider using `torch.addmm` for the linear and only customizing the GN+min+bias fusion.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 17,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

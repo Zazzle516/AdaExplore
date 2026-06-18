@@ -1,0 +1,29 @@
+{
+    "node_id": 7,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4728897696969697,
+    "max_reward": 0.4728897696969697,
+    "avg_reward": 0.4728897696969697,
+    "score": [
+        1,
+        1,
+        0.7013406
+    ],
+    "small_guidance": "- The fused_relu_reduce kernel is serialized over all C_PER_GROUP*S elements per program (16*128=2048 programs total, each doing 16*32768 work). Try BLOCK_S=2048 or 4096 with num_warps=8 to increase per-program throughput, and consider unrolling the C_PER_GROUP inner loop.\n- Persist the loaded ReLU'd values across the two kernels via a tiled approach is impractical, but you can skip the intermediate store-then-reload: have normalize_kernel re-read the conv-transpose output directly and re-apply ReLU inline (memory traffic identical, but eliminates the `out` write/read of the first pass \u2014 actually both read+write `out`; instead write only mean/rstd in pass 1 by reading raw input twice, saving one full tensor write).\n- Tune normalize_kernel with BLOCK_S=2048/4096 and reduce grid dim by collapsing (C_PER_GROUP, spatial-tiles) into one axis to cut launch overhead.",
+    "large_guidance": "- The ConvTranspose3d almost certainly dominates runtime (output shape 16\u00d7128\u00d734\u00d734\u00d734 \u2248 100M elements with kernel 3\u00b3 \u2014 torch's implementation here is the bottleneck, not the GroupNorm). Replace it with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile), computing the input\u00d7weight outer product and scatter-adding into the output grid with stride=1, padding=0, output_padding=0. Fuse the ReLU into the epilogue after all scatters complete (requires a second pass or an atomic-free tiling where each output voxel is owned by one program).\n- Alternative: implement ConvTranspose3d as a gather-style direct kernel \u2014 one program per (N, OC tile, output-spatial tile), iterating over (IC, kd, kh, kw) and gathering the corresponding input voxel (output_idx - k offset, divided by stride). With stride=1 padding=0 this is just a regular conv with flipped kernel and padding=kernel_size-1; that lets you use a standard im2col-GEMM Triton kernel and fuse ReLU + GroupNorm-stat-accumulation in the epilogue.\n- Fuse the GroupNorm reduction directly into the conv-transpose epilogue: as each program produces its output tile, it accumulates partial sum/sum-of-squares into per-(N, group) atomics, then a tiny second kernel computes mean/rstd and a third applies the affine. This eliminates the full extra read of the 100M-element tensor that the current pass-1 kernel performs.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 8,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.3333471482889734
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 45,
+    "parent_node_id": 44,
+    "context_node_ids": [
+        44
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.41571574589646465,
+    "max_reward": 0.41571574589646465,
+    "avg_reward": 0.41571574589646465,
+    "score": [
+        1,
+        1,
+        0.22965490364583332
+    ],
+    "small_guidance": "- The conv_transpose3d call dominates runtime (fast_p=0.23 with a fused LN+GELU+scale already in place). Tuning the LN kernel further will not close the gap; only replacing the ConvTranspose3d will. If staying small, at most try `ROWS_PER_PROG=2` with `num_warps=2` since C=64 is tiny (BLOCK_C=64 \u2192 2 warps suffice), but expect <5% gain.\n- Consider switching the output layout of the conv to channels_last so the LN reduction axis (C=64) is contiguous \u2014 already true here since LN normalizes over C and the kernel reshapes to (M,C) with C contiguous, so no change needed.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC-tile, D,H,W)` input voxel-tile, computing the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and `atomic_add`-ing into the output grid at strided positions `(d*stride-pad+kd, h*stride-pad+kh, w*stride-pad+kw)`. With stride=2, pad=1, ks=4 the output is (32,64,32,64,64) \u2248 268M elements \u2014 the heavy op.\n- Alternative: gather-style direct kernel \u2014 one program per output tile in `(N, OC, D'\u00b7H'\u00b7W')`, looping over `(ic, kd, kh, kw)` and reading the input position `((d_out+pad-kd)/stride)` only when divisibility holds. This avoids atomics and is usually faster on Ampere; structure as an im2col-GEMM with K=IC*kd*kh*kw=2048, M=OC=64, N=output spatial tile. Fuse bias add in the epilogue.\n- Fuse LayerNorm+GELU+scale into the conv-transpose epilogue is hard (LN reduces across OC=64 which a per-output-tile kernel doesn't have all of). Instead, keep the two-kernel split but make the conv-transpose kernel write channels_last output so the LN kernel's loads coalesce, and tile the conv-transpose with BLOCK_M=64 (OC), BLOCK_N=64 (spatial), BLOCK_K=32, num_warps=4, num_stages=2.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 46,
+    "global_best_node_id": 15,
+    "global_best_score": [
+        1,
+        1,
+        0.7944818288288288
+    ]
+}

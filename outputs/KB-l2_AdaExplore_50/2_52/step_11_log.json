@@ -1,0 +1,29 @@
+{
+    "node_id": 11,
+    "parent_node_id": 10,
+    "context_node_ids": [
+        10
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4551717210944396,
+    "max_reward": 0.4551717210944396,
+    "avg_reward": 0.4551717210944396,
+    "score": [
+        1,
+        1,
+        0.5551666990291263
+    ],
+    "small_guidance": "- The conv (torch's cuDNN call) almost certainly dominates the 6.18ms runtime; tuning the BN/Mish epilogue further won't move fast_p much. If staying small, at least drop the redundant double-write in training: `_mish_stats_kernel` writes `y` to global then `_apply_bn_kernel` re-reads it \u2014 instead accumulate stats in a first pass without storing `y` (or just call the eval path during inference benchmarking) and recompute Mish in the apply pass, or keep `y` but fuse stats+apply via a two-pass persistent-per-channel kernel.\n- Switch to `channels_last` (`x = x.contiguous(memory_format=torch.channels_last)`) so the per-channel scale/shift gathers coalesce and the conv itself uses the faster NHWC cuDNN path.\n- Replace the `tl.exp(2*sp)`/`(e2-1)/(e2+1)` formulation with the numerically-stable softplus `tl.where(x>20, x, tl.log1p(tl.exp(-tl.abs(x))) + tl.maximum(x,0))` and `tanh = 1 - 2/(exp(2sp)+1)` \u2014 fewer ops and avoids overflow for large activations.",
+    "large_guidance": "- The conv2d (64\u2192128, 3\u00d73, 64\u00d7128\u00d7128 input) is the heavy op and is being left to cuDNN; replace it with a custom Triton im2col-GEMM kernel that fuses Mish in the epilogue. Tile shapes (OC=128, HW_out=126\u00b7126=15876, K=64\u00b79=576) fit a `BLOCK_M=64, BLOCK_N=64, BLOCK_K=32, num_warps=4, num_stages=2` config comfortably under the 132KB SMEM budget; autotune over {(32,64,32),(64,32,32),(64,64,32),(128,64,16)}.\n- For training, do a two-pass design: pass 1 is the fused conv+Mish kernel that also accumulates per-channel sum/sqsum via `tl.atomic_add` into small buffers (one program tile contributes to one OC), pass 2 applies the affine BN. For eval, fold BN scale/shift directly into the conv epilogue so there is exactly one kernel launch over the output.\n- Use `channels_last` layout end-to-end so the GEMM-K reduction (IC\u00b7KH\u00b7KW) walks contiguous memory, and so the per-channel scale/shift broadcast becomes a contiguous load along the inner N dim of the tile.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 12,
+    "global_best_node_id": 11,
+    "global_best_score": [
+        1,
+        1,
+        0.5551666990291263
+    ]
+}

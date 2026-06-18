@@ -1,0 +1,29 @@
+{
+    "node_id": 16,
+    "parent_node_id": 6,
+    "context_node_ids": [
+        9
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.47806540759709776,
+    "max_reward": 0.47806540759709776,
+    "avg_reward": 0.47806540759709776,
+    "score": [
+        1,
+        1,
+        0.7440396126760563
+    ],
+    "small_guidance": "- The conv now dominates runtime (fast_p ~0.74 with the pool/LSE/ReLU kernel already fused and lightweight). Remove the `x = x.contiguous()` after conv \u2014 it forces a full layout conversion from channels_last_3d back to NCDHW; instead make the fused kernel consume channels_last_3d strides directly (pass `x.stride()` as is; the kernel already uses generic strides).\n- Tune the fused kernel with `BLOCK_W=32, num_warps=2` and a small autotune sweep over `(BLOCK_W=32/64/128, num_warps=2/4, num_stages=2/3)` \u2014 the kernel is bandwidth-bound and small, so smaller tiles with more occupancy may win.\n- Ensure cuDNN benchmark picks the best conv algo: warmup with the actual input shape inside `__init__` (or first forward) so the autotune cost isn't counted; consider `torch.channels_last_3d` weights are already set, but verify the input is channels_last from the start of forward without a redundant `.to(memory_format=...)` copy each call.",
+    "large_guidance": "- The torch Conv3d is the dominant cost; replace it with a custom Triton implicit-GEMM kernel. Use one program per (N, OC tile, output-spatial tile) over a channels_last_3d layout, with the GEMM-K loop over `IC * kD * kH * kW`, computing input gather offsets implicitly (no im2col materialization). Fuse the bias add into the epilogue.\n- Fuse the entire pipeline conv \u2192 maxpool(2) \u2192 logsumexp(dim=1) \u2192 ReLU into a single kernel that accumulates all 64 output channels per output-spatial position, immediately reduces over a 2\u00d72\u00d72 pool window for each channel, then performs the LSE+ReLU across channels \u2014 eliminating the intermediate (N, 64, D, H, W) tensor entirely (saves ~134MB write+read per iteration).\n- If full fusion is too large for one kernel, split as: (a) custom conv kernel producing channels_last output with bias fused, (b) keep the existing pool+LSE+ReLU kernel. Autotune the conv tile sizes (`BLOCK_OC=32/64`, `BLOCK_SP=64/128`, `BLOCK_K=16/32`) and use `num_warps=4/8`, `num_stages=2/3`.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 17,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.7490331671235467
+    ]
+}

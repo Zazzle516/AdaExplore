@@ -1,0 +1,29 @@
+{
+    "node_id": 38,
+    "parent_node_id": 37,
+    "context_node_ids": [
+        27
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4609787543069176,
+    "max_reward": 0.4609787543069176,
+    "avg_reward": 0.4609787543069176,
+    "score": [
+        1,
+        1,
+        0.60307472303207
+    ],
+    "small_guidance": "- Increase parallelism over the spatial axis: switch BLOCK_HW to 64 or 128 with BLOCK_OC=32-64 and `num_warps=8`, `num_stages=2-3`; current kernel has a very deep inner loop over `D` per `(ic, kd, kh, kw)` that thrashes loads \u2014 restructure the inner D loop so the `valid_id` mask is computed once and accumulate `x_sum` only once per `(ic, kh, kw)` reusing across `kd` (the x_sum is independent of kd, just the id_lo/id_hi range changes).\n- Add `triton.autotune` over BLOCK_HW \u2208 {32,64,128}, BLOCK_OC \u2208 {16,32,64}, num_warps \u2208 {4,8}; key on (H,W,OC).\n- Fuse the `fused_post_kernel` (bias+softmax+tanh+scale) directly into the epilogue of `conv_mean_kernel` so the mean-reduced tensor never round-trips to HBM \u2014 requires the kernel to tile the full OC range per (b, hw) tile (set BLOCK_OC = next_pow2(OC) = 64).",
+    "large_guidance": "- Reformulate as an im2col-style GEMM: one program per (B, OC tile, HW tile). The K dimension is `IC * KH * KW` (the D-axis is collapsed by the mean, so legitimately sum input over the valid D range *inside* the K-loop, not pre-reduced on weight). Precompute per-(kh,kw) valid spatial masks; load weight tiles `[IC*KH*KW, BLOCK_OC]` via `tl.dot` for true tensor-core throughput instead of the current outer-product accumulation.\n- Make it a single fused kernel: conv_transpose + mean(D) + bias + softmax(C) + tanh + scale. Use BLOCK_OC = 64 (== OC) so softmax across channels happens entirely in registers in the epilogue. Grid = (B, HW_tiles); each program computes the full channel vector for its spatial tile, applies bias, online softmax, tanh, scale, then stores.\n- The D-loop should iterate over valid output-depth indices and accumulate `sum_d x[b,ic,d-PAD_D+kd, ...]` per (ic,kh,kw) \u2014 note this sum is the same for all kd values aside from the valid-d range, so compute it once with a single inclusive scan and reuse per kd, but keep the multiply-accumulate over the full (KD, KH, KW, IC) axis as the reference requires. Use channels-last (NHWC) layout for x to coalesce the IC loads.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 39,
+    "global_best_node_id": 24,
+    "global_best_score": [
+        1,
+        1,
+        2.8571081491712707
+    ]
+}

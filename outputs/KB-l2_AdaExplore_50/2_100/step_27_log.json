@@ -1,0 +1,29 @@
+{
+    "node_id": 27,
+    "parent_node_id": 26,
+    "context_node_ids": [
+        26
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.09833016666666666
+    ],
+    "small_guidance": "- The gather kernel iterates over IC in the innermost loop without enough reuse; raise BLOCK_IC to 32 or 64 (IC=64 divides evenly), and add an autotune sweep over (BLOCK_OC=64/128, BLOCK_SP=32/64/128, BLOCK_IC=32/64, num_warps=4/8, num_stages=2/3).\n- Hoist the kernel-position validity / `in_spatial_off` computation out of the IC inner loop (already done) and also precompute `pid_n * IC * DHW_in` and `pid_n * OC * DHW_out` once; collapse the triple `kd,kh,kw` loop into a single range and index weights via a small constant table to reduce loop overhead (KD*KH*KW=27 iterations of full tl.dot).\n- Try swapping grid order to (pid_sp, pid_oc, pid_n) and using `tl.max_contiguous`/`tl.multiple_of` hints on `in_spatial_off` to improve L2 reuse across adjacent sp tiles that share input rows.",
+    "large_guidance": "- Rewrite as an input-driven scatter-add: one program per (N, IC-tile, input-spatial-tile) computes `x_tile @ W[ic, :, k]` for each of the 27 kernel offsets and atomically (or via deterministic accumulation buffer) scatters into the output grid. With stride=2 each input voxel touches only 1 output per kernel position, so there's no overlap and plain `tl.store` suffices \u2014 this avoids the divisibility-mask wastage where 7/8 of (kd,kh,kw,sp) combinations in the current gather are inactive.\n- Alternatively, do an explicit im2col-GEMM: materialize/compute an implicit `[N*D_in*H_in*W_in, IC]` matrix times `[IC, OC*KD*KH*KW]` weight matrix into a `[N*D_in*H_in*W_in, OC*KD*KH*KW]` buffer, then a second small kernel performs the col2im scatter with the clamp+divide epilogue. The first stage becomes a dense, well-tuned GEMM (cuBLAS or Triton matmul template) rather than 27 strided gathers.\n- Fuse bias-add, clamp, and divisor multiplication into the scatter/epilogue kernel; keep weight in `(OC, IC, KD*KH*KW)` layout reshaped at init so the GEMM-K axis (IC) is contiguous for coalesced loads, and store output in channels-last (NDHWC) form, transposing once at the end if the consumer expects NCDHW.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 28,
+    "global_best_node_id": 21,
+    "global_best_score": [
+        1,
+        1,
+        0.6530324045801528
+    ]
+}

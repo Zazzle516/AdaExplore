@@ -1,0 +1,29 @@
+{
+    "node_id": 35,
+    "parent_node_id": 33,
+    "context_node_ids": [
+        33
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4726644219977554,
+    "max_reward": 0.4726644219977554,
+    "avg_reward": 0.4726644219977554,
+    "score": [
+        1,
+        1,
+        0.6994814814814816
+    ],
+    "small_guidance": "- Add `triton.autotune` over BLOCK_OC \u2208 {32,64,128}, BLOCK_SP \u2208 {64,128,256}, num_warps \u2208 {4,8}, num_stages \u2208 {2,3,4} for the fused conv kernel \u2014 current 64/256/8/3 may not be optimal for the 16\u00d716 pooled output (256 positions fits exactly in one BLOCK_SP=256 tile, so BLOCK_OC=128 with smaller BLOCK_SP could win).\n- The weight tile (OC\u00d7KH\u00d7KW=128\u00d725) is reloaded per `(N, sp_tile)` program; switch the loop order so the outer `ic` loop loads weight once into registers/shared and reuse across all 4 pool positions \u2014 already done, but consider hoisting the per-`(kh,kw)` weight load outside the spatial computation by loading the full `[BLOCK_OC, KH*KW]` weight tile per `ic` with `tl.load` of shape `[BLOCK_OC, 25]`.\n- In group_norm_kernel, GROUP_SIZE = 16ch \u00d7 256sp = 4096; bump BLOCK to 4096 (single-chunk reduction, no loop) with num_warps=8 to eliminate the two-pass loop overhead.",
+    "large_guidance": "- Restructure conv as an explicit im2col GEMM: one program computes `[BLOCK_OC, BLOCK_SP]` output tile via `tl.dot` over K=IC*KH*KW. ConvTranspose2d with stride=1 and pad=1 on a 5\u00d75 kernel produces a 34\u00d734 conv output \u2192 17\u00d717 pooled (current code uses H+KH-1-2P = 32+5-1-2 = 34, H_out=17, not 16). Using `tl.dot` over the K dimension exploits tensor cores and is far faster than the current scalar FMA loop over IC*KH*KW=1600.\n- Fold the 2\u00d72 maxpool into the GEMM epilogue by computing 4 output tiles (or by having each program own 2\u00d72 conv positions and reducing). Alternatively, fuse the entire pipeline (conv\u2192BN\u2192tanh\u2192pool\u2192GN) by making one persistent program per `(N, group)` that materializes the post-pool tile in shared memory then runs the GN reduction without a second kernel launch \u2014 GN is only 4096 elements per group, fits easily.\n- Use channels_last layout for weight `(OC, IC, KH, KW) \u2192 (IC*KH*KW, OC)` reshape and input gather so the GEMM-K axis is contiguous in weight and the GEMM-M (OC) axis is the fast-store axis.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 36,
+    "global_best_node_id": 16,
+    "global_best_score": [
+        1,
+        1,
+        0.9062588925559223
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 15,
+    "parent_node_id": 13,
+    "context_node_ids": [
+        13
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4162327844439855,
+    "max_reward": 0.4162327844439855,
+    "avg_reward": 0.4162327844439855,
+    "score": [
+        1,
+        1,
+        0.23392047166288008
+    ],
+    "small_guidance": "- The current kernel is row-tile persistent (one program per BLOCK_M rows streaming entire K\u00d7N). With M=1024, BLOCK_M=64 gives only 16 programs \u2014 severely underutilizing the 4090's 128 SMs. Drop BLOCK_M to 16 or 32 and add configs like `{BLOCK_M:16, BLOCK_N:128, BLOCK_K:64, num_warps:4}` and `{BLOCK_M:32, BLOCK_N:256, BLOCK_K:64, num_warps:8}` to get 32\u201364 programs in flight.\n- Hoist the bias load + scale/clamp into the K-accumulation epilogue only once per N-tile (already done) but also move `EVEN_N`/`EVEN_K` to `True` unconditionally for these shapes (8192 divisible by all tile sizes) so the masked branch is dead-code eliminated \u2014 currently `even_n` logic is correct but verify the autotuner doesn't pick a BLOCK_N that doesn't divide 8192.\n- Try `num_stages=5` with `BLOCK_K=32` since K=8192 is huge and the inner K-loop dominates; more pipeline stages should hide the W loads better.",
+    "large_guidance": "- Split-K is the right structural change: with M=1024, N=8192, K=8192, the work is GEMM-bound (\u2248137 GFLOPs) and the row-persistent strategy serializes the entire K reduction inside one program. Redesign as a 2D grid over (M-tile, N-tile) doing standard GEMM, write the [M,N] post-clamp tile to a scratch buffer (or do split-K with atomic add into a partial-max/partial-sumexp buffer), then a tiny second kernel does the LSE+mish reduction over N. This trades one extra [M,N] write for ~8\u00d7 more SM parallelism.\n- Alternatively, do a streaming split-N persistent design where each program owns (M-row-tile, N-column-stripe) and writes partial (max, sumexp) pairs to a small [num_n_programs, M] buffer; a second kernel combines them with the log-sum-exp merge formula. This keeps fusion of clamp/scale into the GEMM epilogue and gives ~64 concurrent programs.\n- Use `tl.dot` with `out_dtype=tl.float32` and consider TF32 inputs (`x.to(tl.float16)` accumulated in fp32) since the clamp at \u00b110 makes fp16 inputs numerically safe and would ~2\u00d7 the tensor-core throughput on the 4090.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 16,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.8922229236424055
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 13,
+    "parent_node_id": 6,
+    "context_node_ids": [
+        6
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM uses `input_precision=\"ieee\"` which disables TF32/tensor-core fast paths on fp32 \u2014 switch to the default (`\"tf32\"`) or remove the arg; on a 4090 this is typically a 3-5x speedup for the matmul which dominates this 1024\u00d78192\u00d78192 workload.\n- Add larger autotune configs (e.g. `BLOCK_M=256, BLOCK_N=128, BLOCK_K=64`, `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64`, num_warps=8, num_stages=3) since K=8192 benefits from bigger BLOCK_K to amortize the K-loop overhead.\n- In `gn_leaky_double`, CH_PER_G = 8192/512 = 16 \u2014 set `BLOCK=16` and `num_warps=1`; current power-of-2 rounding already gives 16, but ensure no wasted lanes and consider packing multiple groups per program (e.g. 8 groups/program) to reduce launch count from 512K to 64K.",
+    "large_guidance": "- The matmul is M=1024, N=8192, K=8192 \u2192 ~137 GFLOPs. With ieee fp32 it's compute-bound at ~10 TFLOPS on 4090 (~14ms), but TF32 tensor cores deliver ~80 TFLOPS (~2ms). A from-scratch rewrite should target TF32 `tl.dot` with BLOCK_K=64, num_stages=4, and a properly tuned block-swizzle.\n- Consider fusing GroupNorm+LeakyReLU+double into the GEMM epilogue: each row's 8192 outputs span 512 groups of 16 channels. Since each group is fully contained within a row, after computing a full row tile (BLOCK_M rows \u00d7 full N), a second pass / persistent kernel can do the reduction per group without a separate launch. Alternatively, store GEMM output, then launch a fused norm+activation that processes one (batch, group) per program with BLOCK=16.\n- Pack the GN kernel more aggressively: with 16 channels per group, use one warp per program processing many groups (e.g. 32 groups \u00d7 16 ch = 512 elements per program), each warp doing 32 independent reductions via segmented sum, cutting launch overhead 32\u00d7.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 14,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

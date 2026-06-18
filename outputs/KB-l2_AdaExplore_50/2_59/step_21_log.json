@@ -1,0 +1,31 @@
+{
+    "node_id": 21,
+    "parent_node_id": 20,
+    "context_node_ids": [
+        3,
+        4,
+        20
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The current design splits matmul + epilogue into two kernels with an fp32 scratch buffer and atomic_add for SPLIT_K>1; this wastes a full N*M write/read. Fuse bias+swish+scale into the matmul epilogue and restrict autotune to SPLIT_K=1 configs so the store path is a direct `tl.store` of the activated value (no atomics, no second kernel).\n- Keep weights in fp16 but accumulate in fp32 with `allow_tf32=True`; add larger tile configs targeting M=128 (batch dim is only 128, so BLOCK_M=128 fills it in one row-group). Useful configs: `(BLOCK_M=128, BLOCK_N=256, BLOCK_K=32/64, num_warps=8, num_stages=3-4)` and `(128,128,64,4w,4s)`. Drop the GROUP_M swizzle (M=128 \u2192 only 1 M-tile) or set GROUP_M=1.\n- Cast input x to fp16 once and cache it / or better, cast inside the kernel from fp32 via `tl.load(...).to(tl.float16)` to avoid an extra pre-pass; bias load can be hoisted outside the K loop and added once at epilogue.",
+    "large_guidance": "- Rewrite as a single fused `linear_swish_scale` kernel: one program per `(BLOCK_M, BLOCK_N)` tile that loops over K with `tl.dot` on fp16 operands, fp32 accumulator, then in the epilogue adds bias, applies `x*sigmoid(x)*scale`, and stores fp32 (or fp16) output. No scratch buffer, no second kernel, no atomics \u2014 SPLIT_K=1 with K=32768 is fine because M=128 yields very few tiles, and a persistent grid can keep SMs busy.\n- Consider a persistent-kernel design: launch `num_sms` programs that iterate over `(pid_m, pid_n)` tiles via a counter; with M=128 and N=32768, total tiles are small (e.g. 1\u00d7128=128 with BLOCK_N=256), so persistence reduces launch and tile-startup overhead and improves L2 reuse of A across N tiles.\n- Pre-transpose and store weight as fp16 in K-major layout once at init (already done); additionally pad/align N to 256 for clean vectorized loads. Optionally try bf16 weights \u2014 Ampere/Ada tensor cores hit the same throughput and bf16 avoids overflow concerns for the scaled output.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 22,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

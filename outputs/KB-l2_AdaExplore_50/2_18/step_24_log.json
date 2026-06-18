@@ -1,0 +1,31 @@
+{
+    "node_id": 24,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        1,
+        16,
+        23
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The atomic_add accumulates per-N-tile partial sums into a single fp32 cell per row; with N=8192 and BLOCK_N=128-256 that's 32-64 atomics per row racing. Atomics are correct in principle but the large max_difference (8454) suggests `out` may not be zero-initialized between trials or the kernel is being launched on a non-contiguous/cuda-mismatched bias. Ensure `out = torch.zeros(..., device=x.device)` happens every forward (it does), and that `x`, `Wt`, `B` are all on the same device as `linear.weight` \u2014 pre-move once in `__init__` instead of per-forward `.cuda()` which can desync if model wasn't moved.\n- Replace atomic_add with a two-stage reduction: stage 1 writes per-(m, n_tile) partial sums into a `(M, num_n_tiles)` scratch buffer (no atomics), stage 2 sums across n_tiles. This removes atomic contention on M=1024 cells and is also numerically deterministic.\n- Add larger-K configs (BLOCK_K=128) and a BLOCK_M=256/BLOCK_N=64 config for this square M=N=K=8192 shape; sweep num_stages=4-5.",
+    "large_guidance": "- The whole pipeline collapses to: `out[m] = sum_n (x @ W.T + b)[m,n]` since max/mean/logsumexp over a size-1 dim are identities. A cleaner kernel is a **split-K-style row-reduction GEMM**: one program per (M tile, K-split), each computing `sum_n (x[m,:] @ W[n,:].T + b[n])` for its K slice \u2014 but note we want to sum over n, not k. Equivalently, precompute `w_colsum[k] = sum_n W.T[k,n]` and `b_sum = sum_n b[n]` would be an algebraic shortcut \u2192 **forbidden by the safety contract**. Do NOT do that.\n- Instead, structure as: program per M-tile, loop over N-tiles in the outer loop and K in the inner loop, accumulating a (BLOCK_M,) row-sum register directly (sum the BLOCK_N axis of each tile before storing). This avoids materializing the full (M,N) output and avoids atomics entirely \u2014 single store per row at the end. With M=1024 only, grid is tiny (M/BLOCK_M programs), so use BLOCK_M=128 and num_warps=8 with persistent N-loop.\n- Alternative: fuse as a streaming kernel where each program owns a (BLOCK_M, full-N) row-strip and walks K in chunks, keeping a (BLOCK_M,) accumulator. With K=8192 and N=8192, register pressure is fine if BLOCK_M=64-128 and we tile N internally.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 25,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        0.8826896197781255
+    ]
+}

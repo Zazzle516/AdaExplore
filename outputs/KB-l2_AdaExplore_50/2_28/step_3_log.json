@@ -1,0 +1,27 @@
+{
+    "node_id": 3,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The instance norm logic is wrong: InstanceNorm2d over (B, C, 1, 1) normalizes per (B, C) over a single spatial element, but PyTorch's InstanceNorm with track_running_stats=False at training computes mean=x, var=0 giving NaN/0 \u2014 however the actual reference uses default InstanceNorm2d which has affine=False and track_running_stats=False, so output is (x-x)/sqrt(eps) = 0. Actually the reference produces y*y, but the measured avg_diff ~0.4 suggests the reference is NOT producing y*y. Check: InstanceNorm2d default has track_running_stats=False, so it computes batch statistics \u2014 with a single element, variance is 0, output is 0. Need to verify what PyTorch actually outputs; it may use unbiased=False giving var=0 \u2192 output = 0/sqrt(eps) = 0, so final = y*y. The correctness failure suggests the reference is treating the input differently \u2014 perhaps the unsqueeze creates (B, 1, 1, C) not (B, C, 1, 1). Look: x is (B, out_features), x.unsqueeze(1).unsqueeze(1) \u2192 (B, 1, 1, out_features). InstanceNorm2d with num_features=out_features expects channels at dim=1, but here channels are at dim=3! So PyTorch normalizes across the wrong axis \u2014 actually it normalizes per (N, C=1) over spatial H*W=1*out_features. Fix the kernel to match this: per-row normalization across the out_features dimension.\n- After fix: launch one program per batch row, reduce across C=out_features to compute mean and rstd, then apply (x-mean)*rstd, add y, multiply by y, store. Use BLOCK_C = 8192 (or tile if needed) with num_warps=8.\n- Keep the GEMM kernel; it's likely fine. Just fix the fused norm kernel semantics.",
+    "large_guidance": "- Redesign the fused post-GEMM kernel as a per-row reduction kernel: grid = (batch_size,), each program loads the full row of length out_features (8192 fits in registers/SMEM with tiling), computes mean and variance via two-pass or Welford, then writes (x-mean)*rsqrt(var+eps) + y, multiplied by y. This matches the true semantics where InstanceNorm normalizes over the 8192-element \"spatial\" dim due to the unsqueeze placement.\n- Consider fusing the bias-add and instance-norm into a single epilogue is hard since norm needs a full-row reduction after the GEMM completes; keep them as two kernels (GEMM \u2192 fused norm+add+mul).\n- For the row reduction with N=8192, use BLOCK_N=1024 or 2048 with a loop, num_warps=8, num_stages=2; accumulate sum and sum_sq in fp32 across tiles, then a second pass to normalize and apply the elementwise epilogue.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 4,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

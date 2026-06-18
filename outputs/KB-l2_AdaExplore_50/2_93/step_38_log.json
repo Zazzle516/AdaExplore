@@ -1,0 +1,31 @@
+{
+    "node_id": 38,
+    "parent_node_id": 5,
+    "context_node_ids": [
+        3,
+        4,
+        5
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (max_diff ~0.07 on 1/5 trials) is from the bias mask: `tl.load(bias_ptr + c_idx, mask=mask, other=0.0)` reads with the element mask, but `c_idx` for masked-out lanes can compute an arbitrary index that may be out of bounds, and more importantly `offsets // HW` on out-of-range offsets gives garbage `c_idx`. Clamp `c_idx` with `tl.where(mask, c_idx, 0)` before loading, and keep `other=0.0` so masked lanes are safe.\n- Once correct, try larger `BLOCK_SIZE` (16384) with `num_warps=8, num_stages=2` since the kernel is purely memory-bound on ~67M elements; also add a `num_warps=4, BLOCK_SIZE=8192` config.\n- Consider passing `HW` and `C` as `tl.constexpr` (they're fixed at 128\u00d7128 and 128) so the integer division becomes a constant-folded shift/mul, reducing index-math overhead.",
+    "large_guidance": "- The torch ConvTranspose2d dominates total runtime here (epilogue is trivially memory-bound). To break past `fast_p < 1`, replace `conv_transpose2d` with a custom Triton scatter-add kernel: one program per (N, IC-tile, input-spatial tile) computing `input \u00d7 weight` outer-product and `tl.atomic_add` into the output grid at `(oh = ih*stride + kh, ow = iw*stride + kw)`, with the bias+add+min+GELU+mul epilogue fused into a second pass (or into the final write if the scatter is partitioned to be conflict-free per output tile).\n- Alternative gather formulation: one program per (N, OC tile, output-spatial tile); for each output pixel `(oh, ow)` iterate `(kh, kw)` and check `(oh - kh) % stride == 0`, then read `input[n, :, (oh-kh)/stride, (ow-kw)/stride]` and accumulate against `weight[:, oc, kh, kw]`. This avoids atomics and fuses the entire epilogue (bias, +0.5, min(\u00b7,0), GELU, \u00d72) into the accumulator before the single store.\n- Use channels-last layout for both input and output so the IC/OC GEMM-K dimension is contiguous; tile `BLOCK_OC=64, BLOCK_HW=64, BLOCK_IC=32` and autotune. Fold the bias and constants into the epilogue on the register-resident accumulator \u2014 no second kernel pass needed.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 39,
+    "global_best_node_id": 35,
+    "global_best_score": [
+        1,
+        1,
+        1.9450703075170843
+    ]
+}

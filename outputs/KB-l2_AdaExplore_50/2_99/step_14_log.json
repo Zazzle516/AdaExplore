@@ -1,0 +1,29 @@
+{
+    "node_id": 14,
+    "parent_node_id": 8,
+    "context_node_ids": [
+        8
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5517856825296236,
+    "max_reward": 0.5517856825296236,
+    "avg_reward": 0.5517856825296236,
+    "score": [
+        1,
+        1,
+        1.3522318808693943
+    ],
+    "small_guidance": "- The matmul is the bottleneck (M=N=K=8192). Add larger tile configs to the autotune list: `BLOCK_M=128, BLOCK_N=256, BLOCK_K=32, num_warps=8, num_stages=4` and `BLOCK_M=256, BLOCK_N=128, BLOCK_K=32, num_warps=8, num_stages=4`, plus a `BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, num_warps=4, num_stages=5` variant \u2014 for 8192\u00b3 TF32 GEMMs, larger M*N tiles with deeper pipelining typically win on Ada.\n- Drop the inner-loop K masking: since K=8192 is divisible by all candidate BLOCK_K values, replace the masked `tl.load`s with unmasked loads in the hot loop (or split into a fast path when `K % BLOCK_K == 0`) to eliminate per-iteration mask compute and improve issue rate.\n- Tune `GROUP_M` (try 4, 8, 16) \u2014 at N=8192 and large tiles the L2 reuse pattern shifts; expose it as an autotune key or hardcode the best after a sweep.",
+    "large_guidance": "- The current matmul uses TF32 fp32 accumulation on fp32 inputs. A from-scratch rewrite should cast A and B to fp16 (or bf16) on load inside the kernel (or pre-cast `weight_t` to fp16 once at init, keeping fp32 master weights for correctness within 5e-2 tol) and use `tl.dot` with fp16 inputs + fp32 accumulator. This roughly doubles tensor-core throughput on Ada and should cut the GEMM time substantially.\n- Consider a split-K or stream-K GEMM: with M=N=K=8192 and only 64\u00d764 = 4096 output tiles at BLOCK=128, occupancy is fine, but stream-K can better balance SMs on the 4090's 128 SMs and hide tail effects. Persistent stream-K with fused bias+GELU epilogue is the strongest design.\n- Fuse the softmax with the GEMM epilogue when feasible: since each row's softmax needs all N=8192 outputs, a fully fused single-kernel approach requires either (a) a persistent per-row kernel that computes the full row's GEMM then softmax in registers/SMEM, or (b) a two-stage scheme where the GEMM writes to global and a single-pass softmax (N=8192 fits in one block with BLOCK_N=8192, num_warps=16) reads it back. Replace the two-pass online softmax with a single-pass kernel using BLOCK_N=8192 to halve softmax memory traffic.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 15,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        1.5478377504291179
+    ]
+}

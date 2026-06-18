@@ -1,0 +1,30 @@
+{
+    "node_id": 15,
+    "parent_node_id": 14,
+    "context_node_ids": [
+        3,
+        14
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.6004258986910327,
+    "max_reward": 0.6004258986910327,
+    "avg_reward": 0.6004258986910327,
+    "score": [
+        1,
+        1,
+        1.7535136642010192
+    ],
+    "small_guidance": "- The `tl.atomic_max` on a global `-inf` output is unnecessary since each row is owned by exactly one `pid_m`. Replace it with a within-program reduction across `pid_pt` by either (a) making the kernel persistent over the pooled-tile axis (loop over all `BLOCK_P` tiles inside one program per row block, accumulating max in registers and doing a single `tl.store`), or (b) keep atomics but switch output to be initialized once \u2014 the persistent variant should remove ~10-20% overhead.\n- Add larger-M autotune configs targeting `BLOCK_M=128, BLOCK_P=16, BLOCK_K=64` and `BLOCK_M=64, BLOCK_P=32, BLOCK_K=64` with `num_warps=8, num_stages=4`. With `PK_TOTAL = BLOCK_P * POOL_K = 16*16 = 256`, a 128\u00d7256 acc tile @ K=64 is a good fit for 4090 and reduces grid size / weight reloads.\n- Cache `wt` in `__init__` (once) instead of lazily on each forward \u2014 the current `_get_wt` check runs every call. Also drop the `.cuda()` calls in forward (assume input already on device) to remove host-side overhead from the timed path.",
+    "large_guidance": "- Make the kernel persistent along the pooled-tile axis: one program per `(BLOCK_M rows)`, looping internally over all `num_pt` pooled tiles. Keep a running `row_max` vector in registers, update it after each pooled tile's GELU+scale+pool-reduce, and do a single non-atomic `tl.store` at the end. This eliminates atomics and the `-inf` init, and lets the K-loop's `x_tile` be reused across all output tiles for that row block (load `x` once per K-step, iterate over output tiles inside).\n- Alternatively, restructure as a split-K / two-stage design only if K=8192 dominates: stage-1 computes the full GEMM+bias+pool+GELU+scale into a `[B, POOLED_LEN]` buffer with a tiled GEMM (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8), stage-2 is a fast row-reduce. Current fused approach is preferable since `POOLED_LEN=512` is small, but if register pressure blocks larger M tiles, splitting may unlock 128\u00d7128 GEMM tiles.\n- Consider loading `x` row-tile once and sweeping the output dimension as the inner-most loop (outer K, middle output-tile, inner accumulate) so that the `BLOCK_M \u00d7 BLOCK_K` x-tile is reused across all `num_pt` weight tiles \u2014 this is the persistent-row design and should noticeably cut DRAM traffic on x (batch_size\u00b7in_features = 32MB read once vs. `num_pt` times).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 16,
+    "global_best_node_id": 15,
+    "global_best_score": [
+        1,
+        1,
+        1.7535136642010192
+    ]
+}

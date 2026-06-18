@@ -1,0 +1,29 @@
+{
+    "node_id": 21,
+    "parent_node_id": 20,
+    "context_node_ids": [
+        20
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.43079174691358024,
+    "max_reward": 0.43079174691358024,
+    "avg_reward": 0.43079174691358024,
+    "score": [
+        1,
+        1,
+        0.354031912037037
+    ],
+    "small_guidance": "- The conv kernel computes 64 IC \u00d7 9 (KH\u00b7KW) = 576 inner iterations per (oc_tile, sp_tile) with no K-tiling reuse \u2014 try restructuring inner loops so the IC loop becomes a tl.dot over a [BLOCK_OC, BLOCK_IC] \u00d7 [BLOCK_IC, BLOCK_SP] GEMM (IC=64 fits as a single K-tile). Sweep BLOCK_OC \u2208 {32, 64}, BLOCK_SP \u2208 {64, 128, 256} with num_warps \u2208 {4, 8}, num_stages \u2208 {2, 3} via triton.autotune.\n- For GroupNorm, CPG\u00b7HW = 8 \u00b7 258\u00b7258 \u2248 533k; BLOCK_SIZE=1024 means ~520 iterations per program with reload of x in the second pass. Cache x in SRAM or use a single-pass Welford with online mean/var; alternatively raise BLOCK_SIZE to 2048 with num_warps=8 to reduce loop overhead.\n- Hoist `c_in_group = idx // HW` and the gather of weight/bias outside the per-iteration scope by precomputing once per channel block (idx step is BLOCK_SIZE, so c_in_group changes slowly) \u2014 or split the second pass loop along channel dimension to load w/b once per channel.",
+    "large_guidance": "- Replace the gather-style ConvTranspose with an explicit GEMM: since stride=1, ConvTranspose2d with kernel 3 is equivalent to a regular conv2d with the spatially-flipped weight on a zero-padded (pad=KH-1) input. Implement as an im2col-tiled GEMM with tl.dot \u2014 one program per (N, OC tile, OH\u00b7OW tile), accumulating IC*KH*KW as the GEMM-K dimension. This unlocks tensor-core-class throughput vs. the current scalar FMA loop.\n- Switch the layout to channels-last (NHWC) for the conv output so GroupNorm's reduction stride is contiguous along C-within-group; alternatively keep NCHW but fuse GroupNorm's first pass (sum, sumsq) into the conv epilogue by having each conv program atomically add partial stats to per-(N,G) accumulators, then run only a normalize-pass second kernel.\n- Persistent GroupNorm: with N\u00b7G = 128\u00b78 = 1024 programs and group_elems \u2248 533k, consider one program per (N, G) using a 2D tile that spans the full HW with multiple warps cooperatively reducing via tl.sum across a [CPG, BLOCK_HW] tile, avoiding the two full passes over global memory by keeping x resident in registers/SRAM across mean and normalize.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 22,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        1.4057149448529411
+    ]
+}

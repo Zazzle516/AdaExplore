@@ -1,0 +1,31 @@
+{
+    "node_id": 30,
+    "parent_node_id": 29,
+    "context_node_ids": [
+        10,
+        25,
+        29
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.6143541063555233,
+    "max_reward": 0.6143541063555233,
+    "avg_reward": 0.6143541063555233,
+    "score": [
+        1,
+        1,
+        1.8684213774330671
+    ],
+    "small_guidance": "- The GEMM is the bottleneck (M=1024, N=8192, K=8192). The fp16 store of the intermediate is fine, but consider casting `x` and `Wt` to fp16 once at init/forward and using fp16 inputs to `tl.dot` with fp32 accumulator \u2014 this doubles tensor-core throughput on Ada and should cut GEMM time roughly in half.\n- Add autotune configs targeting the exact shape: `BLOCK_M=64, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3/4` and `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4` \u2014 with M=1024 only, large BLOCK_M wastes tiles; smaller BLOCK_M with larger BLOCK_N gives more parallelism (32 row tiles \u00d7 32 col tiles = 1024 programs, good for 4090's 128 SMs).\n- The LSE+Mish kernel over 1024 rows of 8192 elements is tiny (~33MB read); set `BLOCK_N=8192` (full row, one pass, no loop), `num_warps=16`, `num_stages=1` to make it a single-pass register reduction and remove the running-max rescale logic overhead.",
+    "large_guidance": "- Precompute and store the Linear weight as fp16 (or bf16) transposed `[K, N]` contiguous at `__init__` time so the forward path skips the `.t().contiguous()` cache check and feeds tensor cores directly. Keep bias fp32 and apply in the fp32 accumulator epilogue. Input `x` can be cast to fp16 on entry (one cheap elementwise) \u2014 the GEMM is the dominant cost and fp16 tensor cores on 4090 are ~2\u00d7 faster than tf32.\n- Consider a split-K or stream-K GEMM: with M=1024, N=8192, K=8192, a standard tiled GEMM has only ~256 output tiles for 128-tile@(64,256) layout, which underutilizes SMs given the deep K loop. Split-K by 2-4 with an atomic-add or two-stage reduction can boost occupancy.\n- Fuse the entire epilogue (scale*2, clamp, and the per-row logsumexp-mish) by making the GEMM persistent per-row: launch one program per (row-tile) that iterates all N tiles, keeping the row's running max + sum_exp in registers, and emits the final scalar mish(lse) directly \u2014 eliminating the intermediate `[M,N]` materialization (~16MB write + read) entirely.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 31,
+    "global_best_node_id": 28,
+    "global_best_score": [
+        1,
+        1,
+        3.627338205272988
+    ]
+}

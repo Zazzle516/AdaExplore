@@ -1,0 +1,29 @@
+{
+    "node_id": 17,
+    "parent_node_id": 14,
+    "context_node_ids": [
+        14
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4444273092053943,
+    "max_reward": 0.4444273092053943,
+    "avg_reward": 0.4444273092053943,
+    "score": [
+        1,
+        1,
+        0.4665253009445028
+    ],
+    "small_guidance": "- The fused maxpool+mean+clamp kernel is already lean; the bottleneck is the upstream `nn.ConvTranspose3d`. Tuning BLOCK/num_warps on the tail kernel will not move fast_p meaningfully. If keeping current structure, fuse the `* scale` into the conv_transpose path (or merge it into `SCALE_DIV` as already done) and drop the `x.contiguous()` since cuDNN output is already contiguous.\n- For the tail kernel, since pooled_total = 8*16*16 = 2048 fits in one block, force `BLOCK=2048, num_warps=8, num_stages=1` and skip the outer loop entirely \u2014 that removes loop overhead.\n- Reorder grid to `(C, N)` or use `channels_last` strides so coalesced reads happen across the contiguous W axis (already W-contiguous, so current layout is fine).",
+    "large_guidance": "- The dominant cost (\u224890%+ of 19.4 ms) is `nn.ConvTranspose3d`. Replace it with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)`, compute the `input \u00d7 kernel` outer product, and `tl.atomic_add` into the output grid at `(od = id*stride - pad + kd, ...)`. Fold the `* scale` into the weight at init (`weight * scale`) so the epilogue is free. Add bias*scale once.\n- Alternative: gather-form ConvTranspose3d with one program per `(N, OC tile, OD*OH*OW tile)` doing the implicit-GEMM (sum over IC, KD, KH, KW with the divmod-stride validity check). Output is small enough (128*16*32*64*64 \u2248 268M elements \u2014 actually large) so scatter-add with atomics on the full output may be cheaper; alternatively, fuse the maxpool window directly: produce one pooled output element per program by gathering only the 8 conv-transpose positions in that 2\u00b3 window, eliminating the need to materialize the full conv output.\n- Best design: a single fused kernel that for each `(n, oc)` loops over the pooled grid (8\u00d716\u00d716=2048 windows), for each window computes the 8 conv-transpose outputs on-the-fly via implicit-GEMM over `(IC, KD, KH, KW)`, takes max, accumulates the sum, then divides+clamps. This avoids ever writing the 16\u00d732\u00d764\u00d764 conv-transpose tensor to global memory and collapses all four ops into one pass. Tile over OC (e.g. BLOCK_OC=16 = full out_channels) so the inner IC*KD*KH*KW reduction is a small dot product.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 18,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.46894253048307527
+    ]
+}

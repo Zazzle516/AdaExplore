@@ -1,0 +1,29 @@
+{
+    "node_id": 25,
+    "parent_node_id": 22,
+    "context_node_ids": [
+        22
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4890354752509519,
+    "max_reward": 0.4890354752509519,
+    "avg_reward": 0.4890354752509519,
+    "score": [
+        1,
+        1,
+        0.8345426708203529
+    ],
+    "small_guidance": "- The conv-transpose kernel parallelizes only over `(N*OC, OD*OH, OW-tile)` which is 128*16*OD*OH=large but each program does a tiny amount of work (IC=3, KD*KH*KW=27, OW tile). Add autotune configs with larger `BLOCK_OW` (256) and try `num_stages=4`; also add a `BLOCK_OH` tile so each program covers multiple OH rows and amortizes the kd/kh index math.\n- Replace the inner `tl.static_range(IC)` scalar loads with a vector load over IC (IC=3, pad to 4) so the weight/input gather becomes one masked load per (kd,kh,kw) instead of three serial loads; this cuts memory transactions ~3x.\n- For `fused_pool_bias_scale_kernel`, PH*PW=256 fits one block \u2014 drop the `mask` branch by making `BLOCK_HW` a constexpr equal to PH_C*PW_C (power-of-two=256) and bump `num_warps=8`; also collapse the (n,c,pd) grid into a 1D grid for better SM occupancy.",
+    "large_guidance": "- Rewrite ConvTranspose3d as an im2col-style implicit GEMM in `channels_last` layout: one program per `(N, OD*OH*OW tile, OC tile)` accumulating `K = IC*KD*KH*KW = 81` via `tl.dot` with `BLOCK_M=64, BLOCK_N=16(OC), BLOCK_K=32`. This uses tensor cores and dramatically outperforms the current scalar gather (which does N*OC*OD*OH*OW*27*3 scalar FMAs with no tl.dot).\n- Fuse the entire epilogue (scale1 already folded into weight, then avg-pool 2\u00b3, bias, scale2) directly into the conv-transpose kernel: have each program emit pooled outputs by tiling output in units of 2 along D/H/W and accumulating the 8 contributing positions in registers before writing \u2014 this removes the intermediate `conv_out` allocation (N*OC*OD*OH*OW = 128*16*31*63*63 \u2248 250M floats) and its memory traffic, which is likely the dominant cost.\n- Alternatively, since stride=2 makes the transposed conv output naturally align with the 2\u00b3 pool window, reformulate as a gather kernel keyed on the pooled output grid: for each pooled output voxel, the 8 contributing transpose-conv outputs map to a fixed small set of input voxels with known kernel offsets \u2014 fuse pool+bias+scale into one kernel that writes only the pooled tensor (~30M elements) directly.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 26,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        12.676097665615142
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 28,
+    "parent_node_id": 27,
+    "context_node_ids": [
+        26,
+        27
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4851941121856867,
+    "max_reward": 0.4851941121856867,
+    "avg_reward": 0.4851941121856867,
+    "score": [
+        1,
+        1,
+        0.8028514255319149
+    ],
+    "small_guidance": "- The fused bias+tanh tail is already cheap; the runtime is dominated by `nn.ConvTranspose2d` (cuDNN). Tuning BLOCK/num_warps on the tail kernel won't materially move `fast_p` from 0.80.\n- If keeping the tail, try BLOCK=8192, num_warps=8, num_stages=2, and compute `pid_c` without the `% C` (since N*C*HW contiguous \u2192 `(offs // HW) % C` is fine but the `% C` can be hoisted via a 2D grid `(N*C, HW/BLOCK)` so bias is loaded once per program from scalar `pid // (N) ...`).\n- Use a 2D launch where program_id(0) indexes (n*C + c) and program_id(1) tiles HW; load bias as a single scalar per program (no gather), and read/write in fp32 contiguous.",
+    "large_guidance": "- Replace `nn.ConvTranspose2d` with a custom Triton scatter-add kernel: for each input element `x[n, ic, ih, iw]`, scatter-add `x * W[ic, oc, kh, kw]` into the output grid at `(n, oc, ih*stride - pad + kh, iw*stride - pad + kw)`, then fuse `- bias` and `tanh` into the final write. With stride=2, kernel=4, pad=1, out_pad=1, output is 2x input spatial; a gather formulation (one program per output tile) is cleaner: iterate over (kh, kw) pairs that land on each output pixel and accumulate from input.\n- Prefer the gather/output-stationary form: tile over (N, OC_block, OH_tile, OW_tile); for each output pixel compute the set of (ih, iw, kh, kw) that contribute (these are determined by (oh+pad) % stride and (ow+pad) % stride), GEMM-reduce over IC with BLOCK_K=32-64, then epilogue `(acc - bias[oc])` \u2192 `tanh` \u2192 store. Use channels_last so IC reduction is contiguous.\n- Autotune over BLOCK_OC in {32,64}, BLOCK_SPATIAL in {32,64,128}, BLOCK_K in {16,32,64}, num_warps in {4,8}, num_stages in {2,3}. Fold bias subtraction and tanh into the accumulator epilogue before the final store \u2014 never as a separate kernel.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 29,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        1.1098240294117647
+    ]
+}

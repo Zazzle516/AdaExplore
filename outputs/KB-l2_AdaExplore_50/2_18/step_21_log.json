@@ -1,0 +1,31 @@
+{
+    "node_id": 21,
+    "parent_node_id": 20,
+    "context_node_ids": [
+        3,
+        4,
+        20
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The kernel is incorrect: `tl.atomic_add` accumulates row partials across N-tiles into a fp32 zero-initialized buffer, but the bias `b` is added inside every N-tile, so bias is summed `ceil(N/BLOCK_N)` times instead of once. Add bias only on `pid_n == 0` (or add bias scaled by 1/num_n_tiles, or better, add bias once outside the loop by storing into a separate buffer).\n- Also, `acc = tl.where(mask_n[None, :], acc, 0.0)` zeros the masked-N lanes but the bias was already loaded with `other=0.0` so that's fine; the real bug is double-counting bias across N-tile programs. Fix by guarding: `if pid_n == 0: acc += b[None, :]` before the reduction-add, while still computing the dot for that tile.\n- Once correct, raise BLOCK_K to 128\u2013256 and try BLOCK_M=64, BLOCK_N=256, num_warps=8, num_stages=3 for the 1024\u00d78192\u00d78192 shape.",
+    "large_guidance": "- Reformulate as: compute `y = x @ W.T` per-row-sum directly by precomputing `w_colsum = W.sum(dim=0)` is a forbidden algebraic shortcut \u2014 do NOT do this. Instead, keep the full GEMM and fuse a row-reduction epilogue: launch a 1D grid over M-tiles only, with each program looping over the full K dimension (since K=8192 fits well) and accumulating an (BLOCK_M, BLOCK_N) tile, then `tl.sum(axis=1)` and atomic-add \u2014 but to avoid the bias double-count, split-K style: have one program per (M-tile, N-tile) write row partials into a `(num_m_tiles, num_n_tiles, BLOCK_M)` buffer, then a tiny second kernel adds bias-sum once and reduces across N-tiles.\n- Alternatively, use a single-program-per-M-tile design that loops over both K and N inside the kernel (N=8192 is large but feasible with BLOCK_N=128 and an outer N loop). This eliminates atomics and the bias double-count entirely, and lets bias be added exactly once per row.\n- The downstream ops (max/mean/logsumexp on a (M,1) tensor) are no-ops mathematically but must still execute \u2014 keep them as cheap pointwise torch ops on the (M,1) result, not folded away.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 22,
+    "global_best_node_id": 11,
+    "global_best_score": [
+        1,
+        1,
+        0.6167747552424558
+    ]
+}

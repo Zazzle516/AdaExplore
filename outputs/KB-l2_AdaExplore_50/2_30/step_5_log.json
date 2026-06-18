@@ -1,0 +1,29 @@
+{
+    "node_id": 5,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (avg diff ~2e-4, max ~1.7e-3) suggests numerical precision issue in GroupNorm, likely due to small variance computation. With C_PER_G=512, the two-pass reduction should be fine, but check that `eps` is passed as `tl.constexpr` or that the kernel signature properly types it as fp32 \u2014 passing as Python float positional can introduce precision drift. Also recompute variance with `E[x^2] - mean^2` cautiously or use the current `(x-mean)^2` form (which is already done). Verify `mask` is applied correctly when reducing \u2014 `tl.where(mask, x - mean, 0.0)` looks right but `x` itself was loaded with `other=0.0`, so `sum_x` already includes zeros that contaminate mean if BLOCK_CG > C_PER_G. For C_PER_G=512 (power of two), BLOCK_CG==C_PER_G so mask is full \u2014 should be fine. The diff likely comes from `hmin`/`hmax` being passed as untyped Python floats; pass them as `tl.constexpr` or cast to fp32 explicitly.\n- Try GEMM tile `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64` with num_warps=8, num_stages=3 \u2014 K=8192 is large so deeper pipelining helps; add a GROUP_M=8 swizzle for L2 reuse.\n- Avoid the `Bt = weight.t().contiguous()` transpose per forward \u2014 cache it as a buffer in `__init__`, or load weight with transposed strides directly in the kernel.",
+    "large_guidance": "- Rewrite GEMM with proper L2 swizzling (GROUP_M) and a persistent-K loop using `tl.dot` with `acc=acc` accumulator pattern; pass `hardtanh_min`/`hardtanh_max` and `eps` as `tl.constexpr` to bake into PTX.\n- Consider fusing the bias add into the GEMM epilogue (already done) but also storing GEMM output directly to a buffer that the GN kernel consumes contiguously row-major; ensure GN kernel uses one program per `(row, group)` with the full 512-element group resident, num_warps=8.\n- For correctness, ensure the GN kernel computes mean/var in fp32 strictly and that scalar args `eps, hmin, hmax` are typed \u2014 make them `tl.constexpr` to avoid implicit-type fp issues. Cross-check against torch by running a single sample through both paths and inspecting per-group mean/var.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 6,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

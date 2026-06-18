@@ -1,0 +1,30 @@
+{
+    "node_id": 50,
+    "parent_node_id": 46,
+    "context_node_ids": [
+        42,
+        46
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4724797038406334,
+    "max_reward": 0.4724797038406334,
+    "avg_reward": 0.4724797038406334,
+    "score": [
+        1,
+        1,
+        0.6979575566852256
+    ],
+    "small_guidance": "- The current kernel passes `bias` twice (as `b_ptr` and `bn_bias_ptr`) and never reads `b_ptr` \u2014 this is benign but confusing; more importantly, `bn_scale` is being multiplied again in the epilogue when the bias already folds it. Verify the BN fold: `out = scale*conv + folded_bias` should be a single FMA in epilogue with `bn_scale` and `(scale*conv_bias + bn_bias - scale*running_mean)`, not a re-scale. Fixing this lets you drop a load and align with a cleaner epilogue.\n- Add autotune configs with larger `BLOCK_SP` (512) and `BLOCK_OC` (32/64) plus `num_stages=3`, since H_out*W_out is small (~28*28=784) and OC=128 \u2014 one program covering all spatial with `BLOCK_SP=1024` and `BLOCK_OC=128` could fit. Also try `IC_TILE=32` to see if smaller K loops with more stages pipeline better on Ada.\n- For the maxpool+GN kernel, `group_size` here is `16 * 14*14 = 3136`, so `BLOCK=4096` with `num_warps=8` (not 16) is the right pick on a 4090; reduce `num_warps` cap and add `num_stages=2`.",
+    "large_guidance": "- Switch ConvTranspose2d to a true scatter-add formulation (input \u00d7 kernel outer product scattered into the output grid) instead of the current gather-with-flipped-indices direct conv. With stride=1 the gather works but a scatter over `(N, IC tile, H_in*W_in tile)` \u00d7 `(KH*KW, OC)` GEMM, accumulating into a workspace, often maps better when OC>IC and KH*KW is small. Alternatively, keep gather but reshape weight once at init to `(OC, IC*KH*KW)` and run a single tiled GEMM over `(N*H_out*W_out, OC)` with implicit im2col \u2014 eliminates the `KH*KW` outer loop overhead.\n- Use channels-last (NHWC) layout end-to-end: store `conv_out` as NHWC so the maxpool+GN kernel can load 4 spatial neighbors with contiguous channel vectors, and the conv epilogue writes coalesced along OC. This also lets the GN reduction tile cleanly over channels-per-group with vector loads.\n- Fuse maxpool into the conv kernel's epilogue when `BLOCK_SP` covers a 2\u00d72-aligned tile: produce pooled output directly, eliminating the intermediate `conv_out` tensor (N*OC*H_out*W_out = 512*128*28*28 \u2248 51M floats of memory traffic). Then a separate GN-only kernel reads the much smaller pooled tensor.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 51,
+    "global_best_node_id": 16,
+    "global_best_score": [
+        1,
+        1,
+        0.9062588925559223
+    ]
+}

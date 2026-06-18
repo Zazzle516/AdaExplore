@@ -1,0 +1,30 @@
+{
+    "node_id": 34,
+    "parent_node_id": 32,
+    "context_node_ids": [
+        29,
+        32
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The linear kernel uses `input_precision='ieee'` which disables tensor cores on Ampere/Ada \u2014 switch to `tf32` (or remove the arg, default is tf32) for an immediate ~3-5x speedup on the GEMM, which dominates the 5.22ms runtime (1024x8192x8192 = 137 GFLOPs).\n- Add larger autotune configs tuned for square 8192x8192 GEMM: `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3` and `BLOCK_M=256, BLOCK_N=128, BLOCK_K=64, num_warps=8, num_stages=3`; drop the tiny 64x64 configs that won't win at this size.\n- In `gn_lrelu_double_kernel`, CH_PER_GROUP = 8192/512 = 16, so BLOCK=16 with num_warps=1 is sufficient; current num_warps=4 wastes 3 warps per program. Also consider processing multiple groups per program to amortize launch overhead (524288 programs is excessive).",
+    "large_guidance": "- The GEMM is the bottleneck at this shape (1024x8192 @ 8192x8192). A from-scratch rewrite should use tensor-core `tl.dot` with tf32 precision, persistent scheduling across SMs (128 SMs on 4090), and split-K only if M=1024 underfills (it likely doesn't with BLOCK_M=128). Use a Stream-K or persistent grid with `GROUP_M=8` swizzle and `BLOCK_K=64` to keep the K-loop loads pipelined with 3-4 stages.\n- Consider fusing the bias add + GroupNorm reduction into a producer epilogue only partially: since GN reduces over 16 channels (one group) which is much smaller than BLOCK_N, fusion is awkward. Instead, ensure the GEMM writes are coalesced and the GN kernel reads back contiguous rows; collapse the GN kernel to process a full row (all 512 groups) per program with one warp per group via 2D tiling, reducing launch overhead from 512K to 1K programs.\n- If GEMM is still bound by global memory after tf32, try `BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, num_stages=4, num_warps=4` and ensure weight is stored in a layout where the K-dim is contiguous (it already is for nn.Linear \u2014 weight is [N,K] row-major), so the `tl.trans(w)` in the inner loop is fine but could be replaced with loading w as [K,N] tile directly.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 35,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 36,
+    "parent_node_id": 35,
+    "context_node_ids": [
+        28,
+        35
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4401148055555556,
+    "max_reward": 0.4401148055555556,
+    "avg_reward": 0.4401148055555556,
+    "score": [
+        1,
+        1,
+        0.4309471458333333
+    ],
+    "small_guidance": "- The current kernel keeps the torch ConvTranspose3d (which dominates ~40ms of runtime) and only fuses the tail. Tuning the tail kernel further (block sizes, warps) cannot recover the conv cost \u2014 small tuning has near-zero headroom here.\n- If staying with this structure, at least try BLOCK_D=32 with num_warps=2 (D=32 fits exactly, narrow row), and consider one program per (B, HW-tile) processing multiple HW elements to amortize launch overhead on the 16*16384=262144 grid.\n- Make sure the tail kernel reads the conv output in channels-last-friendly stride; currently strided loads across channels (stride=D*HW) are non-coalesced.",
+    "large_guidance": "- The dead `fused_conv_mean_kernel` should become the actual forward path: write a custom ConvTranspose3d kernel that materializes (B, OC, D_out, H, W) \u2014 or, better, fuses the depth-mean directly so D is never written. Use scatter-add of input \u00d7 weight outer product into output, or equivalently a gather formulation since stride=1, padding=1, kernel=3 makes output spatial dims equal to input's.\n- Fuse the entire chain in one kernel: one program per (B, OC-tile, HW-tile) accumulates \u03a3_{ic, kd, kh, kw} w[ic,oc,kd,kh,kw] * x[b,ic,d-kd+1,h-kh+1,w-kw+1] over all valid d, divides by D, adds bias, then a second pass (or a 2-stage persistent kernel) does softmax across OC + tanh + scale. With OC=64 the channel axis fits in registers, so a single program per (B, HW-tile) handling all OC is feasible and removes the intermediate tensor entirely.\n- Use a GEMM-style tile: BLOCK_HW=64-128, all 64 OC in registers, K-loop over IC*kd*kh*kw=16*27=432. Hoist d-mean by accumulating directly into the OC\u00d7HW tile (no D dimension stored). This replaces the ~40ms cuDNN call with a single fused kernel and is where the headroom lives.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 37,
+    "global_best_node_id": 24,
+    "global_best_score": [
+        1,
+        1,
+        2.8571081491712707
+    ]
+}

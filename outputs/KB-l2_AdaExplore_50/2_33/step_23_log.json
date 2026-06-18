@@ -1,0 +1,29 @@
+{
+    "node_id": 23,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure is likely from the B matrix strides: `nn.Linear.weight` is `(N, K)` row-major, so `W.stride(0)=K, W.stride(1)=1`. The kernel is called with `stride_bk=1, stride_bn=K`, which treats W as if it were `(K, N)` \u2014 this is correct as long as we interpret B as W^T, but verify that `b_ptrs = B_ptr + offs_k[:, None]*1 + offs_n[None,:]*K` actually loads `W[offs_n, offs_k]`. That gives B[k,n] = W[n,k], which IS W^T \u2014 correct. The small numerical drift (~0.002 max diff) suggests the issue is BN: `F.batch_norm` in training mode updates running stats \u2014 this should still be numerically correct vs reference. Re-check by passing `W.stride(0)` and `W.stride(1)` explicitly rather than hardcoding `1, K`.\n- Tighten autotune by pruning to 2-3 best configs for M=N=K=8192/1024 (e.g. BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4) to reduce autotune overhead on first call.\n- Use `tl.load` without masks on the K loop when K is divisible by BLOCK_K (8192 is divisible by 32/64) \u2014 saves mask compute in the hot loop.",
+    "large_guidance": "- Fuse the BatchNorm directly into Triton instead of falling back to `F.batch_norm`. In training mode, do a two-pass: (1) GEMM+scale writes `out` and a per-column partial sum/sum-of-squares (or a separate reduction kernel over `out`), (2) an apply kernel computes `(x-mean)/sqrt(var+eps)*w+b` and updates running stats. The BN reduction over M=1024 per column is cheap and can be a single-program-per-column kernel.\n- Alternatively, since `out` is materialized anyway, launch a dedicated `bn_stats_kernel` (one program per N column, reducing over M) followed by `bn_apply_kernel` (already drafted but unused). Make sure to use the unbiased estimator (`var * M / (M-1)`) for updating `running_var` to match PyTorch.\n- Consider a split-K GEMM since K=8192 is large and M=1024 only yields 8 row-tiles at BLOCK_M=128 \u2014 there may be insufficient parallelism. A persistent/split-K scheme could better fill the 4090's SMs.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 24,
+    "global_best_node_id": 12,
+    "global_best_score": [
+        1,
+        1,
+        0.5658960882834168
+    ]
+}

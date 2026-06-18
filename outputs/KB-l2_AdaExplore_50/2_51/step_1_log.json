@@ -1,0 +1,27 @@
+{
+    "node_id": 1,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.47993175930382664,
+    "max_reward": 0.47993175930382664,
+    "avg_reward": 0.47993175930382664,
+    "score": [
+        1,
+        1,
+        0.7594370142565696
+    ],
+    "small_guidance": "- The dominant cost is the GEMM-fused-reduction kernel: B=2048, N=K=8192. Try larger M tiles to amortize the K-loop; add configs like `BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, num_warps=8, num_stages=3/4` and `BLOCK_M=128, BLOCK_N=64, BLOCK_K=64`. The current `BLOCK_M=16/32` under-utilizes SMs given B=2048.\n- Swap the loop order: make K the outer loop and N the inner loop so each `x_tile` load is reused across N tiles, OR persist the row-sum across N tiles and accumulate `acc` over K in `tl.dot` first (standard GEMM K-loop), then fuse bias-sub and reduce \u2014 this halves redundant x loads.\n- Pre-transpose W to (K, N) once in `__init__` (store as a buffer) so the inner load is contiguous along N (`stride_wk=N, stride_wn=1`); this enables fully coalesced B-operand loads in `tl.dot` and unlocks the bigger BLOCK_N tiles.",
+    "large_guidance": "- Restructure as a single fused \"row-reduced GEMM\" kernel: one program per row tile (BLOCK_M rows), persistent across the entire N dimension. Inner standard GEMM loop accumulates `acc[BLOCK_M, BLOCK_N]` over K via `tl.dot`, then in the N-tile epilogue adds bias-sub, reduces along N into a running `row_sum`, and finally writes `gelu(row_sum / N)` once. Avoid recomputing x loads for every N tile by making K the inner dot loop and N the outer tile loop with x cached implicitly through num_stages pipelining \u2014 or split-K with atomics if K-tile reuse matters more.\n- Fuse the residual-add epilogue: instead of a second kernel, have the GEMM-reduce kernel write `s[b]` to shared memory / a small scratch, then issue a second grid that streams x and adds s; or better, since output = x + gelu(mean(...)), launch the add kernel with 2D grid sized to (B, K/BLOCK) using a large BLOCK (4096-8192) and num_warps=8 \u2014 this is pure bandwidth (2048*8192 fp32 = 64MB read + 64MB write).\n- Consider split-K parallelism: with K=N=8192 and only B=2048, a single-program-per-row-tile design leaves SMs idle. Split the N reduction across multiple programs per row tile, use `tl.atomic_add` into `row_sum`, then a tiny second kernel applies `/N` and GELU. This exposes ~4-8\u00d7 more parallelism on the 4090's 128 SMs.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 2,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.7594370142565696
+    ]
+}

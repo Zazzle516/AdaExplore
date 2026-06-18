@@ -1,0 +1,29 @@
+{
+    "node_id": 4,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.04550385372340426
+    ],
+    "small_guidance": "- Add a `triton.autotune` sweep over (BLOCK_OC \u2208 {32,64,128}, BLOCK_SP \u2208 {64,128,256}, num_warps \u2208 {4,8}, num_stages \u2208 {2,3,4}); current 32\u00d7128\u00d74w is likely far from optimal for OC=128, SP=110k.\n- Hoist the `oc_offs * w_oc_stride` computation out of the IC loop and load the weight tile once per (kd,kh,kw) over the IC dim as a 2D tile, then `tl.dot` against an x tile of shape [IC, BLOCK_SP] \u2014 this turns the inner scalar-broadcast multiply into a real GEMM and is the single biggest win available without a redesign.\n- Switch the kernel/weight reshape so weight is laid out as (KD*KH*KW, OC, IC) contiguous, enabling coalesced 2D loads of [BLOCK_OC, IC_TILE] per kernel-tap; combine with an IC tile (e.g. IC_TILE=16 or 32) to feed `tl.dot`.",
+    "large_guidance": "- Redesign as an explicit im2col-style GEMM: for each output tile, compute which input (n, ic, id, ih, iw) contributes (the gather indices for the transposed conv given stride/padding) and form an [IC*KD*KH*KW, BLOCK_SP] implicit column tile, multiplying by a [BLOCK_OC, IC*KD*KH*KW] weight tile via `tl.dot`. This replaces the current outer-product accumulator with tensor-core MMAs and should give >10\u00d7 speedup.\n- Alternative: scatter-add formulation \u2014 one program per (N, IC tile, input-spatial tile) computes the input\u00d7weight outer product and atomically adds into the OC\u00d7OD\u00d7OH\u00d7OW grid. With stride=2 the output footprint per input voxel is small (KD*KH*KW=27 outputs) and atomics on 4090 are cheap; this avoids the divisibility-check waste in the gather (only 1/8 of (kd,kh,kw,od,oh,ow) combinations satisfy the stride alignment).\n- Use channels_last3d (NDHWC) layout for both input and output so the IC and OC axes are the contiguous GEMM-K / GEMM-M dims; current NCDHW makes IC strides huge and prevents vectorized loads across IC.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 5,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.3363587614678899
+    ]
+}

@@ -1,0 +1,27 @@
+{
+    "node_id": 1,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4615135892857143,
+    "max_reward": 0.4615135892857143,
+    "avg_reward": 0.4615135892857143,
+    "score": [
+        1,
+        1,
+        0.6074871116071429
+    ],
+    "small_guidance": "- The current GEMM has M=OC (\u2264128) and N=OH*OW (=15876), so BLOCK_M tiles larger than 128 are wasted. Bias the autotune list toward small-M / large-N configs like `(BLOCK_M=32, BLOCK_N=128, BLOCK_K=32, num_warps=4)` and `(BLOCK_M=64, BLOCK_N=128, BLOCK_K=32, num_warps=8, num_stages=3)`; drop the BLOCK_M=128 configs since OC=128 means at most 1 M-tile.\n- The K loop is small (IC*KH*KW = 576). Try fully unrolling the KH/KW dims \u2014 make the outer loop only over IC with `BLOCK_K = KH*KW = 9` rounded to 16, so kh/kw are compile-time constants and `tl.dot` operates on a denser packed K dim. Alternatively bump BLOCK_K to 64 to halve loop iterations.\n- Swap the program-id ordering to `(pid_b * num_n + pid_n, pid_m)` or use 2D grid with N*B fused, to improve L2 reuse of weights across the batch dimension; also pass `OH*OW` as a constexpr so the `oh = offs_n // OW` divisions become cheaper.",
+    "large_guidance": "- Switch to NHWC (channels-last) layout end-to-end: permute the input once on entry and store output as NHWC, then permute back. This makes the GEMM-K dimension (IC) contiguous so each `tl.load` of x is a single coalesced vector load instead of the current strided gather across IC. With IC=64 and KH*KW=9, K=576 is well-suited to a contiguous channels-last im2col.\n- Make the kernel persistent over batch: one program iterates over `n` in a loop while keeping the weight tile in registers/SMEM. With N=128 batches sharing the same 128\u00d7576 weight matrix, weight reuse is the dominant optimization left \u2014 currently each (pid_m, pid_b) pair reloads weights from HMEM.\n- Consider an implicit-GEMM formulation where the program tiles over (N*OH*OW, OC) with N folded into the spatial dim, so a single launch sees a much larger M dimension (128*15876 \u2248 2M) and the standard large-M/large-N GEMM tiles (e.g. 128\u00d7128\u00d732) become productive; fuse bias+ReLU+extra-bias in the epilogue as today.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 2,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.6074871116071429
+    ]
+}

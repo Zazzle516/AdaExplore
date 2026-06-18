@@ -1,0 +1,29 @@
+{
+    "node_id": 23,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5857069128046476,
+    "max_reward": 0.5857069128046476,
+    "avg_reward": 0.5857069128046476,
+    "score": [
+        1,
+        1,
+        1.6320820306383421
+    ],
+    "small_guidance": "- The dominant cost is the GEMM (2048\u00d78192\u00d78192). Increase tile sizes and add larger autotune configs (e.g. BLOCK_M=128/BLOCK_N=256/BLOCK_K=64 with num_warps=8, num_stages=4; BLOCK_M=256/BLOCK_N=128/BLOCK_K=32). Also raise SPLIT_K to 16 or expose it in autotune since each split currently does 1024 columns over the full K=8192.\n- Add a GROUP_M block-swizzle (e.g. GROUP_M=8) in `gemm_reduce_split_kernel` for better L2 reuse across N tiles in the same row group.\n- Fuse the residual add into `add_scalar_kernel` already (it is), but tune by removing `mask_k` when K is divisible by BLOCK and by enlarging BLOCK to 16384 with num_warps=8 to reduce launch count for the 2048-row epilogue.",
+    "large_guidance": "- The mean\u2192logsumexp(dim=1 over a single element)\u2192GELU chain reduces to GELU(mean) per row \u2014 a scalar per row. So the structural work is just `Y = GEMM(x,W) + bias - sub`, then row-reduce to a scalar, GELU, and broadcast-add to original x. A from-scratch design should be a single split-K GEMM-then-row-reduce kernel that never materializes Y: each program tile accumulates `tl.sum(acc - sub + bias, axis=1)` directly into a per-row partial, with atomic add or a 2-stage finalize. Current code already does this but writes Y-free; ensure no Y is materialized and tighten the finalize.\n- Consider a persistent-CTA streaming-K design: persistent programs each owning a row-stripe, looping over K then N, accumulating one fp32 scalar per row in registers \u2014 eliminates the partial buffer and the finalize launch entirely. With M=2048 rows and 128 SMs, one program per (row-block of 16 rows) keeps the row sum resident.\n- Fuse the residual add into the same finalize path: after computing GELU(scalar) per row, broadcast-add to the original x in-place in a single kernel that also reads x. This removes the separate `add_scalar_kernel` launch and one full pass over the 2048\u00d78192 input tensor.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 24,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        1.6320820306383421
+    ]
+}

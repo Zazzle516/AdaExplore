@@ -1,0 +1,30 @@
+{
+    "node_id": 45,
+    "parent_node_id": 44,
+    "context_node_ids": [
+        35,
+        44
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.47381946424242427,
+    "max_reward": 0.47381946424242427,
+    "avg_reward": 0.47381946424242427,
+    "score": [
+        1,
+        1,
+        0.70901058
+    ],
+    "small_guidance": "- Drop `allow_tf32=False` on `tl.dot` \u2014 TF32 is fine for the loose tolerance and roughly doubles tensor-core throughput on Ada. Also load `x`/`w` as fp16/bf16 inputs into `tl.dot` only if you keep fp32 accum; otherwise just enabling TF32 is the easy win.\n- Add larger autotune configs biased toward this shape (N*OH*OW=128\u00b7126\u00b7126\u22482M, OC=64, IC*KH*KW=72): try `BLOCK_N=128/256, BLOCK_OC=64, BLOCK_IC=16` with `num_warps=4` (OC=64 is small, 8 warps over-subscribes), and add `num_stages=4`. Also try swapping program-id order so `pid_oc` is the fast axis for better L2 reuse of weights.\n- Hoist `n_idx*stride_on + oh_idx*stride_oh + ow_idx*stride_ow` once before the store, and precompute `x_base` and `w_base` outside the kh/kw loop using `stride_xh*kh + stride_xw*kw` table \u2014 current code already does this but the per-(kh,kw) `x_off` recompute can be reduced by accumulating along kw.",
+    "large_guidance": "- Switch to an implicit-GEMM with K-loop over `IC*KH*KW` (single reduction axis) rather than nested static KH/KW loops with K=BLOCK_IC=16. With IC=8, current K per dot is 8 (padded to 16) \u2014 tensor cores want K\u226532. Collapsing to one K loop with `BLOCK_K=32 or 72` (the full K=IC\u00b7KH\u00b7KW=72) lets a single `tl.dot` cover all kh,kw,ic, dramatically improving MMA utilization.\n- Use channels-last (NHWC) input layout: permute `x` to NHWC once in `forward` and reshape weight to `(OC, KH*KW*IC)`; then the inner-K load becomes a contiguous vector over the channel axis and coalesces perfectly. Current NCHW gather has stride_xc=H*W=16384 between channel elements \u2014 terrible for coalescing.\n- Make the program persistent over output tiles and parallelize along `(N, OH_tile, OW_tile, OC_tile)` with `BLOCK_M=64\u2013128` rows of the output and `BLOCK_N=64` channels; fuse bias + hardswish + relu in epilogue (already done). Consider a small `BLOCK_OH \u00d7 BLOCK_OW` 2-D output tile to reuse loaded input halos across neighboring output pixels (input reuse factor \u2248 KH\u00b7KW=9).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 46,
+    "global_best_node_id": 39,
+    "global_best_score": [
+        1,
+        1,
+        2.625965111111111
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 45,
+    "parent_node_id": 35,
+    "context_node_ids": [
+        38
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5004087117469158,
+    "max_reward": 0.5004087117469158,
+    "avg_reward": 0.5004087117469158,
+    "score": [
+        1,
+        1,
+        0.9283718719120552
+    ],
+    "small_guidance": "- Drop the wasted first kernel launch in `forward` \u2014 currently `forward` allocates scratch, launches `fused_gemm_clamp_partial_lse_kernel` once, then calls `_forward_clean` which launches it again. Removing the duplicate launch should immediately reclaim ~half the GEMM time.\n- Add a `GROUP_M` block-swizzle (e.g. 8) to the GEMM for better L2 reuse across N tiles of a row group, and extend the autotune sweep with `BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, num_warps=4, num_stages=4` and `BLOCK_M=256, BLOCK_N=64, BLOCK_K=32` configs sized to M=N=K=8192.\n- Cache `self.weight_kt` once in `__init__` (already done) but also drop the `.cuda()` call there and instead move it lazily; also ensure `bias` is on CUDA \u2014 small overhead but stable.",
+    "large_guidance": "- Restructure as a single split-K-free, one-pass-per-row design: launch a 1D grid over M-tiles where each program iterates the full N dimension in `BLOCK_N` chunks, accumulating an online-softmax (running max + running sum) and producing `lse` directly \u2014 eliminates the scratch tensors, the second kernel launch, and the cross-tile combine. With N=8192 the inner loop is cheap and removes a global write/read roundtrip.\n- Alternatively, persistent GEMM-LSE: one program per `BLOCK_M` row tile, holds the full row of accumulators (BLOCK_M \u00d7 N broken into N/BLOCK_N segments computed sequentially via tl.dot over BLOCK_K), so the clamp+exp+sum is done in-register before any store. Fuse the final `lse + log + mish` math in the same kernel so only the `(M,1)` output is written.\n- Since `x = x*scale + x*scale = x*(2*scale)` and clamp limits |acc| \u2264 10, the exp range is bounded \u2014 the online-softmax max-tracking can be skipped or simplified (e.g. subtract a known constant like CMAX) for a faster, branch-free reduction. Keep clamp executing at runtime; just exploit its bounded range for numerical simplicity, not for skipping math.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 46,
+    "global_best_node_id": 28,
+    "global_best_score": [
+        1,
+        1,
+        3.627338205272988
+    ]
+}

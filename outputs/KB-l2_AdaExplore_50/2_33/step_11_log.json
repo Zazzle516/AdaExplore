@@ -1,0 +1,30 @@
+{
+    "node_id": 11,
+    "parent_node_id": 10,
+    "context_node_ids": [
+        9,
+        10
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing (max diff ~2.6e-3, avg ~3.5e-4). The likely cause is that `weight` is stored as `(N, K)` row-major but the kernel passes `stride_bk=weight.stride(1)`, `stride_bn=weight.stride(0)` \u2014 treating B as `(K, N)`. This works mathematically for `tl.dot` but you should sanity-check by explicitly transposing `weight.t().contiguous()` once at init and using natural `(K, N)` strides. Also confirm `F.batch_norm` is receiving a contiguous y in training mode.\n- Add an autotune config with `BLOCK_M=64, BLOCK_N=64, BLOCK_K=32` and `BLOCK_M=128, BLOCK_N=64, BLOCK_K=64` for the 1024\u00d78192\u00d78192 shape; M=1024 only has 8 row-tiles at BLOCK_M=128, so try BLOCK_M=64 for better wave occupancy on 4090 (128 SMs).\n- Cache `weight.t().contiguous()` as a buffer in `__init__` to avoid the transpose-stride access pattern that may be causing slow K-loads and contributing to numeric drift via reduction order.",
+    "large_guidance": "- Fuse BatchNorm fully into Triton: at eval, fold `(running_mean, running_var, bn.weight, bn.bias)` along with `scale` into per-channel `(final_scale, final_shift)` once in `__init__` (recomputed when `training` flips), then have the GEMM epilogue apply `acc * final_scale + final_shift` and store \u2014 eliminating the `F.batch_norm` launch entirely. For training mode, write a two-pass Triton kernel: (1) GEMM+scale writing pre-BN output, (2) column reduction for mean/var with one program per N-tile using `tl.sum` across M, (3) apply kernel fused with affine.\n- Store `weight` pre-transposed as `(K, N)` contiguous in `__init__` so the GEMM B-operand has natural contiguous-N inner stride \u2014 removes the stride swap and improves L2 reuse with GROUP_M swizzle.\n- Consider a split-K or persistent GEMM for K=8192: with M=1024, N=8192, a persistent kernel where each SM iterates over multiple (M,N) tiles can amortize epilogue overhead, especially once BN affine is fused in.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 12,
+    "global_best_node_id": 6,
+    "global_best_score": [
+        1,
+        1,
+        0.5597450438455535
+    ]
+}

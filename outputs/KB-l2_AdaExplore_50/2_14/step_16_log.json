@@ -1,0 +1,27 @@
+{
+    "node_id": 16,
+    "parent_node_id": 5,
+    "context_node_ids": [],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The atomic_add accumulation across N-tile programs is the correctness bug source \u2014 different BLOCK_N tiles all atomically add into out[offs_m], but the row_partial values are float32 and accumulate via many concurrent atomics, which is fine numerically but the kernel as written looks correct; however `tl.atomic_add` with a 1D mask on float32 should work. The actual issue is likely the `tl.dot` with BLOCK_M=32 (below 16 is invalid, 32 is fine) \u2014 verify all configs have BLOCK_M, BLOCK_N, BLOCK_K \u2265 16. Drop configs that may be questionable and keep only proven shapes (64/128/32, 128/128/32).\n- Replace the multi-program-per-row atomic strategy with a single program per M-tile that loops over the full K dimension and accumulates a [BLOCK_M] row-sum register, eliminating atomics entirely. Since N=8192 fits as an outer loop, one program reduces over all N for its M-tile and writes once.\n- Tune BLOCK_M=64 or 128 with num_warps=8, num_stages=3-4 once atomics are removed.",
+    "large_guidance": "- Reformulate as: row_sum[m] = sum_n sum_k x[m,k] * w[n,k] = sum_k x[m,k] * (sum_n w[n,k]). BUT this is the forbidden algebraic shortcut (precomputing column-sum of weight collapses the GEMM to a matvec) \u2014 do NOT do this. Instead, run the full GEMM at runtime: one program per BLOCK_M row-tile, iterate over all N tiles in an inner loop, accumulating a [BLOCK_M, BLOCK_N] tile via tl.dot, reducing along N into a [BLOCK_M] register, and finally writing the scaled sum once. This avoids atomics and keeps every operator executing.\n- Alternative: two-stage kernel \u2014 stage 1 computes the full [M, N] GEMM tile into a partial [M, num_n_tiles] buffer; stage 2 reduces along the tile dimension. Simpler is the single-pass persistent-row design above.\n- Use BLOCK_M=64, BLOCK_N=128, BLOCK_K=32, num_warps=8, num_stages=3; transpose W once to [K, N] layout outside the kernel for contiguous K-major loads in the inner GEMM loop.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 17,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

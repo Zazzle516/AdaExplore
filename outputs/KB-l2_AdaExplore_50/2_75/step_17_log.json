@@ -1,0 +1,29 @@
+{
+    "node_id": 17,
+    "parent_node_id": 13,
+    "context_node_ids": [
+        13
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM is M=1024, N=8192, K=8192 \u2014 try larger N tiles favoring this aspect: add configs like `BLOCK_M=64, BLOCK_N=256, BLOCK_K=128` and `BLOCK_M=128, BLOCK_N=256, BLOCK_K=128` with `num_stages=3-4, num_warps=8` to better overlap the long K loop. Also cache `weight.t().contiguous()` once at init (currently rebuilt on every forward when params move) and ensure K-loop loads use no mask when M and N tiles are full.\n- The GN+min kernel loads N=8192 floats per row in a single tile \u2014 that's 32KB per program, fine, but `num_warps=16` is worth trying for the wide reduction; also fuse the trailing `+ self.bias` (broadcast over rows) into the same kernel by writing `out[m, n_bias_idx]` directly, since the final output is shape `(M, C, 1, 1)` after broadcast \u2014 currently a separate elementwise op materializes an `M\u00d7C` tensor.\n- Fold `self.gemm.bias` into the GEMM epilogue (already done) but also consider fusing GN affine into a precomputed `(w/sqrt(var+eps), b - mean*w/sqrt(...))` \u2014 except stats are per-row so this doesn't apply; instead, ensure `tl.reshape` doesn't add overhead by indexing with 2D `tl.arange` directly.",
+    "large_guidance": "- The dominant cost is the 1024\u00d78192\u00d78192 GEMM (~137 GFLOP). Current 1.62 ms \u2248 85 TFLOP/s which is decent but RTX 4090 peaks much higher for fp32-via-tf32; switch the `tl.dot` to use `allow_tf32=True` (or cast inputs to tf32) and consider a split-K kernel since K=8192 is large and M=1024 is modest \u2014 split-K with atomic-add or a two-stage reduction can boost occupancy.\n- Output of GEMM (1024\u00d78192 = 32 MB) is written then re-read by GN. Consider a fused epilogue: since GN groups are size 16 (8192/512), the GEMM tile in N could be sized to a multiple of 16 and do partial group-stat accumulation in shared memory \u2014 but full fusion is hard because GN needs per-row stats across the whole N. A cleaner alternative: keep GEMM separate but make the GN+min+bias-add a single kernel that produces the final `(M, C, 1, 1)` tensor directly, eliminating the extra `min_x + self.bias` launch and tensor.\n- Since the final reduction is a per-row min producing only M scalars, and the output is `min[m] + bias[c]` of shape `(1, C, 1, 1)` broadcast, a single fused GN\u2192min kernel (one program per row) writing `row_min` is correct; the subsequent broadcast-add is cheap (M\u00d7C=8M elements) but should still be a custom kernel rather than a torch op to avoid launch overhead.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 18,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

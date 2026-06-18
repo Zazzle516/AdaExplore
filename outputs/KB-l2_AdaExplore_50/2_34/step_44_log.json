@@ -1,0 +1,29 @@
+{
+    "node_id": 44,
+    "parent_node_id": 11,
+    "context_node_ids": [
+        12
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.41571574589646465,
+    "max_reward": 0.41571574589646465,
+    "avg_reward": 0.41571574589646465,
+    "score": [
+        1,
+        1,
+        0.22965490364583332
+    ],
+    "small_guidance": "- Increase `num_warps` to 4 (C=64 is small but M is huge \u2014 32\u00d764\u00d732\u00d764\u00d764 rows; reducing launch latency matters). Try processing multiple rows per program (e.g. ROWS_PER_PROG=4 or 8) to amortize launch + reduction overhead.\n- Wrap the layernorm kernel in `@triton.autotune` keyed on C with configs varying `(ROWS_PER_PROG, num_warps) \u2208 {(1,2),(4,4),(8,4),(8,8)}`, `num_stages=2`.\n- These are minor \u2014 the dominant cost is `nn.ConvTranspose3d` itself; tuning the tail kernel cannot move `fast_p` past ~0.3.",
+    "large_guidance": "- The ConvTranspose3d is the bottleneck (\u226590% of runtime). Replace it with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)` that loads the input tile, multiplies by the 4\u00d74\u00d74 kernel slice for each `(oc, kd, kh, kw)`, and `tl.atomic_add`s into the output grid at `(n, oc, d*stride+kd-pad, h*stride+kh-pad, w*stride+kw-pad)`. Fold bias into the output init.\n- Alternatively, implement ConvTranspose3d as a gather-based GEMM: per output voxel `(n, oc, od, oh, ow)`, loop over `(ic, kd, kh, kw)` selecting only contributing input voxels (where `(od+pad-kd) % stride == 0` and in-bounds). Tile over `(OC, output-spatial)` with `BLOCK_M=32, BLOCK_N=32, BLOCK_K=16, num_warps=4, num_stages=2` \u2014 fits SMEM.\n- Fuse LayerNorm+GELU+scale into the conv-transpose epilogue only if you keep a channels_last output layout so a row reduction over C=64 is contiguous; otherwise emit conv-transpose output then a separate fused norm kernel (current approach is fine for the tail).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 45,
+    "global_best_node_id": 15,
+    "global_best_score": [
+        1,
+        1,
+        0.7944818288288288
+    ]
+}

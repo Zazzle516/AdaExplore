@@ -1,0 +1,29 @@
+{
+    "node_id": 27,
+    "parent_node_id": 2,
+    "context_node_ids": [
+        21
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.47257196220046094,
+    "max_reward": 0.47257196220046094,
+    "avg_reward": 0.47257196220046094,
+    "score": [
+        1,
+        1,
+        0.6987186881538028
+    ],
+    "small_guidance": "- Autotune `conv_bn_tanh_kernel` over `BLOCK_OC \u2208 {32,64,128}`, `BLOCK_SP \u2208 {64,128,256}`, `IC_BLOCK \u2208 {16,32,64}`, `num_warps \u2208 {4,8}`, `num_stages \u2208 {2,3}` \u2014 current (64,64,32,4w) is likely under-tiling on the (OC=128, OH*OW\u22481156) GEMM and leaves the tensor cores underused.\n- Hoist the `pid_n * IC * IH * IW` base pointer and `kh*K+kw` weight offset out of the inner IC loop, and move the `ic_start` loop to be the outermost (over kh/kw) so weights for a given (kh,kw) are reused across the IC accumulation; also drop the redundant `mask_sp` AND inside `x_mask` (sp_valid already encodes bounds for valid lanes).\n- For the pool+GN kernel, since HW_OUT is small (\u2248289) and CPG=16, try `num_warps=2` and load all 4 pool taps with a single vectorized strided gather; the current 4 separate `tl.load`s dominate latency.",
+    "large_guidance": "- Rewrite the conv as an explicit im2col\u2192GEMM with `tl.dot` over `(BLOCK_M=OC tile, BLOCK_N=spatial tile, BLOCK_K=IC*K*K tile)`: collapse the (kh,kw,ic) loops into one K-dim reduction so the inner loop is a single `tl.dot` on K=32/64 tiles instead of K*K separate dot calls; this is the main headroom since the current kernel does 25 separate small dots per (oc,sp) tile.\n- Switch input/output to channels_last (NHWC) layout so the IC dimension is contiguous \u2014 current NCHW makes the GEMM-K loads strided by H*W (1024 elems), which kills coalescing; do a one-time `.contiguous(memory_format=torch.channels_last)` on the input and store conv_out in NHWC, then have pool+GN consume NHWC.\n- Fuse maxpool directly into the conv epilogue: each conv program already computes a 2x2 spatial tile of post-tanh values, so reduce-max within the tile and store only the pooled `H/2 \u00d7 W/2` output; this halves the intermediate tensor (saves ~OH*OW*OC*N*4B = 600MB of write+read traffic between the two kernels) and lets the GN kernel run on a much smaller input.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 28,
+    "global_best_node_id": 16,
+    "global_best_score": [
+        1,
+        1,
+        0.9062588925559223
+    ]
+}

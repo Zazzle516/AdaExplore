@@ -1,0 +1,29 @@
+{
+    "node_id": 45,
+    "parent_node_id": 17,
+    "context_node_ids": [
+        17
+    ],
+    "depth": 5,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5818177902097902,
+    "max_reward": 0.5818177902097902,
+    "avg_reward": 0.5818177902097902,
+    "score": [
+        1,
+        1,
+        1.599996769230769
+    ],
+    "small_guidance": "- The conv_transpose3d dominates runtime now (GAP+BN fusion is already trivial). Tuning BLOCK_S/num_warps in the GAP kernel offers <5% headroom. If staying small, at least try a 2D grid `(N, C)` with a single-pass reduction (S=20*36*36=25920 fits in one block at BLOCK_S=32768) and num_warps=32, num_stages=1 to remove the outer Python loop entirely.\n- Fold the scale_factor into a cached conv weight (weight *= scale_factor) at eval time so the multiply disappears; then A only needs gamma*inv (still must run the conv at runtime, no algebraic shortcut).\n- Cache `x_flat`/`out` buffers across calls and use `channels_last_3d` memory format on conv output so the per-(N,C) reduction reads contiguously over S.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom scatter-add Triton kernel: one program per `(N, IC tile, input-spatial tile)` computing the outer product with the kernel and atomically scattering into the output grid (kernel_size=5, stride=1, pad=0, so output is 20\u00d736\u00d736). This is where ~95% of the 9.75ms lives.\n- Alternative: gather-based direct conv-transpose \u2014 one program per `(N, OC tile, output-spatial tile)` iterating over the (kd,kh,kw,ic) reduction axis with bounds checks for the valid input positions. Fuse the BN affine + global-average-pool reduction directly into the epilogue by accumulating per-(N,OC) partial sums in a second pass (or via atomic add to a [N,OC] buffer), eliminating the need to ever materialize the [N,128,20,36,36] tensor.\n- Best design: skip materializing the conv output entirely \u2014 since the final reduction is global average pool, swap the order of summation so each program accumulates `sum over output positions of (weight*input contribution)` directly into a per-(N,OC) scalar. This reduces output writes from 16*128*25920 to 16*128 and removes the GAP kernel altogether.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 46,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        1.599996769230769
+    ]
+}

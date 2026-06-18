@@ -1,0 +1,409 @@
+## Problem Statement
+
+You tune the custom Triton kernels in the given architecture to get better performance. The architecture is the reference architecture, and the custom kernels are the previous kernels you have generated. Follow the Optimization Skills below — focus on low-level kernel tuning and fusion, and do not introduce graph-level algebraic shortcuts that eliminate a heavy operator.
+
+# Safety contract
+
+These two rules apply to every kernel you write, regardless of which
+operators appear in the reference and regardless of whether you are
+designing from scratch or tuning an existing kernel.
+
+1. **No graph-level algebraic shortcuts.** Every heavy op (Conv*, ConvTranspose*,
+   Linear, matmul) must materialize its full reference output shape at runtime,
+   and your kernel must perform the same asymptotic multiply-add count as the
+   reference. Specifically forbidden, whether done at init or inside `forward`,
+   on weight or on input: pre-reducing along any axis that a downstream linear
+   reduction (sum / mean / avg-pool) will later collapse, then running a smaller
+   GEMM / matvec against the pre-reduced tensor. Examples that **all violate**
+   this rule: precomputing `Σ_kh,kw w[ic,oc,kh,kw]`; precomputing
+   `sum_x[n,ic] = Σ_{h,w} x[n,ic,h,w]`; precomputing per-`(kh,kw)` partial input
+   sums `Σ_{h,w valid} x`; folding avg-pool's window sum into the conv-transpose
+   so adjacent output positions share one multiply. By linearity these are
+   mathematically equivalent and all skip the heavy op's real work. The comparison
+   baseline runs the graph as written.
+
+2. **Custom kernels are authorized.** Any `nn.*` operator in the reference is
+   a valid replacement target. You may rewrite it with a Triton kernel or a
+   CUDA C++ extension (`torch.utils.cpp_extension`). Do not assume any op is
+   the immovable part of the graph — the heaviest op usually has the most
+   headroom.
+
+- If you must keep a standalone activation kernel, vectorize loads
+  (`BLOCK_SIZE` elements per program via `tl.constexpr`) and mask the tail.
+- Pick `num_warps` (4 or 8) to saturate memory bandwidth — the kernel is
+  bandwidth-bound, so larger blocks with fewer launches usually win.
+- Keep `num_stages` low (2); there is little compute to overlap.
+- Process the contiguous flattened tensor so every load coalesces.
+
+- Tune the GEMM tile `BLOCK_M` / `BLOCK_N` / `BLOCK_K` (start 64/64/32, sweep
+  powers of two) against the `(OC, output-spatial, IC*kh*kw)` shapes.
+- Set `num_warps` (4 or 8) and `num_stages` (2-4) per config; wrap in
+  `triton.autotune` over a small grid.
+- Use a `channels_last` layout so the channel axis is contiguous and input
+  loads coalesce across the GEMM-K dimension.
+- Hoist constant index math (stride/pad offsets) out of the inner loop and
+  mask the spatial tail rather than branching.
+
+- Tune `BLOCK` over the output-spatial tile so it matches the kernel/stride
+  size; align reads so each window row is contiguous.
+- Vectorize the strided window loads and mask the padded border instead of
+  branching.
+- Set `num_warps` (4 or 8) to the window width and keep `num_stages` 2.
+- Use `channels_last` when it makes the pooled channel axis contiguous.
+
+- Tune `BLOCK_SIZE` over the reduction axis (powers of two); for a reduction
+  dim that fits, use a persistent kernel that keeps the row resident.
+- Size `num_warps` to the reduction width (4 for short, 8 for wide rows) and
+  keep `num_stages` 2-3.
+- Lay the reduction axis out contiguously so the strided combine is avoided;
+  one program per output element keeps the grid simple and coalesced.## Common Pitfalls (from previous optimization attempts)
+
+The following are frequently observed failure patterns from prior kernel optimization runs. **Avoid** these patterns in your implementation:
+
+You cannot reference the name PADDING_LEFT when it is not defined.
+You cannot call the compiled Triton kernel without providing the required positional 'meta' argument.
+You cannot call tl.load(x_ptr + x_addrs, mask=mask_x, other=0.0) inside the Triton kernel.
+You cannot have an `else:` at line 223 of the module source (SyntaxError: invalid syntax).
+You cannot access triton.language.math.tanh.
+You cannot use the 'continue' statement in a Triton kernel.
+You cannot call tl.float32 as a function inside a Triton kernel.
+You cannot pass a callable constexpr for the Triton kernel constexpr parameter BLOCK_M.
+You cannot use k_mask & (offs_n[None, :] < N) as the mask argument to tl.load in this Triton kernel when k_mask and (offs_n[None, :] < N) have incompatible dimensions 32 and 128.
+You cannot access W.shape when W is an int.
+You cannot call tl.arange(0, BLOCK) inside the Triton kernel _mean_invstd_kernel.
+You cannot pass the keyword argument 'num_warps' to triton.jit.
+You cannot use Triton builder operations that require a `_builder` argument outside of functions compiled with @triton.jit.
+You cannot index a Triton tensor with an int32[] tensor index inside a Triton kernel during compilation.
+You cannot pass multiple values for the 'BLOCK' argument when launching the Triton kernel.
+You cannot access the .dtype attribute of a dict object.
+You cannot call triton.language.log1p.
+You cannot index a Triton tensor with a constexpr index inside a Triton kernel at compile time.
+You cannot call the Triton kernel without providing the required constexpr positional arguments 'BLOCK_C' and 'BLOCK_L'.
+You cannot specify the keyword argument meta when launching this Triton kernel.
+You cannot access the global variable BLOCK_L from within an @jit'ed Triton kernel.
+You cannot call the Triton kernel without passing the required constexpr parameter 'BLOCK'.
+You cannot call torch.cuda.reset().
+You cannot call .reshape(-1) inside a Triton kernel.
+You cannot access triton.language.div.
+You cannot call float() on a tensor (kernel_vol) inside the Triton kernel.
+You cannot pass an integer as the grid parameter when launching the Triton kernel.
+You cannot call len() on an int.
+You cannot access the attribute 'dropout3d' on a ModelNew object.
+You cannot call a function that requires a `_builder` argument from inside a Triton jitted function.
+You cannot index tl.zeros((1,), dtype=tl.float32) with [0] inside a Triton @jit kernel.
+You cannot pass a dict as an argument when launching a Triton kernel.
+You cannot use triton.language.pow.
+You cannot have an unexpected indent at line 23 (the '@staticmethod' decorator) in the loaded Python module.
+You cannot call tensor.view with a size argument that contains a torch.nn.Parameter.
+You cannot access the local variable 'W' in ModelNew.forward before it is assigned.
+You cannot call out.view(N * C_, S) when the tensor's size and stride make that view incompatible.
+You cannot use triton.language.full_like.
+You cannot call tl.dot(x, x) inside the Triton kernel shown.
+You cannot compile the Triton kernel.
+You cannot call a function decorated with @triton.jit outside the scope of a kernel.
+You cannot call the .sum() method on the expression vals.to(tl.float32) inside a Triton @triton.jit kernel.
+You cannot use the break statement inside a Triton kernel.
+You cannot use the variable neg_inf as the other argument to tl.load inside the Triton kernel.
+You cannot reference the name 'EMBED' when instantiating ModelNew.
+You cannot call triton.language.any.
+You cannot perform the assignment out_ptr[row * pooled_len + pidx] = acc in the Triton kernel (AssertionError during compilation).
+You cannot access the attribute 'ones' on module triton.language.
+You cannot call ModelNew.__init__ with 6 positional arguments.
+You cannot use chained boolean operators (e.g., A or B or C) inside a Triton kernel.
+You cannot pass a size tuple to torch.nn.functional.interpolate that contains a torch.nn.parameter.Parameter as one of its elements.
+You cannot index a Triton tensor using a non-constexpr integer variable inside a Triton kernel (e.g., w_vals[:, c_inner]).
+You cannot use tl.load(inp_ptr + in_index) in this Triton kernel.
+You cannot pass a dtype keyword argument to tl.sum inside a Triton kernel.
+You cannot call int() on a tensor inside a Triton kernel.
+You cannot pass an indices tensor with float elements to torch.nn.functional.max_unpool3d.
+You cannot compare a pointer<fp32> (e.g., a kernel pointer argument like weight_ptr) to the integer 0 inside a Triton kernel.
+You cannot require more shared memory than the device's hardware limit when launching the Triton kernel.
+You cannot access triton.language.constant (i.e., call tl.constant).
+You cannot use chained/simultaneous multiple comparisons like "0 <= dd < D" inside a Triton kernel.
+You cannot define class ModelNew that inherits from the name 'Model' when 'Model' is not defined.
+You cannot reassign a loop-carried variable that is initially a scalar fp32 to a vector of shape [256] fp32 inside a Triton kernel loop.
+You cannot omit the @triton.jit decorator on a Triton kernel function.
+You cannot call tl.max with arguments max_val and m in this Triton kernel.
+You cannot call tl.arange(0, BLOCK_C) inside the Triton kernel _softmax_channelwise_kernel.
+You cannot pass a torch.cuda.FloatTensor as the indices (argument #1) to torch.embedding_bag.
+You cannot add the Python loop variable l_start to the result of tl.arange(0, BLOCK_L) inside the Triton jitted kernel.
+You cannot call tl.arange(0, D) where D is provided as a Triton kernel argument inside the kernel.
+You cannot call the method new_empty_like on a Tensor object (e.g., x.new_empty_like(x_flat)).
+You cannot call torch.mul with an out=... argument when one of the arguments requires grad.
+You cannot reference the name 'Model' inside ModelNew.__init__.
+You cannot create an attribute named 'encoder_weight' when an attribute with that name already exists.
+You cannot access the attribute 'tanh' on module 'triton.language'.
+You cannot compile this Triton kernel when it contains the call tl.load(x_ptrs, mask=mask, other=0.0).
+You cannot call tl.load(..., mask=mask) without supplying an 'other' argument inside this Triton kernel during compilation.
+You cannot use the expression tl.program_id(3) < 1024 inside a Triton kernel.
+You cannot reference the name 'math' in _init_params.
+You cannot call F.avg_pool1d when F is an int.
+
+## Hardware Information
+
+Here is some information about the underlying hardware that you should keep in mind:
+
+- The GPU that will run the kernel is NVIDIA RTX-4090-D, Ampere architecture.
+
+## Task Instruction
+
+You are given the following architecture:
+
+```python
+import torch
+import torch.nn as nn
+
+class Model(nn.Module):
+    """
+    This model performs a convolution, average pooling, applies sigmoid, and sums the result.
+    """
+    def __init__(self, in_channels, out_channels, kernel_size, pool_kernel_size):
+        super(Model, self).__init__()
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size)
+        self.avg_pool = nn.AvgPool2d(pool_kernel_size)
+
+    def forward(self, x):
+        x = self.conv(x)
+        x = self.avg_pool(x)
+        x = torch.sigmoid(x)
+        x = torch.sum(x, dim=[1,2,3]) # Sum over all spatial dimensions
+        return x
+
+batch_size = 128
+in_channels = 8
+out_channels = 64
+height, width = 384, 384
+kernel_size = 3
+pool_kernel_size = 4
+
+def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
+    return [torch.rand(batch_size, in_channels, height, width)]
+
+def get_init_inputs():
+    return [in_channels, out_channels, kernel_size, pool_kernel_size]
+```
+
+The input shapes can be found in the input of the architecture, and the dtype is fp32.
+
+The tuning metrics contain the following information:
+
+* **Compiled**: whether the kernel is compiled successfully
+* **Error Message**: the compilation or runtime error encountered by the kernel (if any)
+* **Correctness**: whether the kernel is correct
+* **Runtime**: the runtime of the kernel
+* **Fast_p**: compared with the standard PyTorch implementation, how much speedup the customized kernel achieves, calculated as *standard time / custom time*.
+
+### Test Conditions
+
+* **Correctness Test:**
+  First, verify the correctness of the custom kernels by running each kernel with the specified input shapes and data types.
+
+* **Warm-up Phase:**
+  Warm up the kernel by running it three times with the same input shapes and data types.
+  The runtime during the warm-up phase is **not** included in the final runtime, so you may include auto-tuning code as part of this phase.
+
+* **Performance Test:**
+  Finally, test the performance of the custom kernels by running each kernel 100 times with the same input shapes and data types.
+  The runtime from these test runs **is included** in the final performance measurement.
+
+### Goal
+
+- Perform small, localized updates to code in the last version of the custom kernels with the str_replace command to correct the correctness errors or improve the performance of the custom kernels. Keep the overall model interface unchanged. Apply the Optimization Skills above — do not introduce algebraic shortcuts that eliminate the reference's heavy operators.
+When making edits:
+   - Ensure the edit results in idiomatic, correct code
+   - Do not leave the code in a broken state
+
+CRITICAL REQUIREMENTS FOR USING THIS TOOL:
+
+1. EXACT MATCHING: The `old_str` parameter must match EXACTLY one or more consecutive lines from the file, including all whitespace and indentation. 
+- You should ensure the `old_str` matches exactly with the file content, otherwise the str_replace tool will fail.
+
+2. UNIQUENESS: The `old_str` must uniquely identify a single instance in the file:
+   - Include sufficient context before and after the change point (3-5 lines recommended)
+   - If not unique, the replacement will not be performed
+
+3. REPLACEMENT: The `new_str` parameter should contain the edited lines that replace the `old_str`. Both strings must be different.
+
+Remember: You should prefer to send all edits in a single message with multiple calls rather than multiple messages with a single call each.
+
+#### **Output Format**:
+
+You should output all the edits in a single message with multiple call. Each call should be a single edit as follows with id `1` to `n`. 
+- For each edit, you should provide the reasoning for the edit in the <reasoning_i> block, followed by the old code block in the <old_str_i> block, followed by the new code block in the <new_str_i> block.
+- You should ensure the `old_str_i` matches exactly with the file content, otherwise the str_replace tool will fail.
+
+Example output format:
+
+<reasoning_1>
+// reasoning for the edit 1
+...
+</reasoning_1>
+<old_str_1>
+// old code block (must match exactly)
+...
+</old_str_1>
+<new_str_1>
+// new code block
+...
+</new_str_1>
+
+...
+
+<reasoning_n>
+// reasoning for the edit n
+...
+</reasoning_n>
+<old_str_n>
+// old code block (must match exactly)
+...
+</old_str_n>
+<new_str_n>
+// new code block
+...
+</new_str_n>
+
+#### **Previous Kernels and Metrics:**
+
+Previously, you have generated the following custom kernels and got the following runtime metrics:
+
+<Previous Kernels and Metrics>
+
+### 0-th attempt: 
+
+```python
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import triton
+import triton.language as tl
+
+
+@triton.jit
+def conv_pool_sigmoid_sum_kernel(
+    x_ptr, w_ptr, b_ptr, out_ptr,
+    N, IC, H, W,
+    OC, KH, KW,
+    OH, OW,  # conv output spatial
+    PH, PW,  # pooled output spatial = OH//pool, OW//pool
+    POOL: tl.constexpr,
+    BLOCK_P: tl.constexpr,
+    KH_C: tl.constexpr,
+    KW_C: tl.constexpr,
+    IC_C: tl.constexpr,
+):
+    # Each program: one (n, oc) pair, processes BLOCK_P pooled output positions
+    pid = tl.program_id(0)
+    pid_p = tl.program_id(1)
+
+    n = pid // OC
+    oc = pid % OC
+
+    p_offs = pid_p * BLOCK_P + tl.arange(0, BLOCK_P)
+    P_total = PH * PW
+    p_mask = p_offs < P_total
+
+    ph = p_offs // PW
+    pw = p_offs % PW
+
+    # Load bias
+    bias = tl.load(b_ptr + oc)
+
+    # For each pooled position, we need to sum over POOL*POOL conv outputs
+    # Each conv output is sum over IC, KH, KW of x * w
+    # Pooled value = (1/POOL^2) * sum over pool window of conv outputs
+    # Sum over pool window of conv outputs = sum_{dy,dx} sum_{ic,kh,kw} x[n,ic, ph*POOL+dy+kh, pw*POOL+dx+kw] * w[oc,ic,kh,kw] + POOL^2 * bias
+
+    acc = tl.zeros((BLOCK_P,), dtype=tl.float32)
+
+    # Loop over ic, kh, kw
+    for ic in tl.static_range(IC_C):
+        for kh in tl.static_range(KH_C):
+            for kw in tl.static_range(KW_C):
+                # weight scalar
+                w_val = tl.load(w_ptr + oc * IC * KH * KW + ic * KH * KW + kh * KW + kw)
+                # Sum over pool window
+                for dy in tl.static_range(POOL):
+                    for dx in tl.static_range(POOL):
+                        in_h = ph * POOL + dy + kh
+                        in_w = pw * POOL + dx + kw
+                        in_idx = n * IC * H * W + ic * H * W + in_h * W + in_w
+                        valid = p_mask & (in_h < H) & (in_w < W)
+                        x_val = tl.load(x_ptr + in_idx, mask=valid, other=0.0)
+                        acc = acc + x_val * w_val
+
+    # Add bias contribution: POOL*POOL * bias per pooled position
+    acc = acc + bias * (POOL * POOL)
+    # Average
+    acc = acc / (POOL * POOL)
+    # Sigmoid
+    acc = tl.sigmoid(acc)
+    # Mask invalid
+    acc = tl.where(p_mask, acc, 0.0)
+    # Sum over BLOCK_P
+    block_sum = tl.sum(acc, axis=0)
+    # Atomic add into out[n]
+    tl.atomic_add(out_ptr + n, block_sum)
+
+
+class ModelNew(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, pool_kernel_size):
+        super().__init__()
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size)
+        self.avg_pool = nn.AvgPool2d(pool_kernel_size)
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = kernel_size
+        self.pool_kernel_size = pool_kernel_size
+
+    def forward(self, x):
+        x = x.contiguous().cuda()
+        w = self.conv.weight.contiguous().cuda()
+        b = self.conv.bias.contiguous().cuda()
+
+        N, IC, H, W = x.shape
+        OC = self.out_channels
+        KH = KW = self.kernel_size
+        OH = H - KH + 1
+        OW = W - KW + 1
+        POOL = self.pool_kernel_size
+        PH = OH // POOL
+        PW = OW // POOL
+
+        out = torch.zeros(N, device=x.device, dtype=torch.float32)
+
+        BLOCK_P = 128
+        P_total = PH * PW
+        grid = (N * OC, (P_total + BLOCK_P - 1) // BLOCK_P)
+
+        conv_pool_sigmoid_sum_kernel[grid](
+            x, w, b, out,
+            N, IC, H, W,
+            OC, KH, KW,
+            OH, OW,
+            PH, PW,
+            POOL=POOL,
+            BLOCK_P=BLOCK_P,
+            KH_C=KH,
+            KW_C=KW,
+            IC_C=IC,
+            num_warps=4,
+        )
+
+        return out
+```
+
+### 0-th Runtime Metrics:
+compiled=True correctness=True metadata={'hardware': 'NVIDIA GeForce RTX 4090', 'device': '0', 'correctness_trials': '(5 / 5)'} runtime=26.1 runtime_stats={'mean': 26.1, 'std': 0.308, 'min': 25.6, 'max': 26.5, 'num_trials': 90, 'hardware': 'NVIDIA GeForce RTX 4090', 'device': '0', 'fast_p': 0.5057441762452107, 'baseline_time': 13.199923000000002, 'baseline_type': 'recorded'}
+</Previous Kernels and Metrics>
+
+#### **Guidance from Evaluator Agent:**
+
+- An evaluator agent has provided a guidance to you on how to correct or improve the performance of your lastgenerated custom kernels, please tune the custom kernels based on the guidance in the unified diff format. Reminder to keep the name of `ModelNew` unchanged.
+
+<Tuning Guidance>
+- Increase BLOCK_P (try 256/512) and tune num_warps (8) / num_stages (2-3) via triton.autotune; current 128/4 leaves the inner static_range loops (IC*KH*KW*POOL*POOL = 8*3*3*16 = 1152 iters) latency-bound per program.
+- Replace the per-(dy,dx) reload of x with a single load of a (POOL+KH-1)×(POOL+KW-1) tile per (ic,oc,output-tile) and reuse it across the 9 kernel taps and 16 pool offsets — this cuts x-loads by ~16×.
+- Avoid the global atomic_add into out[n] by accumulating per (n, oc, p-tile) into a [N, OC] buffer and doing a final small sum over OC on the host (or a second tiny kernel); the atomics on a length-128 vector serialize all OC*P_tiles writers.
+</Tuning Guidance>
+

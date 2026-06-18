@@ -1,0 +1,29 @@
+{
+    "node_id": 25,
+    "parent_node_id": 10,
+    "context_node_ids": [
+        10
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.6115407483620235,
+    "max_reward": 0.6115407483620235,
+    "avg_reward": 0.6115407483620235,
+    "score": [
+        1,
+        1,
+        1.8452111739866937
+    ],
+    "small_guidance": "- The GEMM dominates (M=1024, N=K=8192). Add larger tile configs to the autotune sweep: `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4` and `BLOCK_M=256, BLOCK_N=128, BLOCK_K=64, num_warps=8, num_stages=3`, plus `BLOCK_M=64, BLOCK_N=128, BLOCK_K=128, num_warps=4, num_stages=4`. The inner-K loop benefits from `BLOCK_K=64` here since K=8192.\n- Drop the K-loop mask: M, N, K are all multiples of the tile sizes for this shape, so use unmasked loads in the hot loop (keep only the `mask_m`/`mask_n` boundary masks on the epilogue store) \u2014 this removes the per-iteration `k_offs < K` comparison.\n- Store the intermediate in fp16/bf16 (cast `acc` before store) so the LSE kernel reads half the bytes, then upcast on load; LSE pass is memory bound on 1024\u00d78192 fp32 (32 MB).",
+    "large_guidance": "- Make the kernel a persistent split-K-free GEMM with the LSE fused in: since M=1024 is small (8 tiles of 128) and N=8192 (64 tiles of 128), launch one program per M-row-tile that walks all N tiles, keeping the running max and sum-exp in registers across N. This eliminates the entire intermediate `M\u00d7N` write/read (32 MB) \u2014 the dominant memory traffic after the GEMM itself.\n- Alternatively, since output is just `(M,1)`, fuse: per program covering `BLOCK_M` rows, iterate N tiles; for each N tile compute the `(BLOCK_M, BLOCK_N)` GEMM tile, apply scale*2 + clamp in-register, then online-softmax-reduce along N into per-row `max` and `sum_exp` accumulators. Final epilogue computes `lse = max + log(sum_exp)` and mish, writes `M` scalars. Grid becomes just `cdiv(M, BLOCK_M)` programs.\n- For the K-reduction inside each N tile, load the `BLOCK_M \u00d7 K` slab of X once per row-tile and reuse it across all N tiles (X is only 1024\u00d78192 = 32 MB, but per-row-tile X slab is 128\u00d78192 = 4 MB \u2014 fits L2). This converts the workload from \"GEMM + separate reduction\" to a single bandwidth-optimal pass.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 26,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        1.9043525577683185
+    ]
+}

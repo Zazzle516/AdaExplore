@@ -1,0 +1,30 @@
+{
+    "node_id": 36,
+    "parent_node_id": 33,
+    "context_node_ids": [
+        27,
+        33
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.47600654264777814,
+    "max_reward": 0.47600654264777814,
+    "avg_reward": 0.47600654264777814,
+    "score": [
+        1,
+        1,
+        0.7270539768441695
+    ],
+    "small_guidance": "- In eval path, the fused GEMM looks correct but runtime (3.36ms) exceeds baseline (2.44ms). Add larger tiles like `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3` and `BLOCK_M=256, BLOCK_N=64` variants tuned for M=1024, N=8192, K=8192; also try `num_stages=4` with `BLOCK_K=32` since K=8192 is large and benefits from deeper pipelining.\n- The training path does an extra full read/write through `fused_swish_epilogue_kernel` after `F.linear`. Increase `BLOCK_M` to 64 or 128 and `BLOCK_N` to 256 with `num_warps=8` to better saturate DRAM bandwidth on the 8192\u00d71024 epilogue, and consider autotuning this kernel too.\n- Cache `Wt` once at init (weights are constant at eval) instead of via a version-check path; ensure it's stored in `channels_last`/contiguous on the correct device to avoid first-call jitter.",
+    "large_guidance": "- The dominant cost at M=1024, N=K=8192 is the GEMM (~137 GFLOPs). cuBLAS hits ~80%+ of 4090 peak; matching it in Triton requires a split-K or stream-K GEMM since M=1024 only yields 8 row-tiles at BLOCK_M=128 \u2014 too few to fill the SMs (4090 has 128 SMs). Rewrite as a stream-K or split-K GEMM with the BN-fold + bias + Swish fused only into the final partial's epilogue.\n- Alternative: keep `F.linear` (cuBLAS) for the GEMM in both train and eval, and invest only in a single high-bandwidth fused epilogue kernel that does `bias_add + bn_affine + div + swish` with vectorized 4xfp32 loads, large `BLOCK_N` (512\u20131024), and one program per row-tile. The epilogue is ~67MB of traffic \u2014 should run in ~0.3ms; the GEMM is the floor.\n- For training, fuse mean/var reduction + epilogue: launch a 2-pass kernel over the GEMM output (column-reduction for mean/var, then normalize+swish) instead of three separate ops (`mean`, `var`, epilogue kernel) to cut output traffic from 3\u00d7 to 2\u00d7.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 37,
+    "global_best_node_id": 16,
+    "global_best_score": [
+        1,
+        1,
+        1.306364364810914
+    ]
+}

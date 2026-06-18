@@ -1,0 +1,129 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import triton
+import triton.language as tl
+
+
+@triton.autotune(
+    configs=[
+        triton.Config({'BLOCK': 1024}, num_warps=4, num_stages=2),
+        triton.Config({'BLOCK': 2048}, num_warps=4, num_stages=2),
+        triton.Config({'BLOCK': 2048}, num_warps=8, num_stages=2),
+        triton.Config({'BLOCK': 4096}, num_warps=8, num_stages=2),
+        triton.Config({'BLOCK': 4096}, num_warps=16, num_stages=2),
+        triton.Config({'BLOCK': 8192}, num_warps=16, num_stages=2),
+        triton.Config({'BLOCK': 8192}, num_warps=8, num_stages=3),
+        triton.Config({'BLOCK': 16384}, num_warps=16, num_stages=2),
+    ],
+    key=['HW', 'CPG'],
+)
+@triton.jit
+def fused_bias_scale_sigmoid_gn_kernel(
+    x_ptr,
+    bias_ptr,
+    scale_ptr,
+    gn_w_ptr,
+    gn_b_ptr,
+    out_ptr,
+    N, C, HW,
+    G,
+    CPG: tl.constexpr,
+    eps,
+    BLOCK: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    n = pid // G
+    g = pid % G
+
+    group_size = CPG * HW
+    base = n * C * HW + g * CPG * HW
+
+    # Preload per-channel params for the group into registers (CPG is small, e.g. 4)
+    c_offs = g * CPG + tl.arange(0, CPG)
+    bias_v = tl.load(bias_ptr + c_offs)
+    scale_v = tl.load(scale_ptr + c_offs)
+    gn_w_v = tl.load(gn_w_ptr + c_offs)
+    gn_b_v = tl.load(gn_b_ptr + c_offs)
+
+    num_chunks = (HW + BLOCK - 1) // BLOCK
+
+    sum_acc = tl.zeros([], dtype=tl.float32)
+    sumsq_acc = tl.zeros([], dtype=tl.float32)
+
+    # First pass: accumulate stats
+    for ci_static in tl.static_range(0, CPG):
+        # gather scalar params from preloaded vectors
+        b_s = tl.sum(tl.where(tl.arange(0, CPG) == ci_static, bias_v, 0.0))
+        s_s = tl.sum(tl.where(tl.arange(0, CPG) == ci_static, scale_v, 0.0))
+        ch_base = base + ci_static * HW
+        for k in range(0, num_chunks):
+            offs = k * BLOCK + tl.arange(0, BLOCK)
+            mask = offs < HW
+            x = tl.load(x_ptr + ch_base + offs, mask=mask, other=0.0)
+            y = tl.sigmoid((x + b_s) * s_s)
+            y_masked = tl.where(mask, y, 0.0)
+            sum_acc += tl.sum(y_masked)
+            sumsq_acc += tl.sum(y_masked * y_masked)
+
+    inv_gs = 1.0 / group_size
+    mean = sum_acc * inv_gs
+    var = sumsq_acc * inv_gs - mean * mean
+    rstd = 1.0 / tl.sqrt(var + eps)
+
+    # Second pass: recompute and write with fused affine
+    for ci_static in tl.static_range(0, CPG):
+        b_s = tl.sum(tl.where(tl.arange(0, CPG) == ci_static, bias_v, 0.0))
+        s_s = tl.sum(tl.where(tl.arange(0, CPG) == ci_static, scale_v, 0.0))
+        w_s = tl.sum(tl.where(tl.arange(0, CPG) == ci_static, gn_w_v, 0.0))
+        bn_s = tl.sum(tl.where(tl.arange(0, CPG) == ci_static, gn_b_v, 0.0))
+        a_coef = rstd * w_s
+        b_coef = bn_s - mean * a_coef
+        ch_base = base + ci_static * HW
+        for k in range(0, num_chunks):
+            offs = k * BLOCK + tl.arange(0, BLOCK)
+            mask = offs < HW
+            x = tl.load(x_ptr + ch_base + offs, mask=mask, other=0.0)
+            y = tl.sigmoid((x + b_s) * s_s)
+            z = y * a_coef + b_coef
+            tl.store(out_ptr + ch_base + offs, z, mask=mask)
+
+
+def fused_post_conv(x, bias, scale, gn_w, gn_b, num_groups, eps=1e-5):
+    N, C, H, W = x.shape
+    assert C % num_groups == 0
+    CPG = C // num_groups
+    out = torch.empty_like(x)
+    HW = H * W
+
+    grid = (N * num_groups,)
+    fused_bias_scale_sigmoid_gn_kernel[grid](
+        x, bias, scale, gn_w, gn_b, out,
+        N, C, HW,
+        num_groups,
+        CPG,
+        eps,
+    )
+    return out
+
+
+class ModelNew(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, num_groups, bias_shape, scale_shape):
+        super().__init__()
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size)
+        self.bias = nn.Parameter(torch.randn(bias_shape))
+        self.scale = nn.Parameter(torch.randn(scale_shape))
+        self.group_norm = nn.GroupNorm(num_groups, out_channels)
+        self.num_groups = num_groups
+        self.out_channels = out_channels
+
+    def forward(self, x):
+        x = self.conv(x)
+        bias_flat = self.bias.view(-1).contiguous()
+        scale_flat = self.scale.view(-1).contiguous()
+        gn_w = self.group_norm.weight.contiguous()
+        gn_b = self.group_norm.bias.contiguous()
+        eps = self.group_norm.eps
+        x = x.contiguous()
+        out = fused_post_conv(x, bias_flat, scale_flat, gn_w, gn_b, self.num_groups, eps)
+        return out

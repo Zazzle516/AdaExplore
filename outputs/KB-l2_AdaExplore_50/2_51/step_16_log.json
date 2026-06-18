@@ -1,0 +1,29 @@
+{
+    "node_id": 16,
+    "parent_node_id": 15,
+    "context_node_ids": [
+        15
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness bug is in the reduction: multiple program tiles along the N axis atomic_add into the same `rowsum[offs_m]`, but `rowsum` is initialized once and the kernel does not guarantee deterministic ordering \u2014 that's fine for `atomic_add`, but the real issue is likely that `logsumexp` over a dim of size 1 is `log(exp(x)) = x`, so the mean alone (no `log(1)` offset) is correct. Recheck: `logsumexp` of single element equals element, so scalar = GELU(mean). That part is right. The bug is more likely that `rowsum` is `float32` while `x.dtype` is fp32 \u2014 OK. Try initializing `rowsum` and reading back with `.to(x.dtype)` explicitly, and verify that `mask_n` zeroing happens *before* the row sum (it does). Add a `tl.debug_barrier()` or switch to a two-pass: write full `y` then a separate row-mean kernel, to isolate atomics as the suspect.\n- Avoid atomics entirely: launch GEMM with one program per (M tile, full-N), looping over N inside the kernel and accumulating the row sum in registers, then do a single non-atomic store per row tile. This removes both the atomic race and the need to zero `rowsum`.\n- Once correct, autotune `BLOCK_N` larger (256/512) since N=8192 and we now reduce inside the kernel; keep `BLOCK_M=64` or 128, `num_warps=8`, `num_stages=3`.",
+    "large_guidance": "- The whole tail after GEMM collapses to a per-row scalar `GELU(mean(Wx+b-s))`, so the heavy op is purely the GEMM-with-row-reduction. Redesign as a **split-K-free, N-reduction GEMM**: grid is `(cdiv(M, BLOCK_M),)`, each program streams across all N tiles, accumulating `acc[BLOCK_M, BLOCK_N]` per N-tile, immediately reducing `tl.sum(acc - sub + bias, axis=1)` into a register `row_acc[BLOCK_M]`, then storing `row_acc / N` once at the end. No atomics, no intermediate (B, N) tensor materialized.\n- Fuse the final `GELU` and `+ original_x` into a second kernel that takes the per-row scalar and `x` and writes `out = GELU(scalar) + x`. That makes the entire pipeline two kernels: fused-GEMM-rowmean and fused-gelu-residual-add.\n- Since K=8192 is large, consider a 2D grid `(cdiv(M,BLOCK_M), num_n_splits)` with a small atomic_add along N to enable parallelism across N too \u2014 but only if the single-program-per-row design underutilizes the SMs (B=2048, BLOCK_M=64 \u2192 32 programs, which is under-occupied on a 4090). Use 4\u20138 N-splits to reach ~128\u2013256 CTAs.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 17,
+    "global_best_node_id": 10,
+    "global_best_score": [
+        1,
+        1,
+        1.5925164056531704
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 22,
+    "parent_node_id": 7,
+    "context_node_ids": [
+        3,
+        7
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.42859618197683647,
+    "max_reward": 0.42859618197683647,
+    "avg_reward": 0.42859618197683647,
+    "score": [
+        1,
+        1,
+        0.3359185013089005
+    ],
+    "small_guidance": "- The clamp/div kernel is already trivial; the 76ms runtime is dominated by `nn.ConvTranspose3d`. Tuning BLOCK_SIZE/num_warps on the epilogue cannot move the needle \u2014 at most ~1ms of the budget lives there.\n- If staying small, at least fuse by writing the conv output into a preallocated buffer and applying clamp/div in-place with a larger BLOCK_SIZE (e.g. 8192) and num_warps=4 to reduce launch overhead, but expect <5% gain.\n- Consider channels_last_3d memory format for the conv input to let cuDNN pick a faster algo, though ConvTranspose3d cuDNN support is limited.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)`, computing the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and `atomic_add`-ing into output positions `(n, oc, d*stride+kd-pad, h*stride+kh-pad, w*stride+kw-pad)`. Fuse the bias add, clamp(min=-1), and divide-by-2 into the final write epilogue (apply once after all scatters \u2014 or, since min_value is constant, apply in a second tiny pass).\n- Alternative: gather-style \u2014 one program per output tile `(N, OC tile, output-spatial tile)`, looping over `(kd,kh,kw,ic)` and reading from input positions `(d-kd+pad)/stride` (only where divisible). This avoids atomics and lets clamp/div fuse cleanly into the single store. Given OC=128, output spatial=48\u00d796\u00d796, this gather form is preferable on Ada.\n- Fold the bias into the epilogue and bake `min_value`, `1/divisor`, `stride=2`, `padding=1`, `kernel_size=3` as `tl.constexpr` so the divisibility-by-stride checks unroll. Autotune over BLOCK_OC \u2208 {32,64,128}, BLOCK_SPATIAL \u2208 {32,64,128}, num_warps \u2208 {4,8}, num_stages \u2208 {2,3}.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 23,
+    "global_best_node_id": 21,
+    "global_best_score": [
+        1,
+        1,
+        0.6530324045801528
+    ]
+}

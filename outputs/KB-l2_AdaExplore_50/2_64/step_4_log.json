@@ -1,0 +1,29 @@
+{
+    "node_id": 4,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.44145123504921074,
+    "max_reward": 0.44145123504921074,
+    "avg_reward": 0.44145123504921074,
+    "score": [
+        1,
+        1,
+        0.44197268915598836
+    ],
+    "small_guidance": "- Current B layout uses stride_bk=1, stride_bn=K which means the contiguous axis on B's inner (N) dim is strided \u2014 this kills coalescing on the B loads. Either transpose W to [K,N] contiguous once in __init__ (store as self.W_t = W.t().contiguous()) and pass stride_bk=N, stride_bn=1, or swap to load W as [N,K] with the GEMM oriented so N tiles read contiguous K rows.\n- After fixing B layout, retune with larger BLOCK_M (since M=1024 is moderate but N=K=8192 is huge): add configs like {BLOCK_M:128, BLOCK_N:128, BLOCK_K:64, num_warps:8, num_stages:3-4} and {BLOCK_M:64, BLOCK_N:64, BLOCK_K:128, num_warps:4, num_stages:4} to overlap the long K loop.\n- Cache the bias-augmented running stats outside the N loop more cheaply: hoist `safe_new_max` selection and skip the `tl.where(mask_n, acc, neg_inf)` by instead loading bias with other=neg_inf padded \u2014 saves a where per N-block.",
+    "large_guidance": "- Split-K / two-pass design: with N=K=8192 and only M=1024, a single-program-per-M-tile streaming the full K\u00d7N row of W is bandwidth-bound on W (256MB read per M tile). Rewrite as two kernels: (1) a tiled GEMM kernel computing the full [M,N] logits (or tiles) with split-K and good L2 reuse, fused with bias; (2) a row-reduction kernel doing online LSE + the activation chain. Materializing logits costs 32MB but enables a proper GEMM tile shape (e.g. 128\u00d7128\u00d732) with high tensor-core utilization, which the current \"one row-tile reads all of W\" structure cannot achieve.\n- Alternatively, persistent grid over M with W staged through shared memory: launch ~SM-count programs, each iterating over multiple M tiles, so W's K-strip is loaded once and reused across M tiles within a program. Combined with proper W transpose to KxN contiguous, this should approach cuBLAS GEMM bandwidth.\n- Pre-transpose the weight to [K,N] contiguous once in __init__ (store as buffer, not a re-derivation each forward) so the hot kernel sees a contiguous K-major B and can use cp.async-friendly 128-bit loads.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 5,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        1.7705215464403583
+    ]
+}

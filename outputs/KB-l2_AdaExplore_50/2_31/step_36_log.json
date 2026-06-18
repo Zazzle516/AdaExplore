@@ -1,0 +1,30 @@
+{
+    "node_id": 36,
+    "parent_node_id": 35,
+    "context_node_ids": [
+        6,
+        35
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4596362092226614,
+    "max_reward": 0.4596362092226614,
+    "avg_reward": 0.4596362092226614,
+    "score": [
+        1,
+        1,
+        0.5919987260869565
+    ],
+    "small_guidance": "- The im2col gather currently does `x_off = n*IH*IW*IC + ih*IW*IC + iw*IC + ic` with a 2D `(BLOCK_M, BLOCK_K)` index \u2014 for KH=KW=3, IC=64, K=576, you can split the K loop into an outer `(kh, kw)` loop and an inner IC loop so `ih`/`iw` are computed once per outer iteration and the inner gather is a contiguous channel load (pure `ic` stride), greatly improving coalescing.\n- Add larger autotune configs targeting M=128*126*126 (\u22482M) and N=128: `(BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, warps=8, stages=2)` and `(BLOCK_M=256, BLOCK_N=128, BLOCK_K=32, warps=8, stages=2)` \u2014 verify SMEM: 256\u00b732\u00b74\u00b72 + 32\u00b7128\u00b74\u00b72 = 65 KB and 128\u00b764\u00b74\u00b72 + 64\u00b7128\u00b74\u00b72 = 131 KB, both within 132 KB budget.\n- Drop `allow_tf32=False` \u2014 TF32 is fine for fp32 conv outputs at this tolerance and roughly doubles tensor-core throughput on Ampere.",
+    "large_guidance": "- Restructure as an explicit im2col-style kernel where the K loop is `for kh in range(KH): for kw in range(KW): for ic_block in range(0, IC, BLOCK_K)` \u2014 this lets the compiler hoist `ih = oh+kh`, `iw = ow+kw` out of the IC reduction and turns the inner load into a contiguous `[BLOCK_M, BLOCK_K]` channel gather, which is the biggest win for KH\u00b7KW=9 small / IC=64 large.\n- Use a persistent / output-tile-major schedule: one program per `(N, OH-tile, OW-tile, OC-tile)` with output tile shaped `(BM_h \u00d7 BM_w, BN)` (e.g., 8\u00d78 spatial \u00d7 64 OC) so neighboring output pixels share input rows/cols within shared memory; current flattened M-axis loses spatial locality across the BLOCK_M tile.\n- Keep the epilogue (min, +bias, *scale) fused but write directly in NCHW layout by computing the output offset as `n*OC*OH*OW + oc*OH*OW + oh*OW + ow` \u2014 that removes the trailing `permute(0,3,1,2).contiguous()` copy of a 128\u00b7128\u00b7128\u00b7128 fp32 tensor (~134 MB), which is non-trivial overhead at 11.5 ms total.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 37,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.686288845766129
+    ]
+}

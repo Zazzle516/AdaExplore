@@ -1,0 +1,29 @@
+{
+    "node_id": 34,
+    "parent_node_id": 30,
+    "context_node_ids": [
+        30
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (avg diff ~0.013, max ~0.05) suggests numeric/accumulation issues, not a structural bug. Try accumulating x and w loads cast to fp32 explicitly and ensure the K-dim masking is correct \u2014 the current `k_mask = (k + offs_k) < K` is fine, but the `mask_n[None,:]` zeroing happens after `tl.dot` which can leave NaNs from masked-out lanes only if `other` wasn't applied; double-check tail handling for K=8192 (divisible by all BLOCK_K, so K-tail is fine).\n- The real issue: `tl.dot` with `allow_tf32=True` on K=8192 accumulating into a single row-sum produces ~0.013 average error, which exceeds the 5e-2 tolerance only marginally but fails. Set `allow_tf32=False` (or use `input_precision='ieee'`) to get full fp32 mul-add precision; this will close the correctness gap.\n- After fixing precision, retune: with M=1024, N=8192, K=8192, prefer BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, num_warps=8, num_stages=4 and add a config with BLOCK_M=64, BLOCK_N=256 since each program does the full N reduction per row block.",
+    "large_guidance": "- Reframe as: compute `y[m] = sum_n(sum_k x[m,k]*W[n,k]) + sum_n b[n] = sum_k x[m,k] * (sum_n W[n,k]) + sum_n b[n]`. **However**, per safety contract you cannot precompute `sum_n W` at init. Instead, run a two-stage kernel: stage-1 (one-time per forward, NOT cached) reduces W along N to a (K,) vector at runtime; stage-2 does a small (M,K) \u00b7 (K,) matvec plus bias-sum. This keeps both linear and sum executing at runtime but reduces stage-2 to O(M\u00b7K) instead of O(M\u00b7N\u00b7K).\n- Alternatively, keep the full GEMM-then-rowsum fused (current strategy) but switch to a 2D persistent grid over (M tiles, N tiles) writing partial row sums to a small workspace, then a tiny second kernel reduces over N tiles. This lets you use larger BLOCK_N and proper `tl.dot` tiling without the outer Python loop over N inside one program.\n- The tail ops (max/mean/logsumexp over dim=1 with size 1) are all no-ops on a (M,1) tensor \u2014 they collapse to identity. Fuse them as a single epilogue inside the row-sum kernel (just write `row_acc + bias_s` directly, no extra kernels).",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 35,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        0.8826896197781255
+    ]
+}

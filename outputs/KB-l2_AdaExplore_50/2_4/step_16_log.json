@@ -1,0 +1,29 @@
+{
+    "node_id": 16,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.47152980909090914,
+    "max_reward": 0.47152980909090914,
+    "avg_reward": 0.47152980909090914,
+    "score": [
+        1,
+        1,
+        0.6901209250000001
+    ],
+    "small_guidance": "- Add a `triton.autotune` over `BLOCK_M \u2208 {64,128}`, `BLOCK_N \u2208 {64,128}`, `BLOCK_K=64`, `num_warps \u2208 {4,8}`, `num_stages \u2208 {2,3,4}`; current 64/64/64 with 4 warps likely under-utilizes the 128\u00d7128 OC\u00d7spatial tile space (OC=128, OH*OW=64516 is huge).\n- Drop the final `.permute(0,3,1,2).contiguous()` by writing directly into an NCHW output (compute `out_offs = ((pid_b * OC + oc) * OH + oh) * OW + ow`) \u2014 that copy is a full HBM round-trip on a 64\u00d7128\u00d7254\u00d7254 fp32 tensor (~2 GB).\n- Since `IC == BLOCK_K == 64` exactly and `KH=KW=3`, drop the `offs_k < IC` mask and the `static_range` over KH/KW can be unrolled with precomputed `w` tile pointers; also try `num_stages=2` with larger BLOCK_M=128 to free SMEM for double-buffered loads.",
+    "large_guidance": "- Restructure as one program per `(N, OC_tile, OH_tile \u00d7 OW_tile)` with a 2D spatial tile (e.g. 8\u00d732) instead of flattened `OH*OW`; this gives contiguous `iw` runs so each `kw` shift re-uses input rows in L1/registers and removes the integer div/mod on `offs_m`.\n- Fuse the input NCHW\u2192NHWC permute into the conv kernel by loading directly from the NCHW tensor with strided gather (or keep NCHW and tile K over IC with `x_offs = ((n*IC + ic)*H + ih)*W + iw`); also write directly to NCHW. The two `.contiguous()` permutes are pure overhead (~3-4 ms total on 2 GB tensors).\n- Consider a persistent-CTA scheme: launch `num_sm` programs that stride over `(batch, oc_tile, spatial_tile)` tuples \u2014 at this problem size (64\u00d7128\u00d7254\u00d7254 outputs) launch overhead is negligible but L2 reuse of the weight tile across spatial tiles within the same OC block is high; have each CTA sweep the spatial axis for a fixed OC tile to keep weights resident.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 17,
+    "global_best_node_id": 15,
+    "global_best_score": [
+        1,
+        1,
+        1.0001752536231885
+    ]
+}

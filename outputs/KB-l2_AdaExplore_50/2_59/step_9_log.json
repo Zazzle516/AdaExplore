@@ -1,0 +1,27 @@
+{
+    "node_id": 9,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- Add larger tile configs aimed at the 128\u00d732768\u00d732768 shape: `BLOCK_M=32, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4` and `BLOCK_M=16, BLOCK_N=256, BLOCK_K=128, num_warps=8, num_stages=3`. With M=128 only, small BLOCK_M (16/32) with big BLOCK_N/BLOCK_K maximizes N-tile parallelism and K reuse.\n- Drop per-K masking: K=32768 is divisible by typical BLOCK_K (32/64/128), so use unmasked `tl.load` in the K loop (only mask the M/N edges once), saving compare/select overhead in the hot loop.\n- Pre-transpose the weight to `[K, N]` once in `__init__` (store as a buffer) so the inner load is `w[k, n]` contiguous on N \u2014 removes the `tl.trans(w)` per iteration and lets `tl.dot` consume the natural layout.",
+    "large_guidance": "- Workload is 128\u00d732768\u00d732768 \u2248 274 GFLOPs but weight read is 4 GiB; it's bandwidth-bound on the 1 TB/s 4090. A from-scratch split-K (or stream-K) GEMM with persistent programs is the right structure: split K across SMs, partial-accumulate in fp32, then a tiny reduction kernel applies bias+swish+scale. This decouples N-tile size from K-reuse and saturates DRAM.\n- Alternatively, since M=128 is tiny, treat this as a \"skinny GEMM / GEMV-batch\": one program per N-tile, loop over M inside the program with BLOCK_M=128 fixed (constexpr), BLOCK_N=128-256, BLOCK_K=64-128, num_warps=8, num_stages=4. Each weight column tile is streamed once and reused for all 128 rows from registers/SMEM \u2014 the activation tile (128\u00d7K) is tiny and can sit in L2.\n- Consider fp16/bf16 weight storage (cast at init) with fp32 accumulate: halves the 4 GiB weight read and lets `tl.dot` use tensor cores at much higher throughput. Bias/swish/scale stay in fp32 in the epilogue, output cast back to fp32.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 10,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

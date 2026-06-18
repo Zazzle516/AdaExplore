@@ -1,0 +1,30 @@
+{
+    "node_id": 48,
+    "parent_node_id": 45,
+    "context_node_ids": [
+        10,
+        44
+    ],
+    "depth": 5,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Clamp/mask the input gather indices: when `m_mask` is false, `oh`/`ow` are garbage and `x_offset` can land in another sample's memory, corrupting the masked-load `other=0.0` semantics on some hardware. Compute `safe_oh = tl.where(m_mask, oh, 0)`, `safe_ow = tl.where(m_mask, ow, 0)` before forming `x_offset`, and likewise guard `ih/iw` so addresses stay in-bounds. Do the same on the output store.\n- After fixing correctness, drop the largest tile `(128,128,16, num_warps=8)` from autotune (operand SMEM = (128\u00b716+16\u00b7128)\u00b74\u00b72 = 32 KB \u2014 fine, but it's rarely best for this M=16384, N=128 shape) and add `(64,128,32, num_warps=8, num_stages=3)` and `(128,64,32, num_warps=8, num_stages=3)` which suit the 16384\u00d7128 GEMM-per-batch shape better.\n- Swap the grid axes so `pid_n` (batch) is the innermost/outer-most strategically: keep N on axis 0 but tile M (OHW=16384) on axis 1 with larger BLOCK_M (e.g. 128) since OC=128 fits in a single BLOCK_N tile \u2014 this eliminates the OC tiling loop entirely.",
+    "large_guidance": "- Keep the implicit-im2col + fused-epilogue structure but redesign indexing so OC is fully covered by a single BLOCK_N=128 tile (no pid_oc loop): grid becomes `(N, cdiv(OHW, BLOCK_M))` with BLOCK_N fixed at 128. This halves grid overhead and lets the weight tile be reused across all M tiles in a batch via L2.\n- Consider a channels-last (`NHWC`) input layout so the GEMM-K loop walks contiguous memory across `ic`; permute input once at the entry of `forward` (or accept it pre-permuted) and store output as NHWC then permute back \u2014 coalesced K-axis loads typically give 1.3-1.6\u00d7 on Ampere for this shape.\n- For KH=KW=3 specifically, fully unroll the 9 (kh,kw) positions and loop only over IC in chunks of BLOCK_K=64: this removes the integer division/modulo `ic = offs_k // KHKW; rem = offs_k % KHKW` from the inner loop and lets the compiler hoist all spatial offsets, often a big win for small fixed kernels.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 49,
+    "global_best_node_id": 44,
+    "global_best_score": [
+        1,
+        1,
+        0.6869813673057518
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 15,
+    "parent_node_id": 2,
+    "context_node_ids": [
+        1,
+        8
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5375802466441122,
+    "max_reward": 0.5375802466441122,
+    "avg_reward": 0.5375802466441122,
+    "score": [
+        1,
+        1,
+        1.2350370348139257
+    ],
+    "small_guidance": "- The conv kernel iterates over `IC` and `KD/KH/KW` separately inside the BLOCK_SP loop; collapse the `IC` static loop into a tiled `tl.dot` by reshaping weight to `[IC, OC]` per `(kd,kh,kw)` and loading `x` as `[IC, BLOCK_SP]` \u2014 this turns the inner accumulation into a matmul that uses tensor cores instead of scalar FMA.\n- Add autotune configs with smaller `BLOCK_SP` (16, 32) plus `num_warps=2` since `OW=63` and the current 64/128/256 tiles waste lanes on the tail; also try `num_stages=4` for the larger tiles to better hide gmem latency.\n- In the GroupNorm kernel, fuse the two passes by keeping the loaded `x` resident \u2014 for `group_elems = 4\u00b78\u00b764\u00b764 = 131072` it won't fit, but you can cache `(x-mean)*rstd` partially; alternatively raise `BLOCK_SIZE` to 8192 with `num_warps=16` to reduce loop iterations on the reduction pass.",
+    "large_guidance": "- Restructure ConvTranspose3d as an input-stationary scatter-add: one program per `(N, IC tile, ID, IH, IW tile)` loads `x[n, ic_tile, id, ih, iw_tile]` once, computes the `[IC, OC]` \u00d7 `[IC, IW_tile]` outer product via `tl.dot` for each `(kd,kh,kw)`, and atomic-adds into the output. This reuses each input element `KD*KH*KW` times from registers and lets you use tensor cores. Apply Swish in a separate small epilogue kernel after the scatter (or fuse into GroupNorm's first read pass).\n- Alternatively, gather-style with explicit GEMM: reshape so each program computes `[OC, BLOCK_SP]` via `tl.dot(W_tile[OC, IC], X_tile[IC, BLOCK_SP])` accumulating across `(kd,kh,kw)` \u2014 this is what the small-guidance suggests but as a full redesign with `OC=16` padded to 16, `BLOCK_SP=32`, and `IC=3` padded to 4 or 8 for dot.\n- Fuse Swish into the GroupNorm kernel's load pass: emit the un-activated conv output, then have GroupNorm apply `x*sigmoid(x)` on the fly during the welford pass and hardswish on the store pass. This removes one full read+write of a `128\u00d716\u00d731\u00d763\u00d763` tensor (~250MB) between the two current kernels.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 16,
+    "global_best_node_id": 15,
+    "global_best_score": [
+        1,
+        1,
+        1.2350370348139257
+    ]
+}

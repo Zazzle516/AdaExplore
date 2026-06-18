@@ -1,0 +1,30 @@
+{
+    "node_id": 23,
+    "parent_node_id": 16,
+    "context_node_ids": [
+        1,
+        16
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.49487146906401525,
+    "max_reward": 0.49487146906401525,
+    "avg_reward": 0.49487146906401525,
+    "score": [
+        1,
+        1,
+        0.8826896197781255
+    ],
+    "small_guidance": "- The current kernel is dominated by the cuBLAS GEMM (M=1024, N=K=8192 fp32). The Triton row-sum is trivial. To beat baseline, fuse the row-sum into the GEMM epilogue: drop the separate `_row_sum_kernel` and use the already-implemented `fused_gemm_rowsum_kernel` (with `atomic_add` per N-tile) so the (M,N) output is never materialized.\n- For the fused kernel on M=1024, N=K=8192, add larger-K configs: `BLOCK_M=128, BLOCK_N=256, BLOCK_K=32/64, num_warps=8, num_stages=4` and `BLOCK_M=64, BLOCK_N=256, BLOCK_K=64`. Wider BLOCK_N reduces atomic-add traffic since each program contributes one partial per row.\n- Pre-transpose W to (K, N) contiguous once in `__init__` so the inner load of B is contiguous on N, eliminating `tl.trans` in the hot loop and improving MMA layout.",
+    "large_guidance": "- Rewrite as a single persistent kernel: one program per M-tile that streams across all N tiles, accumulating both the GEMM and the running row-sum in registers, then writes a single fp32 per row at the end (no atomics, no intermediate (M,N) tensor). With M=1024 this is only 8-16 programs; make them persistent and loop over K within each N-tile.\n- Alternative: treat the whole pipeline (linear \u2192 sum \u2192 max \u2192 mean \u2192 lse \u2192 lse) as a single reduction-per-row. For each row m, compute `s = sum_n (sum_k x[m,k]*W[n,k] + b[n])` directly via the identity-free expansion at runtime (compute each y[m,n] tile, sum). The trailing max/mean/lse on a (M,1) tensor are free \u2014 fuse them into a tiny epilogue kernel or even do them on host.\n- Consider splitting K across programs with split-K + atomic add into the per-row scalar accumulator; with N=K=8192 and only M=1024, the GEMM is N-bound and split-K (e.g. SPLIT_K=4) plus a fused N-reduction can expose more parallelism than the current 1024/BLOCK_M row grid.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 24,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        0.8826896197781255
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 10,
+    "parent_node_id": 9,
+    "context_node_ids": [
+        8
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The current partial buffer is (M, n_tiles) with one row per M element, but each program writes only its BLOCK_M rows for a single pid_n \u2014 this is fine, but the final reduce launches M=128 tiny programs each reducing ~256 partials. Instead, fuse the sigmoid+row-sum entirely inside the GEMM by using atomic_add into a single (M,) output (one float per row), removing the second kernel and the partial buffer's M\u00d7n_tiles traffic.\n- Add larger-N autotune configs (BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4) and a GROUP_M swizzle (group=8) so L2 reuse on the weight matrix improves \u2014 K=N=32768 is huge and the K-loop is the bottleneck.\n- Consider splitting the K dimension across programs (split-K with atomic_add into the row accumulator) so the 32768-long K loop is parallelized; with M=128 the current grid is under-occupied (only 128/BLOCK_M \u00d7 N/BLOCK_N programs, and BLOCK_M\u226532 makes the M-grid tiny).",
+    "large_guidance": "- Redesign as a split-K GEMM that directly produces the per-row sigmoid-sum: grid = (M_tiles, N_tiles, K_splits); each program computes a (BLOCK_M, BLOCK_N) tile of `sigmoid(x@W^T + b)`, reduces along N inside the program, and atomic-adds into a (M,) output. This eliminates both the (M, n_tiles) partial buffer and the second reduction kernel, and exposes far more parallelism on a 4090 (current grid is ~128/64 \u00d7 32768/128 = 512 programs with huge K-loops; split-K with K_SPLIT=4-8 gives 4-8\u00d7 more programs).\n- Since M=128 is small and N=K=32768 are huge, treat this as \"tall-skinny GEMM + row reduction\": persistent kernel where each program owns a slice of K and a slice of N, streams W in tiles, keeps the small (M=128, BLOCK_N) accumulator in registers/SMEM, and finally atomic-adds a (BLOCK_M,) row-sum vector to global. The weight matrix (32768\u00d732768 fp32 = 4 GiB) is the dominant traffic \u2014 maximize L2 reuse by having each program read the same W tile for all M rows (M fits in one block easily).\n- Alternative: transpose the problem \u2014 compute `out[m] = sum_n sigmoid(sum_k x[m,k]*W[n,k] + b[n])`. With M=128 fitting in a single BLOCK_M, launch grid=(N_tiles,) where each program loads its BLOCK_N rows of W once, streams x[M, K] through the K loop accumulating a (M, BLOCK_N) tile, applies sigmoid, sums over BLOCK_N, and atomic-adds (M,) into out. Each weight element is read exactly once \u2014 optimal W bandwidth.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 11,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

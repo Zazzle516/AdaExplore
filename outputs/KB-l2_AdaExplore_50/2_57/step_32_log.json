@@ -1,0 +1,30 @@
+{
+    "node_id": 32,
+    "parent_node_id": 14,
+    "context_node_ids": [
+        3,
+        14
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4974575262832406,
+    "max_reward": 0.4974575262832406,
+    "avg_reward": 0.4974575262832406,
+    "score": [
+        1,
+        1,
+        0.9040245918367347
+    ],
+    "small_guidance": "- Swap the GEMM-K loop order: put `ic` as the outermost reduction (or collapse `ic*KH*KW` into a single K-loop with `BLOCK_K` tiling and `tl.dot`) so the inner accumulation uses `tl.dot` on register tiles instead of FMA via broadcasted outer products. With IC=8, KH=KW=3 \u2192 K=72, pad to BLOCK_K=16/32 and use `tl.dot` for tensor-core throughput.\n- Add larger spatial tiles to the autotune grid (`BLOCK_N`=512/1024 with `BLOCK_OC`=64) and try `num_stages=4`; with OC=64 only one OC tile is needed, so spend the SM budget on N. Also try `BLOCK_OC=32` to allow more `BLOCK_N` per program when shared memory is tight.\n- Reorder grid axes (`pid_n` as axis 1, `pid_oc` as axis 0) and/or add a small L2 swizzle so neighboring programs share input rows; current row-major launch already touches the same input across OC tiles but only OC=64 means just 1 OC block \u2014 try a 2D `tl.swizzle2d` over the N axis for better L2 reuse across kh/kw shifts.",
+    "large_guidance": "- Switch to an explicit im2col-style GEMM with `tl.dot`: build K = IC*KH*KW (=72) as the contracted dim, tile (BLOCK_M=output pixels, BLOCK_N=OC, BLOCK_K=16/32), load A as a [BLOCK_M, BLOCK_K] gathered patch and B as the [BLOCK_K, BLOCK_N] reshaped weight, and accumulate with `tl.dot`. This uses tensor cores and should comfortably beat the current scalar FMA loop on a 4090.\n- Use NHWC (channels_last) layout for x and the output so the K-axis gathers (over IC and within a kh,kw row) are contiguous loads; permute weight to [KH,KW,IC,OC] once at init. Materialize y in NHWC then permute back to NCHW at the end (cheap relative to the conv).\n- Fuse bias + ReLU + HardSwish into the epilogue (already done) but compute on the accumulator before any store; with the tl.dot path, also consider a persistent-CTA scheme over (N tile) since OC=64 fits in one tile, eliminating relaunch overhead per OC block.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 33,
+    "global_best_node_id": 22,
+    "global_best_score": [
+        1,
+        1,
+        2.06996285046729
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 12,
+    "parent_node_id": 11,
+    "context_node_ids": [
+        10,
+        11
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4786200788709008,
+    "max_reward": 0.4786200788709008,
+    "avg_reward": 0.4786200788709008,
+    "score": [
+        1,
+        1,
+        0.7486156506849314
+    ],
+    "small_guidance": "- The kernel currently passes `w_t` (K\u00d7N, contiguous) but tells Triton `stride_bk=w_t.stride(0)=N` and `stride_bn=w_t.stride(1)=1`, which is correct \u2014 but `w_t = W.t().contiguous()` produces a row-major (K, N) buffer; verify B-loads are vectorized. Try caching `W` directly and swapping the matmul to `A @ W.T` via swapping pointer strides instead of an extra transpose copy.\n- Add larger/asymmetric autotune configs better suited to M=16384, N=4096, K=4096: `BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, num_warps=4, num_stages=4` and `BLOCK_M=256, BLOCK_N=64, BLOCK_K=32` variants; also try `GROUP_M=4` and `16`. Drop the very wide BLOCK_N=256 configs that often spill on 4090.\n- Mask the final stores (`offs_cm < M`, `offs_cn < N`) and the A/B loads on the K boundary tail; without masks, when M or N is not a multiple of the tile the kernel may over-read \u2014 currently fine for 16384/4096 but limits autotune choices. Also consider loading `scale`/`shift` once per program (already done) but in fp32 explicitly and reusing across an M-loop by making the program persistent over M tiles within a column tile.",
+    "large_guidance": "- Switch to a split-K or stream-K GEMM: with M=16384, N=4096, K=4096 the problem is compute-bound and a stream-K schedule keeps all SMs busy through tail tiles, typically beating cuBLAS on 4090 for square GEMMs. Fuse the BN-affine + GELU + ReLU into the final epilogue exactly as now.\n- Move to fp16/bf16 tensor cores for the matmul: cast `x` and `W^T` to bf16 on entry (keep the fp32 accumulator and fp32 scale/shift), which roughly doubles tensor-core throughput on Ada. The reference runs fp32, so confirm tolerance; if too tight, keep fp32 but use TF32 (`tl.dot(..., allow_tf32=True)`) and `input_precision=\"tf32\"` \u2014 this alone often beats cuBLAS fp32.\n- Consider a persistent-CTA kernel: launch `num_sms` programs that loop over assigned `(pid_m, pid_n)` tiles, amortizing the scale/shift loads and reducing launch/prologue overhead; combine with L2-aware swizzling.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 13,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.7537785172413792
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 21,
+    "parent_node_id": 20,
+    "context_node_ids": [
+        19,
+        20
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4269946825509384,
+    "max_reward": 0.4269946825509384,
+    "avg_reward": 0.4269946825509384,
+    "score": [
+        1,
+        1,
+        0.3227061310452418
+    ],
+    "small_guidance": "- The post-conv `x.contiguous()` call forces a layout conversion from channels_last_3d back to NCDHW, which is expensive on a (16,64,32,128,128) tensor; drop that and have the kernel index channels_last_3d directly (stride pattern N,DHW*C,HW*C,W*C,C,1) so the conv output is consumed in its native layout.\n- BLOCK_C=64, BLOCK_D=32 with only `num_warps=2` underutilizes the SM; try `num_warps=4` or `8` and `num_stages=3`, and wrap in `triton.autotune` over (BLOCK_C in [64], BLOCK_D in [32], num_warps in [2,4,8]).\n- Launch one program per (B, hw_tile) processing e.g. BLOCK_HW=8 spatial points at once so the bias load and softmax max/sum reductions are amortized; this also raises arithmetic intensity for the depth-reduction loads.",
+    "large_guidance": "- The dominant cost is the `ConvTranspose3d` itself (stride=1, padding=1, k=3 makes the output the same shape as input \u2014 16\u00d764\u00d732\u00d7128\u00d7128 \u2248 134M output elements, ~7.7 GFLOPs of conv). The fused tail kernel is already cheap; replacing the cuDNN conv-transpose with a custom Triton kernel is the only path to meaningful speedup. Implement it as a direct gather conv (since stride=1, ConvTranspose3d with k=3,pad=1 is equivalent to a regular Conv3d with flipped kernel and pad=1) \u2014 one program per (N, OC tile, D\u00b7H\u00b7W tile), accumulating over (IC, kd, kh, kw).\n- Fuse the depth-mean directly into the conv epilogue: have the conv kernel iterate D in the inner loop and accumulate a per-(n, oc, h, w) running sum, then divide by D, add bias, and write to a (B,C,H,W) buffer \u2014 eliminating the 128 MB intermediate entirely. The softmax/tanh/scale stage can then run over only B\u00b7C\u00b7H\u00b7W = 16.7M elements.\n- Use channels_last_3d layout with BLOCK_OC=32, BLOCK_HW=64, looping over IC and (kd,kh,kw) so the K reduction stays in registers; this is the standard im2col-style GEMM tile and gives coalesced loads on both x and weight.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 22,
+    "global_best_node_id": 10,
+    "global_best_score": [
+        1,
+        1,
+        2.7991154262516913
+    ]
+}

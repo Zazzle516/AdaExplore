@@ -1,0 +1,29 @@
+{
+    "node_id": 11,
+    "parent_node_id": 10,
+    "context_node_ids": [
+        10
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4614389232323233,
+    "max_reward": 0.4614389232323233,
+    "avg_reward": 0.4614389232323233,
+    "score": [
+        1,
+        1,
+        0.6068711166666666
+    ],
+    "small_guidance": "- The standalone activation+bias kernel is memory-bound and tiny; the conv dominates. Tuning BLOCK_SIZE/num_warps on it won't move fast_p meaningfully. If staying small, try BLOCK_SIZE=4096, num_warps=4, and replace the `(offsets // channel_stride) % n_channels` div/mod with a 3D launch grid `(N, C, D*H*W/BLOCK)` so the channel index is `program_id(1)` and bias is a single scalar load.\n- Use `tl.sigmoid` directly and drop the manual `1/(1+exp(-x))`; same for a faster tanh via `tl.math.tanh` if available, else keep current closed form. Ensure the kernel writes in-place into the conv output buffer to save one global write.",
+    "large_guidance": "- The Conv3d (cuDNN) is the bottleneck at fast_p\u22480.6. Replace it with a custom Triton im2col-style GEMM kernel: one program per (N, OC tile, output-spatial tile), GEMM-K = IC*KD*KH*KW=216, and fuse ReLU\u2192LeakyReLU\u2192GELU\u2192Sigmoid\u2192bias into the epilogue on the accumulator before store. Since ReLU then LeakyReLU(0.01) on a non-negative value is identity, and GELU is monotonic, you can simplify the epilogue to `sigmoid(gelu(relu(x))) + bias` in registers.\n- Use channels-last (NDHWC) layout for the conv input/weight so the GEMM-K axis (IC contiguous) coalesces. Start autotune with safe tiles: (BM,BN,BK) \u2208 {(32,32,16),(64,32,16),(32,64,16),(64,64,32)}, num_warps=4, num_stages=2 to stay within 132KB SMEM.\n- Output spatial is 30*62*62=115320 per (N,OC); flatten (D_out,H_out,W_out) into a single GEMM-M axis and precompute (d,h,w) from the linear index with hoisted strides. Loop over the K=216 reduction in chunks of BK, gathering input via computed offsets (implicit im2col, no materialization).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 12,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.95764876344086
+    ]
+}

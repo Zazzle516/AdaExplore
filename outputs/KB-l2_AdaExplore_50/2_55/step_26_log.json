@@ -1,0 +1,30 @@
+{
+    "node_id": 26,
+    "parent_node_id": 25,
+    "context_node_ids": [
+        17,
+        25
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness bug is the atomic_add accumulating across the N-tile grid combined with the per-tile masking of invalid output positions to 0 for pooling, plus the pooled_mask zeroing pooled positions: with BLOCK_N tiles that don't perfectly partition OUT_FEATURES/KERNEL_SIZE and per-tile pool windows crossing tile boundaries, results corrupt. Make BLOCK_N a multiple of KERNEL_SIZE and ensure OUT_FEATURES is divisible by BLOCK_N (it is: 32768), then drop the pooled_mask zeroing (every tile produces valid pooled positions). Also initialize masked acc entries with -inf only when bias-masked lanes exist, not unconditionally.\n- Switch the output accumulator from atomic_add on global `out` to a 2D partial buffer `[num_n_tiles, B]` then a follow-up `sum`-along-N-tiles kernel (or torch.sum), to avoid atomic contention and the float nondeterminism that may be hiding the real bug.\n- Add a GROUP_M swizzle (8) and try BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, num_warps=8, num_stages=4 \u2014 M=128 is small so prefer larger BLOCK_M to reduce launch grid.",
+    "large_guidance": "- Redesign as a two-stage pipeline: (1) a tiled GEMM+bias kernel that writes the full [B, OUT_FEATURES] matmul output (or a streamed tile), (2) a fused max-pool-1d + sum + scale reduction kernel that consumes it. This decouples the GEMM tile shape from KERNEL_SIZE alignment and removes atomic_add entirely, which is the likely source of the correctness failure.\n- Alternative single-pass design: one program per row (M=1) or per small M-tile, persistent across the full N dimension. Loop over N in chunks of BLOCK_N (multiple of KERNEL_SIZE), compute the GEMM tile via tl.dot with K-loop, add bias, do intra-chunk max-pool reduction, accumulate the partial sum in a register scalar, and write a single output per row at the end. This avoids any cross-program reduction and atomics.\n- For K=32768, K-loop dominates: ensure B (weight) is pre-transposed to [IN, OUT] once in __init__ so the inner load is contiguous along K for both A and B, and use BLOCK_K=64 with num_stages=4 for software pipelining.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 27,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

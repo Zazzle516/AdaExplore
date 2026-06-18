@@ -1,0 +1,29 @@
+{
+    "node_id": 35,
+    "parent_node_id": 34,
+    "context_node_ids": [
+        34
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5408715031429925,
+    "max_reward": 0.5408715031429925,
+    "avg_reward": 0.5408715031429925,
+    "score": [
+        1,
+        1,
+        1.262189900929688
+    ],
+    "small_guidance": "- The inner spatial loop currently issues KD*KH*KW=27 separate scalar weight loads and broadcasts them against BLOCK_HW input vectors; try restructuring so the innermost accumulation uses `tl.dot` on a (C_PAD, KVOL) weight tile \u00d7 (KVOL, BLOCK_HW) im2col tile per output-depth slab \u2014 this turns the 27-iteration FMA chain into a single MMA and should be a large win on Ada.\n- Add autotune configs with smaller BLOCK_HW (32) paired with larger C_PAD-direction blocking, and try `num_stages=4` with `num_warps=4` \u2014 current shapes (OH*OW=900, C_out=24) likely under-occupy at BLOCK_HW\u2265256, and the autotuner is probably picking a config that wastes lanes on `C_PAD=32` vs `C_out=24` (25% waste).\n- Hoist `oh*W + ow` and the per-(kh,kw) constant offsets into precomputed register tiles outside the `od` loop; currently they're recomputed each `od` iteration even though they're invariant.",
+    "large_guidance": "- Rewrite as an im2col GEMM: for each (n, od) and output-spatial tile, gather a (C_in*KH*KW, BLOCK_HW) input patch tile and multiply by the (C_out, C_in*KH*KW) weight matrix using `tl.dot`. Run the OD reduction (min) as an outer loop accumulating into a (C_out, BLOCK_HW) min-tile register, then fuse bias + softmax epilogue. This exploits tensor cores instead of the current scalar-broadcast FMA pattern.\n- Consider a two-stage design: (1) a conv3d kernel writing (N, C_out, OD, OH, OW) using the GEMM formulation above with proper BLOCK_M/N/K tuning, (2) a fused min-along-D + softmax-along-C kernel. The current single-kernel fusion forces C_PAD=32 (next pow2 of 24) into every tile and serializes the OD axis; splitting may allow better tile shapes and parallelism over OD for the conv stage.\n- Alternatively, swap the loop order: make OD the outermost parallel grid dim (program over (N, od, hw_tile)) producing a (C_out, BLOCK_HW) per-od tile, then do an atomic-min or a second pass to reduce across od. The current sequential OD loop inside one program serializes 22 depth iterations of heavy compute per program; parallelizing OD would expose ~22\u00d7 more blocks to the SM scheduler.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 36,
+    "global_best_node_id": 35,
+    "global_best_score": [
+        1,
+        1,
+        1.262189900929688
+    ]
+}

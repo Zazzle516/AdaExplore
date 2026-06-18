@@ -1,0 +1,31 @@
+{
+    "node_id": 43,
+    "parent_node_id": 18,
+    "context_node_ids": [
+        8,
+        11,
+        18
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing with avg diff ~5e-5 and max ~4e-3, suggesting the GN stats are computed with insufficient precision or the group layout is wrong. Verify that `GROUPS_PER_PROG` doesn't mix channels across groups incorrectly \u2014 with `num_groups=256, out=8192`, group_size=32, the 2D `[GROUPS_PER_PROG, BLOCK]` reduction over axis=1 looks correct, but double-check the `tl.where(mask, x, 0.0)` for sum is applied (it is) and that `eps=1e-5` matches PyTorch's default (it does). The actual bug is likely that `BLOCK=32` equals `GROUP_SIZE=32` and `mask` is always true \u2014 fine. Inspect whether `mean/GROUP_SIZE` integer division promotes correctly; cast `GROUP_SIZE` to float explicitly (`mean = sum_x / float(GROUP_SIZE)`).\n- Try `num_warps=4, num_stages=3` for the GN kernel with `groups_per_prog=8` (total 256 elements per program) \u2014 current heuristic picks `nw=2` which under-utilizes.\n- Prune the GEMM autotune list to the 3-4 configs known good for M=N=K=8192 (e.g. 128x256x32 nw8 s3, 128x128x64 nw8 s4) to cut autotune overhead.",
+    "large_guidance": "- Fuse the GroupNorm+Swish+Mul+Swish epilogue directly into the GEMM kernel's store: after `acc` has the post-bias output for a `(BLOCK_M, BLOCK_N)` tile, if `BLOCK_N` is a multiple of `group_size` (32) the per-row group stats can be computed in-register with a segmented reduction, eliminating a full write+read of the 1024x8192 intermediate.\n- Alternatively, redesign as a split-K / persistent GEMM that writes the GEMM output once, then a second persistent kernel performs the GN reduction with one program per row (M=1024 fits well) iterating num_groups groups sequentially in registers \u2014 keeps the row in L1 across all groups and avoids the per-program launch overhead of 1024\u00d732 programs.\n- Use `tl.rsqrt` instead of `1/tl.sqrt` and compute mean/var in a single Welford pass to improve numerical accuracy (current two-pass with fp32 should be fine, but verify the cast \u2014 load `x` as fp32 from the start since GEMM output is already fp32).",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 44,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

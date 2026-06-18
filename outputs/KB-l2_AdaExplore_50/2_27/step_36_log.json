@@ -1,0 +1,29 @@
+{
+    "node_id": 36,
+    "parent_node_id": 35,
+    "context_node_ids": [
+        35
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.0,
+    "max_reward": 0.0,
+    "avg_reward": 0.0,
+    "score": [
+        0,
+        0,
+        0
+    ],
+    "small_guidance": "- The compile crash comes from the GroupNorm kernel: `sum_x = tl.zeros((), dtype=tl.float32)` is declared then overwritten by `tl.sum(chan_sums, axis=0)` after the loop, and `chan_sums` is reduced via `tl.sum(v, axis=1)` whose result is used in multiple downstream ways (channel-mean and group-sum) \u2014 this triggers the `loopResult.hasOneUse()` MLIR assertion. Remove the unused `sum_x` init and only accumulate `sum_x` and `sum_x2` as scalars inside the loop (drop the per-channel `chan_sums` vector, or split into two separate kernels/passes so the loop-carried vector is consumed once).\n- For the conv kernel, reduce per-program register pressure: `BLOCK_SP=1024\u20132048` \u00d7 64 inner mac iterations is heavy; add smaller-tile configs (`BLOCK_SP=64/128` with `num_warps=2/4`) and let autotune pick. Also hoist `id_/ih_/iw_` computation outside the `ic` loop (they don't depend on `ic`).\n- Pass `eps` as a regular fp32 scalar argument rather than `tl.constexpr` (a Python float constexpr is fine, but ensure all autotune `key`s actually appear as kernel args; `IC_CONST` is used as key but is the same value as `IC` \u2014 OK, just confirm).",
+    "large_guidance": "- Rewrite Conv3D as an implicit-GEMM: one program per `(B, OC_tile, OSP_tile)` with `BLOCK_M=OC tile`, `BLOCK_N=spatial tile`, `BLOCK_K=IC*KD*KH*KW` reduction using `tl.dot`. With OC=16 and IC*KD^3=192, a single K-loop with `BLOCK_K=32` and `BLOCK_M=16, BLOCK_N=64` maps cleanly and uses tensor cores instead of the current scalar FMA chain.\n- Fuse the conv epilogue (hardswish) and also fuse GroupNorm's *first pass* (per-group sum_x, sum_x2 accumulation) directly into the conv kernel by atomic-adding into `(B, num_groups)` scratch buffers indexed by `pid_oc // CPG`. Then a tiny second kernel computes mean/rstd and produces the final `(B, C)` mean output by re-reading conv_out \u2014 or better, accumulate per-channel spatial sums in the conv epilogue so the final kernel needs only `(B, C)` reads, not `(B, C, OSP)`.\n- Alternative cleaner design: keep conv+hardswish as kernel 1, then do GroupNorm+spatial-mean as a *single* kernel with one program per `(B, group)` that streams the `CPG*OSP` elements once, accumulating `sum_x`, `sum_x2`, and per-channel `sum_x_c` as scalar/short-vector reductions only \u2014 avoiding the loop-carried vector pattern that hit the MLIR bug. Use `BLOCK_S` along the spatial axis with `num_warps=8`.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 37,
+    "global_best_node_id": 30,
+    "global_best_score": [
+        1,
+        1,
+        0.8530881206706803
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 35,
+    "parent_node_id": 9,
+    "context_node_ids": [
+        9
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The partial workspace is over-allocated for BLOCK_N=128 then read with NTILES computed from the chosen BLOCK_N \u2014 when autotune picks BLOCK_N=256, the stored partials sit at stride-256 positions but reduce reads stride-1; verify layout, and instead allocate `partial` after `best_config` is known, or fix `partial.stride(1)` to match the chosen BLOCK_N tile count. Cleaner: drop the two-kernel split and accumulate the pooled-sum directly with `tl.atomic_add` into a (M,) buffer, eliminating the reduce kernel entirely.\n- Add larger-tile autotune configs biased to N=32768 with K=32768: `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4` and `BLOCK_M=64, BLOCK_N=512, BLOCK_K=32` \u2014 N is huge so wide N tiles amortize the bias/pool/reduce epilogue. Also try `num_stages=4` on the K loop to overlap loads since K=32768 dominates.\n- Pre-transpose W to `(K, N)` contiguous once in `__init__` so the inner-K load on W is contiguous (currently `stride_wn=K, stride_wk=1`, but loading w as `[BLOCK_K, BLOCK_N]` with offs_k on the row dim does strided gathers across N) \u2014 store `W_t` and load as `w_ptrs = W_t + offs_k[:, None]*N + offs_n[None, :]`.",
+    "large_guidance": "- The dominant cost is a 128\u00d732768\u00d732768 GEMM (~275 GFLOPs); a from-scratch rewrite should target a true split-K persistent GEMM with `tl.atomic_add` of the row-pooled-sum scalar per (M-row, K-tile) into the (M,) output, fusing bias+maxpool(kernel=2 along N)+sum+scale into the epilogue with zero intermediate writes. Since M=128 is tiny, use `BLOCK_M=128` (one program covers all rows) and parallelize the grid over (N-tile \u00d7 K-split), which exposes far more SMs than the current (M/BLOCK_M)\u00d7(N/BLOCK_N) grid that leaves SMs idle.\n- Alternatively, since M=128 is small and K=N=32768 is huge, structure as a persistent kernel where each program owns a contiguous N-tile and streams all M rows through it, keeping the W tile resident in registers/shared and reloading X \u2014 this maximizes W reuse (W is 4 GB, the bandwidth bottleneck) across the 128 rows.\n- Use fp16/bf16 tensor-core `tl.dot` with fp32 accumulate (cast X and W to bf16 at load time or store W as bf16 in init); on Ada this roughly doubles GEMM throughput and the 5e-2 tolerance accommodates it. Combined with the pool+sum+scale epilogue and atomic-add reduction, this should move the kernel from ~4.6 ms toward sub-millisecond.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 36,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 22,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4727956748006255,
+    "max_reward": 0.4727956748006255,
+    "avg_reward": 0.4727956748006255,
+    "score": [
+        1,
+        1,
+        0.7005643171051601
+    ],
+    "small_guidance": "- The inner loop reloads the same input 5\u00d75\u00d73 window OC times via broadcast \u2014 try BLOCK_HW=128 with num_warps=8 and num_stages=3 to better hide the gather latency, and add an autotune sweep over (BLOCK_HW \u2208 {64,128,256}, num_warps \u2208 {4,8}, num_stages \u2208 {2,3,4}).\n- Reorder the loops so `kd/kh/kw` are outermost and `ic` innermost; precompute `id_*H*W + ih*W + iw` once per (kd,kh,kw,od) and accumulate `tl.dot` of a small (BLOCK_OC, IC) weight tile against an (IC, BLOCK_HW) input tile to actually use tensor cores instead of pure FMAs.\n- Cast `min_val` to fp16 for the softmax store path is unnecessary, but you can fuse the `od` loop's accumulator reset by reusing one `acc` register and clearing with `acc *= 0` to drop a few SASS instructions; also pad OC to BLOCK_OC=32 (it's already 24\u219232) and drop the per-iteration `mask_oc` on weight loads by zero-padding bias/weight once on the host.",
+    "large_guidance": "- Switch to an im2col-style GEMM formulation: one program per (N, OC_tile, OHW_tile), with the K dimension being IC*KD*KH*KW=3*27=81. Use `tl.dot` on (BLOCK_OC, BLOCK_K) \u00d7 (BLOCK_K, BLOCK_HW) tiles inside an OD loop, and fuse the running min over OD plus the channelwise softmax in the epilogue. This gives ~7\u00d7 the arithmetic intensity of the current scalar-FMA broadcast loop.\n- Alternative: since IC=3 and KD*KH*KW=27 (K=81) is tiny, make the kernel persistent across OD \u2014 keep the (BLOCK_OC, BLOCK_HW) min accumulator in registers, stream OD as the outer loop, and have each program own one (n, oh_tile, ow_tile) tile so weights are loaded once per program rather than OD times.\n- Channels-last (NDHWC) input layout would let the IC*KD*KH*KW gather coalesce on the K axis; reshape weight to (OC, K) once at init and pre-transpose for the GEMM. The softmax over OC=24 fits in a single warp's registers, so do it without a second kernel.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 23,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        1.2396817133959623
+    ]
+}

@@ -1,0 +1,27 @@
+{
+    "node_id": 15,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5746842313571656,
+    "max_reward": 0.5746842313571656,
+    "avg_reward": 0.5746842313571656,
+    "score": [
+        1,
+        1,
+        1.5411449086966162
+    ],
+    "small_guidance": "- The GEMM dominates (B=2048, N=K=8192). Add larger autotune configs (BLOCK_M=128, BLOCK_N=256, BLOCK_K=64; BLOCK_M=256, BLOCK_N=128, BLOCK_K=64) with num_warps=8, num_stages=3-4, and add a GROUP_M=8 block-swizzle for L2 reuse across N tiles.\n- Fuse the row-mean reduction into the GEMM epilogue: each (pid_m, pid_n) tile does `tl.sum(acc - sub, axis=1)` and `tl.atomic_add` into a per-row partial-sum buffer of size B. This eliminates writing/reading the full (B, N) y tensor (256 MB of traffic) \u2014 the kernel becomes write-light.\n- Eliminate `original_x.contiguous()` in the residual-add (input is already contiguous), and increase BLOCK to 4096 with num_warps=8 since the residual-add is purely bandwidth-bound.",
+    "large_guidance": "- Redesign as a single fused \"GEMM \u2192 row-reduce \u2192 GELU \u2192 residual-add\" pipeline. Stage 1: a streaming GEMM that never materializes y \u2014 each tile atomically adds its row-partial-sum into a (B,) accumulator. Stage 2: a tiny kernel that divides by N, applies GELU. Stage 3: residual-add (or fuse into stage 2 by launching one program per (row, col-tile) that loads the scalar once).\n- Since output is `original_x + scalar_per_row` and `scalar_per_row` is just `GELU(mean(Wx + b - sub))`, the GEMM only needs to produce per-row sums of (Wx+b-sub). This is still the full GEMM work (every multiply/add executes), but we avoid the (B, N)=64M-element store/load round-trip. The reduced output is (B,) \u2014 a 4-order-of-magnitude reduction in epilogue traffic.\n- Consider a split-K or persistent-grid variant: with M=2048 small and K=N=8192 large, a persistent kernel where each program owns a row-group and streams across N tiles in a register accumulator (no atomics) may beat the atomic-add approach. Pick whichever has better occupancy on the 4090.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 16,
+    "global_best_node_id": 10,
+    "global_best_score": [
+        1,
+        1,
+        1.5925164056531704
+    ]
+}

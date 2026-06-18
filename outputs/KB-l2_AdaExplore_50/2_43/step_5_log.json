@@ -1,0 +1,30 @@
+{
+    "node_id": 5,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        3,
+        4
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.426901844487672,
+    "max_reward": 0.426901844487672,
+    "avg_reward": 0.426901844487672,
+    "score": [
+        1,
+        1,
+        0.3219402170232936
+    ],
+    "small_guidance": "- The pool+LSE+ReLU kernel is already fast/cheap; the dominant cost is the Conv3d (channels_last_3d cudnn). Try an autotune sweep on the fused tail with BLOCK_S in {32,64,128} and num_warps in {2,4,8} but expect minor gains \u2014 runtime is conv-bound.\n- Drop the `x = x.contiguous()` after conv: the fused kernel uses explicit strides and works on channels_last_3d directly, saving a full layout-conversion copy of the post-conv tensor.\n- Consider folding the MaxPool's 2\u00d72\u00d72 reduction directly on channels_last_3d strides (offs_c uses stride_xc=1) so loads coalesce across channels rather than across the tiny W tile.",
+    "large_guidance": "- The Conv3d dominates (~20ms vs 6.7ms baseline \u2192 baseline likely uses cudnn implicit-gemm). Replace nn.Conv3d with a custom Triton implicit-GEMM conv: one program per (N, OC tile, output-spatial tile), K-loop over IC*kd*kh*kw, channels_last_3d input. Fuse bias + the 2\u00d72\u00d72 maxpool + channel-LSE + ReLU into the conv epilogue so the OC dimension is consumed inside the kernel and the (N,1,Do,Ho,Wo) output is written directly \u2014 no intermediate (N,64,D,H,W) tensor.\n- Alternative: keep cudnn conv but ensure no redundant layout conversions; the current `.contiguous()` after conv forces an NCDHW copy of a 4\u00d764\u00d732\u00d7128\u00d7128 tensor (~128MB) which alone could explain several ms. Removing it may already close a large fraction of the gap before any conv rewrite.\n- If writing custom conv, tune BLOCK_OC=32/64, BLOCK_SP=64/128, BLOCK_K=32, num_warps=4/8, and accumulate the maxpool 2\u00d72\u00d72 by having each program own a 2\u00d72\u00d72-aligned output tile so the pool reduction happens in registers across the tile.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 6,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.5111722529835502
+    ]
+}

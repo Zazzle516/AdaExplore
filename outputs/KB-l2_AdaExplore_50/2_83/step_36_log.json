@@ -1,0 +1,30 @@
+{
+    "node_id": 36,
+    "parent_node_id": 25,
+    "context_node_ids": [
+        1,
+        25
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.45592923095027954,
+    "max_reward": 0.45592923095027954,
+    "avg_reward": 0.45592923095027954,
+    "score": [
+        1,
+        1,
+        0.5614161553398058
+    ],
+    "small_guidance": "- The conv kernel currently uses BLOCK_W=64, OC_BLOCK=16 with only 4 warps; sweep configs like (BLOCK_W=32/64/128, OC_BLOCK=16, num_warps=4/8, num_stages=2/3/4) via `triton.autotune` \u2014 output spatial OW=62 means BLOCK_W=64 wastes lanes, try BLOCK_W=62 or process multiple OH rows per program (BLOCK_H=2 or 4) to amortize the bias load and increase arithmetic intensity.\n- Merge N*OD*OH into a 1D pid axis and tile (OH, OW) jointly so the kw loop reuses x loads across adjacent ow lanes; alternatively pre-pack the weight as [OC, IC*KD*KH*KW] and run a tile-GEMM with `tl.dot` against a register-held im2col patch (BLOCK_M=16 OC \u00d7 BLOCK_N=32-64 spatial \u00d7 BLOCK_K=27).\n- In `fused_gn_min_clamp`, the second pass re-reads x from global; since per-group footprint is CPG*S = 2*62*62*14*4B \u2248 432 KB it won't fit registers, but you can tile the reduction with BLOCK_S=4096 and use `num_warps=16, num_stages=3`; also the `tl.minimum(y, min_value)` followed by `tl.maximum(y, min_value)` is redundant \u2014 collapse to a single `tl.clamp(y, min_value, max_value)` style (maximum then minimum).",
+    "large_guidance": "- Recast conv3d as an explicit im2col-style tiled GEMM with `tl.dot`: K = IC*KD*KH*KW = 81, M = OC = 16 (pad to 16), N = output-spatial tile (e.g., 64\u2013128). One program per (N_batch, OD, spatial-tile); load a [BLOCK_M, BLOCK_K] weight tile (constant across spatial), gather a [BLOCK_K, BLOCK_N] input patch with computed offsets, accumulate via tensor cores. This will dramatically beat the current scalar FMA loop.\n- Fuse the conv epilogue directly with GroupNorm's first pass: as each conv output tile is computed, accumulate per-group sum and sum-of-squares in a workspace tensor (atomic-add into [N, G] buffers), then a second small kernel finalizes mean/rstd and a third applies the affine+min+clamp. Eliminates one full read/write of the 128\u00d716\u00d714\u00d762\u00d762 tensor.\n- Alternatively, since GroupNorm needs a full reduction across CPG*S elements, keep conv\u2192write, then run GN with one program per (N, group) that is persistent: vectorized two-pass over the contiguous [CPG, D, H, W] slab using BLOCK=4096, num_warps=16. Collapse min+clamp into `tl.clamp(y, min_value, max_value)` (since min(y,0) then clamp(0,1) == clamp(y, 0, max_value) when min_value=0 \u2014 but keep the general form using maximum/minimum to honor the contract).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 37,
+    "global_best_node_id": 20,
+    "global_best_score": [
+        1,
+        1,
+        0.83563387283237
+    ]
+}

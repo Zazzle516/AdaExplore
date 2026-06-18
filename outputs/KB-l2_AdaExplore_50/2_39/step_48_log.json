@@ -1,0 +1,31 @@
+{
+    "node_id": 48,
+    "parent_node_id": 29,
+    "context_node_ids": [
+        13,
+        16,
+        17
+    ],
+    "depth": 6,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.48033968637423186,
+    "max_reward": 0.48033968637423186,
+    "avg_reward": 0.48033968637423186,
+    "score": [
+        1,
+        1,
+        0.7628024125874125
+    ],
+    "small_guidance": "- The current implementation does `torch.addmm` separately, then runs two Triton passes. The GEMM (16384\u00d74096\u00d74096) dominates runtime; tuning the BN block sizes won't close the gap. If staying with this structure, at minimum fuse the scale*invstd*gamma multiply and bias add into the GEMM epilogue (single kernel) to eliminate the read/write of the 16384\u00d74096 intermediate `y` and the separate apply pass.\n- For the eval path (and after stats are computed in train), launch a single fused kernel that reads `y`, applies `a[n]*y + b[n]`, and writes out \u2014 but ideally roll this into the matmul epilogue rather than as a post-pass. BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, num_warps=8, num_stages=3 with GROUP_M=8 swizzle is a reasonable starting tile for 4090.\n- For the stats kernel, BLOCK_N=128 with BLOCK_M=1024 leaves M/BLOCK_M=16 sequential iterations per program; try BLOCK_N=64, BLOCK_M=2048, num_warps=4, and split-K across M (atomic adds into sum/sumsq) so multiple SMs cooperate per column tile.",
+    "large_guidance": "- Replace `torch.addmm` with a custom tiled GEMM (tl.dot, BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8) that fuses the linear bias, the per-column `scale`, and \u2014 in eval \u2014 the BN affine `a[n]*z + b[n]` directly in the accumulator epilogue. This collapses three kernels (matmul, scale, BN) into one and eliminates two full-tensor read/write passes over the 256MB intermediate.\n- For training, do a two-pass strategy that still keeps the GEMM custom: pass 1 = GEMM with epilogue `y = (xW^T + bias) * scale`, writing y and simultaneously accumulating per-column partial sum and sumsq via `tl.atomic_add` (one atomic per BLOCK_N tile per program, not per element). Pass 2 = elementwise apply of the affine. This avoids the separate stats reduction kernel entirely.\n- Alternatively, since M=N=K=4096 is large, use a split-K or persistent-GEMM design with `tl.atomic_add` for the K-split and Stream-K-style work distribution to better saturate the 4090's 128 SMs; the current addmm likely already uses cuBLAS efficiently, so beating it requires tighter epilogue fusion rather than a faster bare GEMM.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 49,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.7791481785714286
+    ]
+}

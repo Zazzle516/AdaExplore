@@ -1,0 +1,30 @@
+{
+    "node_id": 34,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        3,
+        4
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4319918083931786,
+    "max_reward": 0.4319918083931786,
+    "avg_reward": 0.4319918083931786,
+    "score": [
+        1,
+        1,
+        0.36393241924372327
+    ],
+    "small_guidance": "- The conv (Conv3d 32\u219264, 3\u00b3, on 4\u00d732\u00d7128\u00d7128) dominates runtime at 18.4 ms vs 6.7 ms baseline \u2014 fast_p=0.36 means the channels_last_3d torch conv path is actually slower than the baseline contiguous conv. Drop the `channels_last_3d` conversion and keep the input/weights contiguous so cuDNN picks its faster NCDHW algorithm; the fused pool/LSE/ReLU tail is already a tiny fraction of runtime.\n- For the existing fused tail kernel, BLOCK_S = next_power_of_2(Wo=64) = 64 with BLOCK_C=64 gives a 64\u00d764 tile \u2014 try BLOCK_S=32 with num_warps=4 to reduce register pressure and increase occupancy, since the kernel is memory-bound on the pool gather.\n- Consider folding the conv bias add into a separate epilogue only if conv is replaced; otherwise leave the tail kernel as-is since it's not the bottleneck.",
+    "large_guidance": "- The torch Conv3d is the dominant cost and is currently being slowed down by channels_last_3d. A from-scratch rewrite should implement Conv3d as a custom im2col-style GEMM Triton kernel: one program per (N, OC tile, output-spatial tile), with implicit im2col gather over (IC \u00d7 kD \u00d7 kH \u00d7 kW). Shape: OC=64 small, output spatial = 32\u00b7128\u00b7128 = 524288 per batch \u2014 tile by (BLOCK_OC=64, BLOCK_SP=64 or 128), BLOCK_K=32, autotune num_warps\u2208{4,8}, num_stages\u2208{2,3}.\n- Alternatively, fuse the entire pipeline: a single kernel per (N, output-pool-spatial-tile) that, for each of the 8 pool positions, computes the conv output for all 64 channels (small enough to fit in registers/SMEM), takes the max across the 2\u00d72\u00d72 window, then does the LSE+ReLU across channels \u2014 eliminating the intermediate (4,64,32,128,128) tensor (134 MB) entirely. This is the highest-leverage redesign.\n- Keep conv weights/bias preloaded once per program; with OC=64 and IC\u00b7kD\u00b7kH\u00b7kW = 32\u00b727 = 864, the weight tile is 64\u00b7864\u00b74B = 216KB \u2014 needs streaming, so loop over IC\u00b7k\u00b3 in chunks of BLOCK_K=32 accumulating into the per-channel register tile.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 35,
+    "global_best_node_id": 27,
+    "global_best_score": [
+        1,
+        1,
+        1.1936464374482187
+    ]
+}

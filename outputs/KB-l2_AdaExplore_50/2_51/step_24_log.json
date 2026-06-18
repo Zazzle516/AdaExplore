@@ -1,0 +1,30 @@
+{
+    "node_id": 24,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        1,
+        23
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5838808070361012,
+    "max_reward": 0.5838808070361012,
+    "avg_reward": 0.5838808070361012,
+    "score": [
+        1,
+        1,
+        1.6170166580478345
+    ],
+    "small_guidance": "- The GEMM-reduce kernel does enormous wasted work: it computes the full BxN output just to sum it along N. Instead, fuse by computing `row_sum = sum_n (X @ W^T + b - sub)[m,n] = sum_k X[m,k] * sum_n(W[n,k]) + sum_n(b - sub)` \u2014 but per the safety contract this is a forbidden algebraic shortcut. Keep doing the full GEMM; the speedup must come from larger tiles. Try BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4 and drop SPLIT_K to 4 (fewer partial writes, more K work per program to amortize launch).\n- Transpose W once in `__init__` to layout `[K, N]` contiguous so the inner `tl.dot` loads B with stride-1 along N \u2014 removes the strided load currently using `stride_wk` on the inner axis.\n- Drop the finalize kernel's per-row scalar broadcast over K: K=8192 means we read+write 8192 floats per row just to add a scalar. Instead, write only the scalar to a `[B]` buffer in finalize, and do `out = x + scalar.unsqueeze(1)` via broadcast in a single fused add kernel \u2014 or better, do `torch.add(x, scalar.unsqueeze(1))` (already bandwidth-bound, no gain), so keep fused but increase BLOCK_K=8192 with num_warps=8 to one-shot the row.",
+    "large_guidance": "- Reframe the whole forward as two kernels: (1) a row-reduced GEMM that computes only `s[m] = mean_n(X[m,:] @ W[n,:] - sub[n] + b[n])`, producing a `[B]` vector. Each program handles a tile of rows (BLOCK_M=64) and streams over (n, k) with `tl.dot` for the X\u00b7W tile, then immediately reduces along N inside the kernel \u2014 never materializing the full [B,N] GEMM output. This cuts memory traffic and skips the partial buffer entirely. (2) A single fused `out[m,k] = x[m,k] + gelu(s[m])` kernel over [B,K].\n- For kernel (1), the K dim (8192) dominates compute. Use BLOCK_M=64, BLOCK_N=64, BLOCK_K=64, GROUP across N in the inner loop with running row-sum accumulator (BLOCK_M floats in registers). Sweep num_stages=3-4 to overlap K-loop loads. Grid is just `(cdiv(B, BLOCK_M),)` \u2014 no split-K needed since each row's full N\u00b7K work is one program; if occupancy is low, add a split-K with atomic_add into the `[B]` partial.\n- For kernel (2), launch `(B, cdiv(K, BLOCK_K))` with BLOCK_K=2048-4096, num_warps=8, num_stages=2. The scalar GELU is computed once per row from the loaded `s[m]` value; broadcast-add to the x tile. Bandwidth-bound, but mandatory since residual-add must execute.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 25,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        1.6320820306383421
+    ]
+}

@@ -1,0 +1,31 @@
+{
+    "node_id": 27,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        3,
+        4,
+        23
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4145216885088404,
+    "max_reward": 0.4145216885088404,
+    "avg_reward": 0.4145216885088404,
+    "score": [
+        1,
+        1,
+        0.2198039301979331
+    ],
+    "small_guidance": "- The fused conv-transpose kernel uses BLOCK_OC=16 with only 2 warps and one program per (N, output-spatial) \u2014 try BLOCK_OC=16 with num_warps=4, num_stages=3, and add a tiled output-spatial dimension (BLOCK_OW=4 or 8) per program so multiple output positions share the loaded weights, dramatically reducing weight reload traffic.\n- Wrap the conv-transpose kernel in `@triton.autotune` over `{(BLOCK_OC=16, BLOCK_SP=4, warps=4), (16,8,4), (16,4,8), (16,16,4)}` keyed on `(OC, OD*OH*OW)`; current single-config launch is leaving headroom on weight reuse.\n- Hoist the loads of `w0/w1/w2` for all 27 kernel taps before the spatial-tile loop (they only depend on oc), and reuse across the BLOCK_SP output positions; bias/scale/shift loads should be masked once outside the kw loop (they currently re-execute per program but are fine \u2014 focus reuse on weights and the spatial tile).",
+    "large_guidance": "- Restructure as an im2col-style GEMM: program tile = (N, OC tile, output-spatial tile) where each program computes a BM\u00d7BN tile (BM=OC tile up to 16 since OC=16, BN=output-spatial up to 32 or 64) by accumulating over the GEMM-K axis IC*KD*KH*KW=81 with `tl.dot`. Gather x with the transposed-conv index map (parity check on `stride*o + p + pad - k`) and use `tl.dot` instead of the current scalar FMA loop \u2014 this is the single biggest lever; right now the kernel is doing 64 scalar mul-adds per output element with no tensor-core utilization.\n- Fuse pooling by having each program produce one pooled output: accumulate the 4\u00d74\u00d74=64 pre-pool positions inside the GEMM accumulator (sum over the pool window of the conv outputs), then divide by 64 and apply BN scale/shift in the epilogue. Concretely: outer loops over the 64 (pd,ph,pw) positions, inner `tl.dot` over IC*KDHW for each \u2014 keeps the heavy op asymptotic cost identical while exploiting tensor cores.\n- Switch input/output to channels_last (NDHWC) so the IC=3 axis is contiguous for coalesced loads at the GEMM-K boundary; pad IC to 4 if needed for alignment. Keep weight in (OC, KDHW, IC) layout so the K-axis is contiguous.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 28,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        0.36042383585251137
+    ]
+}

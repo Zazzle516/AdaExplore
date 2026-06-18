@@ -1,0 +1,27 @@
+{
+    "node_id": 19,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing (max diff ~0.005). The GN kernel assumes the entire group fits in one BLOCK; with hidden_size=8192 and num_groups=512, CG=16, so BLOCK=16 fits \u2014 but verify gamma/beta indexing: `Gamma_ptr + g * CG + offs` is correct since gamma is per-channel of length C. The bug is likely numerical: compute mean/var in fp32 (already done) but the issue may be that input `y` from GEMM is fp32 fine. Re-check: output is `2*y` but reference does `leaky_relu(gn(x)) + leaky_relu(gn(x))` which equals `2*leaky_relu(gn(x))` \u2014 correct. Investigate whether `x.contiguous().cuda()` plus weight on CPU causes issue \u2014 ensure `self.fc.weight` is moved to CUDA (the Linear params may still be on CPU when forward is called). Move module to CUDA in __init__ or in forward via `.cuda()` on params.\n- Tune GEMM autotune configs for M=1024,N=8192,K=8192: add `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3` and a GROUP_M=8 swizzle for L2 reuse.\n- For GN with CG=16, BLOCK=16 underutilizes warps; use `num_warps=1` and consider processing multiple groups per program (e.g., 4 groups per block) to amortize launch overhead \u2014 N*G = 1024*512 = 524288 programs is excessive.",
+    "large_guidance": "- Redesign GN kernel to process multiple groups per program: with CG=16 channels/group and 512 groups, batch e.g. 8 groups per program (128 channels), do per-group reductions via reshape `(8,16)` and `tl.sum(axis=1)`. This cuts grid from 524288 to 65536 and improves occupancy.\n- Add GROUP_M swizzle and larger tiles (128x256, BLOCK_K=64) to the GEMM; at M=1024,N=8192,K=8192 the GEMM dominates (~137 GFLOPs) and benefits most from L2-friendly scheduling.\n- Ensure parameters live on CUDA (call `.cuda()` in __init__ or register buffers properly); the correctness failure with avg_diff 0.00024 across all trials suggests either a systematic numerical issue (e.g., fp32 accumulation OK but bias/gamma loaded with wrong stride) or a device-placement / dtype mismatch. Double-check `wt = weight.t()` strides \u2014 weight is (N,K) contiguous so `weight.t()` is (K,N) with stride (1,K), and the kernel treats stride_bk=1, stride_bn=K which is correct for B[k,n].",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 20,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

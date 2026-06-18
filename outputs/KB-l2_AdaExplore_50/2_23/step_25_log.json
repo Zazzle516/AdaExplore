@@ -1,0 +1,29 @@
+{
+    "node_id": 25,
+    "parent_node_id": 22,
+    "context_node_ids": [
+        22
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.43546170852897315,
+    "max_reward": 0.43546170852897315,
+    "avg_reward": 0.43546170852897315,
+    "score": [
+        1,
+        1,
+        0.3925590953640281
+    ],
+    "small_guidance": "- The conv3d kernel is the bottleneck: it's a naive per-(N, OC, spatial) gather with no register reuse across OC. Add `triton.autotune` over `BLOCK_N \u2208 {64, 128, 256}`, `num_warps \u2208 {4, 8}`, `num_stages \u2208 {2, 3}` to find a better point, and hoist `IH*IW`, `OH*OW` into precomputed scalars.\n- In `gn_mean_kernel`, you load `x` twice (once for stats, once for normalize). Since `group_size = CPG*S = 3*30*30*22 \u2248 59400` exceeds BLOCK=1024, you can't keep it resident, but you can at least cache `w`/`b` per-channel outside the inner BLOCK loop, or increase BLOCK to 4096 with `num_warps=8` to halve the loop trip count.\n- Replace the atomic_add into `out_ptr[n]` with a two-stage reduction (write per-(n,g) partial, then a tiny second kernel sums G entries) \u2014 avoids global atomics serialization across the 8 groups per batch.",
+    "large_guidance": "- Rewrite conv3d as an im2col-style GEMM: one program per `(N, OC_tile, spatial_tile)` doing `tl.dot` over the K=IC*KD*KH*KW axis with `BLOCK_M=32-64` (OC tile), `BLOCK_N=64-128` (spatial), `BLOCK_K=32`. With OC=24, IC*KD^3=81, this turns the 4-deep nested scalar loop into a tensor-core matmul and should be 5-10\u00d7 faster than the current gather.\n- Switch the conv output layout to channels-last `(N, OD, OH, OW, OC)` so that the subsequent GroupNorm reads contiguous channel groups; this also lets the conv kernel write a coalesced `BLOCK_M`-wide OC tile per spatial point.\n- Fuse the GroupNorm two-pass with the final mean reduction by emitting one program per `(N, G)` with a persistent kernel: pass 1 computes `(sum, sumsq)` via Welford in registers over the group's `CPG*S` elements (single load), pass 2 in the same program computes `(x-\u03bc)*rstd*w+b` and accumulates into a per-program scalar that is written once to `partial[n,g]`; finalize with a tiny `sum-over-G` kernel. Eliminates the second full read of conv_out and the global atomics.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 26,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        1.1431320857000498
+    ]
+}

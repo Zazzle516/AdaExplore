@@ -1,0 +1,30 @@
+{
+    "node_id": 16,
+    "parent_node_id": 6,
+    "context_node_ids": [
+        3,
+        6
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure is likely in GroupNorm: when `GROUPS_PER_PROG > 1`, you iterate groups but `offs_c` is shared; ensure the gamma/beta loads use `grp * CPG + offs_c` correctly (they do), but verify that `tl.sum` produces a scalar broadcast cleanly. More importantly, raise `num_warps` for GroupNorm to 4 \u2014 with `BLOCK_CPG=64` (CPG=4096/64=64) and 8 groups per program, 2 warps is fine, but max-diff ~0.0016 suggests a numerical/reduction subtlety. Try computing mean/var in fp32 with explicit `.to(tl.float32)` on gamma/beta too, and use a single-group-per-program variant to isolate.\n- Add more autotune configs for the GEMM at M=32768, N=4096, K=1024: try `BLOCK_M=64, BLOCK_N=256, BLOCK_K=32` and `BLOCK_M=256, BLOCK_N=64`; this shape favors tall-M tiles. Also try `num_stages=4` for K=64 variants.\n- Loose tolerance is `5e-2` and max diff is `1.6e-3`, well within \u2014 so correctness=False likely means the **harness sees a shape/dtype mismatch or NaN** in some trial. Check that `self.bias` shape `(4096,)` broadcasts cleanly and that the GroupNorm kernel handles the case correctly. Reseeding inputs per run means edge cases matter \u2014 ensure no division-by-zero (eps is applied).",
+    "large_guidance": "- Redesign GroupNorm as one-program-per-(row, group) with a single group per program (GPP=1), BLOCK_CPG=64 (next pow2 of CPG=64). With M=32768 rows \u00d7 64 groups = 2M programs \u2014 that's a lot, so instead use one program per row that handles **all 64 groups** via a 2D tile load `(G, CPG)=(64,64)=4096` elements, reducing along the inner axis with `tl.sum(..., axis=1)`. This gives M=32768 programs, each doing one row's full normalization in registers \u2014 much better launch amortization.\n- Consider fusing GroupNorm directly into the GEMM epilogue: since each GEMM tile produces `(BLOCK_M, BLOCK_N)` of post-swish+bias values, if `BLOCK_N` spans an integer number of groups (e.g., BLOCK_N=256 covers 4 groups of 64), the row-wise group reductions can be computed locally per tile. This eliminates the entire second kernel launch and the intermediate `y` write/read (M*N*4 bytes = 512MB of traffic saved).\n- Alternatively, use a persistent GroupNorm kernel where each program owns multiple rows and streams through them, keeping gamma/beta resident in shared memory.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 17,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

@@ -1,0 +1,27 @@
+{
+    "node_id": 1,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The fused kernel is incorrect because LayerNorm is being applied per-spatial-location and then averaged, but in the reference avg_pool happens AFTER layernorm \u2014 these don't commute when normalization stats differ across the 8 pooled locations. Actually they do average linearly, but the GELU is applied after pooling, so the order is: normalize each of 8 positions independently, average them, then GELU. Re-check: current kernel computes LN per (n,d,h,w) over C channels \u2014 but reference LayerNorm with norm_shape=(C,) normalizes over the last dim of a (N,C,D,H,W) tensor, which is W, not C! `nn.LayerNorm((out_channels,))` normalizes the last dim (W=width after conv_transpose), not the channel dim. This is the correctness bug.\n- Fix: the LN reduction axis must be the W axis (size = post-conv W), not C. Restructure so each program handles one (n, c, d, h) row of length W_post and normalizes across W, then does avg_pool over the (2,2,2) window in (D,H,W).\n- After fixing the axis, one program per (n, c, dp, hp) computing 2 d-rows \u00d7 2 h-rows \u00d7 W positions, normalizing each row of length W independently, then summing the 8-element pooling window and applying GELU.",
+    "large_guidance": "- Redesign: the LayerNorm in the reference normalizes over the LAST dim only (norm_shape=(out_channels,) but applied to a (N,C,D,H,W) tensor where last dim is W=64). The kernel must reduce along W, not C. Build a kernel that, per (n, c, d, h), loads the W row, computes mean/var across W, normalizes with affine, then participates in a 2\u00d72\u00d72 average pool.\n- Structure: launch one program per (n, c, dp, hp, wp) output element. Inside, loop over the 2\u00d72\u00d72 input window; for each of those 8 input positions you need its full W-row LN-normalized value at that specific w index. That's expensive \u2014 better: precompute LN-normalized tensor in one kernel (one program per (n,c,d,h) row of length W, BLOCK_W = next_pow2(W_post)), then a second small kernel for avg_pool+GELU. Or fuse: one program per (n,c,dp,hp) handles 2 d's \u00d7 2 h's \u00d7 W_post elements, computes LN per row, then reduces pooling windows along W and stores Wp outputs with GELU.\n- Consider also replacing the ConvTranspose3d itself with a Triton scatter-add kernel since it likely dominates runtime; but first correctness must be restored.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 2,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

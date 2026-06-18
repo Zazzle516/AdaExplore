@@ -1,0 +1,29 @@
+{
+    "node_id": 8,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.41986881305361307,
+    "max_reward": 0.41986881305361307,
+    "avg_reward": 0.41986881305361307,
+    "score": [
+        1,
+        1,
+        0.2639177076923077
+    ],
+    "small_guidance": "- The current conv kernel runs with `allow_tf32=False` and writes output in `(OC, N*OH*OW)` layout requiring a permute+contiguous afterwards \u2014 switch to `allow_tf32=True` (input is fp32 and BN tolerates it) and write directly into `(N, OC, OH, OW)` layout to drop the post-permute. Fuse the Mish activation into the conv epilogue (compute `sp = where(acc>20, acc, log1p(exp(acc)))`, `t = tanh(sp)`, store `acc*t`) so the standalone `_mish_kernel` launch is eliminated.\n- Add larger autotune tiles now that smaller ones compile: `(BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, num_warps=8, stages=2)` and `(BLOCK_M=64, BLOCK_N=256, BLOCK_K=16, num_warps=8, stages=2)` \u2014 for OC=128, N*OH*OW=64*126*126\u22481.0M, the N-dim wants larger blocks. Verify SMEM: 128\u00b732+32\u00b7128 = 8192 fp32 = 32KB\u00b72stages = 64KB, fits.\n- Fold BN (eval-mode affine `scale=\u03b3/\u221a(\u03c3\u00b2+\u03b5)`, `shift=\u03b2-\u03bc\u00b7scale`) into the conv epilogue too so the trailing `self.bn(x)` becomes a no-op at eval; precompute `scale`/`shift` once per forward (or cache) and apply `acc = acc*scale + shift` after Mish \u2014 but note BN is in train mode here, so this only applies if `self.training==False`; otherwise still fuse Mish and skip BN fusion.",
+    "large_guidance": "- Switch to a channels-last / im2col-implicit GEMM where the GEMM-K axis is `IC*KH*KW` and GEMM-M is `OC`, GEMM-N is the spatial tile per `(N, oh_tile, ow_tile)`, and write output directly in `(N, OC, OH, OW)` NCHW order from inside the kernel \u2014 current design's transpose-then-permute costs a full extra global write/read.\n- Make the kernel persistent over `(N, oh_tile, ow_tile)` blocks per program with the `OC` weight tile pinned, since OC=128 is small enough that one program can iterate many spatial tiles while reusing the loaded weight slab; this amortizes the weight gather across the ~1M output positions.\n- The forward path also keeps BN as a separate launch. Since BN here is `nn.BatchNorm2d` in train mode, the per-channel mean/var must be computed at runtime \u2014 add a second small reduction kernel that reads conv-mish output, computes per-channel mean & var with a two-pass reduction, then a third kernel that applies `\u03b3\u00b7(x-\u03bc)/\u221a(\u03c3\u00b2+\u03b5)+\u03b2` and updates running stats; or fuse the affine apply into the conv kernel only at eval. Don't try to fuse the reduction into the conv kernel itself.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 9,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.34309302
+    ]
+}

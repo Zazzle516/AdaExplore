@@ -1,0 +1,29 @@
+{
+    "node_id": 4,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.6063415872023231,
+    "max_reward": 0.6063415872023231,
+    "avg_reward": 0.6063415872023231,
+    "score": [
+        1,
+        1,
+        1.8023180944191655
+    ],
+    "small_guidance": "- The second GEMM (M=16384, N=1024, K=4096) is the bottleneck; the gemm_lse kernel currently sequences the K-loop *inside* each N tile, redoing A loads N/BLOCK_N times. Add autotune configs with BLOCK_N=1024 (the full output dim) so the entire row materializes in one N tile and K is streamed only once \u2014 e.g. `{'BLOCK_M': 64, 'BLOCK_N': 1024, 'BLOCK_K': 32/64}, num_warps=8, num_stages=3/4` and `BLOCK_M=32, BLOCK_N=1024`.\n- For gemm_sigmoid (M=16384, N=4096, K=2048), add a `{'BLOCK_M':128,'BLOCK_N':128,'BLOCK_K':64, GROUP_M:8, num_warps=4, num_stages=4}` and a `BLOCK_M=256,BLOCK_N=64` config; current best is likely 128x256 but worth probing. Also pre-transpose `linear2.weight` once in `__init__` to make the inner load contiguous on N (stride_bn=1) instead of strided.\n- Keep `num_stages=3` for the K-loop in both kernels (K=2048/4096 is large enough to benefit from deeper pipelining), and ensure bias is loaded once outside any inner loop (already done in gemm_sigmoid, ensure same in lse when BLOCK_N covers full N).",
+    "large_guidance": "- Restructure gemm_lse as a \"single N-tile spans full N\" kernel: since N=1024 is small, set BLOCK_N=1024 as a constexpr and eliminate the outer N loop entirely. This converts the online logsumexp into a single-pass reduction (compute max then sum-exp over the full row in registers), and the K-loop over A is traversed exactly once \u2014 currently it is traversed `ceil(N/BLOCK_N)` times, which is the dominant inefficiency.\n- Consider a split-K strategy for the second GEMM given M=16384, N=1024, K=4096: per-row work is N*K=4M FMAs but the row count is large, so a 2D grid `(M/BLOCK_M, split_k)` with atomic-add into a partial buffer, followed by a tiny LSE reduction kernel, could improve SM occupancy on the 4090's 128 SMs. Only worth it if the single-tile design above still underutilizes SMs.\n- Persist `linear2.weight` in transposed (K, N) contiguous layout at init so both kernels read B with stride_bn=1 on the inner axis; this removes a known strided-load pattern and lets `tl.dot` use the most efficient ldmatrix path.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 5,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        1.8023180944191655
+    ]
+}

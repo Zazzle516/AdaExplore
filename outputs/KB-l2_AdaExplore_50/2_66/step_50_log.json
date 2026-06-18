@@ -1,0 +1,29 @@
+{
+    "node_id": 50,
+    "parent_node_id": 44,
+    "context_node_ids": [
+        44
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM is M=128, N=16384, K=16384 \u2014 very skinny in M. Drop the small-M autotune configs and bias toward BLOCK_M=32\u201364, BLOCK_N=128\u2013256, BLOCK_K=32 with num_warps=4\u20138, num_stages=4 to maximize K-loop pipelining; also add a split-K variant (e.g. SPLIT_K=4 or 8) since K=16384 dominates and M=128 leaves the grid under-occupied (only 128 SMs of work at BLOCK_M=32,BLOCK_N=128).\n- In `softmax_full_row_kernel` with N=16384, BLOCK_N=16384 with num_warps=16 likely spills; try num_warps=8 and num_stages=2, or switch to the two-pass online kernel at this size with BLOCK_N=2048/4096 to reduce register pressure.\n- Pass `dropout_p` and `scale` as `tl.constexpr` (or skip the dropout branch entirely when `self.training=False`, which is the eval/benchmark case \u2014 that removes the rand+where overhead from the epilogue).",
+    "large_guidance": "- Switch the GEMM to a split-K design: launch grid `(num_pid_m * num_pid_n, SPLIT_K)`, each program reduces K/SPLIT_K and uses `tl.atomic_add` into the output (or a temp buffer reduced in a second kernel). With M=128 and K=16384, split-K is the standard fix for tall-skinny matmul on Ada \u2014 current single-K grid leaves SMs idle.\n- Fuse the softmax directly into the GEMM epilogue when SPLIT_K=1 and BLOCK_N covers the full row (N=16384 is too large for a single tile, so instead make the GEMM persistent per row: one program owns a whole output row, streams K in chunks with `tl.dot` accumulators of shape [BLOCK_M, BLOCK_N], computes max/sum online across BLOCK_N tiles, then writes normalized output). This eliminates the intermediate write/read of the 128\u00d716384 fp32 tensor between GEMM and softmax (~8 MB round-trip).\n- Store the weight pre-transposed once in `__init__` (N-major contiguous) so the inner B load is along the contiguous axis without strided access, and consider fp16/tf32 accumulation via `tl.dot(..., allow_tf32=True)` (fp32 inputs but tf32 math) for ~2\u00d7 throughput on Ada.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 51,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

@@ -1,0 +1,31 @@
+{
+    "node_id": 37,
+    "parent_node_id": 11,
+    "context_node_ids": [
+        3,
+        6,
+        11
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5791720498191086,
+    "max_reward": 0.5791720498191086,
+    "avg_reward": 0.5791720498191086,
+    "score": [
+        1,
+        1,
+        1.5781694110076463
+    ],
+    "small_guidance": "- Autotune the GEMM tile shapes: try (BLOCK_M=128, BLOCK_N=256, BLOCK_K=32/64, num_warps=8, num_stages=3) and (BLOCK_M=256, BLOCK_N=128, ...) \u2014 current 128/128/32 with 4 warps under-utilizes the 4090 for an 2048\u00d78192\u00d78192 GEMM. Add a GROUP_M=8 swizzle for L2 reuse.\n- Drop the atomic_add row-reduction: have each (pid_m, pid_n) program write its partial row-sum to a `(num_pid_n, M)` scratch buffer (or just compute rowsum after a non-atomic store), then a tiny second kernel reduces along the N-tile axis. Atomics across ~64 N-tiles per row serialize the epilogue.\n- The residual-add kernel reads/writes the full B\u00d7IN_F (2048\u00d78192) tensor \u2014 make sure BLOCK fits one row (BLOCK=8192, num_warps=8, num_stages=2) so each program processes a whole row with one load/store pair, eliminating the 2D grid overhead.",
+    "large_guidance": "- The forward collapses to: `gelu(mean_over_N(x@W^T + b - sub)) + x`. Since LogSumExp over a singleton dim is identity, the kernel really only needs the scalar `s_m = (1/N) * \u03a3_n (x_m \u00b7 W_n + bs_n)` per row. Rewrite as a single fused kernel: per-row reduction `s_m = x_m \u00b7 (\u03a3_n W_n)/N + mean(bs)` is the algebraic shortcut and is **forbidden** \u2014 instead, keep the full GEMM but stream tiles so that each row's partial sums are accumulated in registers across the N dimension within one persistent program per row-block, avoiding the atomic and the scratch buffer entirely.\n- Consider a split-K / persistent GEMM: one program per `BLOCK_M` row tile iterates over all N tiles, accumulating `tl.sum(acc, axis=1)` into a register vector of length BLOCK_M. After the N-loop completes, that program applies `*INV_N`, GELU, and broadcasts-adds `x` to the residual output in the same kernel \u2014 fusing GEMM + mean + GELU + residual into one launch and eliminating the rowsum tensor and second kernel.\n- Because the residual write dominates bandwidth (B\u00d7IN_F = 64 MiB write + read), ensure the fused kernel performs that write as part of the GEMM epilogue: after computing the scalar `g_m` per row, loop over IN_F in BLOCK_K-sized chunks reusing the already-loaded `x` tiles (IN_F == K here, so x is fully resident in the K-loop) and store `x + g_m` directly \u2014 this removes one full pass over x.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 38,
+    "global_best_node_id": 36,
+    "global_best_score": [
+        1,
+        1,
+        1.66307092995426
+    ]
+}

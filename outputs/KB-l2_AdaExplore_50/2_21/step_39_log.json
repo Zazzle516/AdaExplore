@@ -1,0 +1,29 @@
+{
+    "node_id": 39,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        33
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.45034285823267645,
+    "max_reward": 0.45034285823267645,
+    "avg_reward": 0.45034285823267645,
+    "score": [
+        1,
+        1,
+        0.5153285804195803
+    ],
+    "small_guidance": "- Autotune `conv_fused_epilogue_kernel` over `BLOCK_OC \u2208 {16,32,64}` and `BLOCK_SP \u2208 {64,128,256}` with `num_warps \u2208 {4,8}`, `num_stages \u2208 {2,3}`; current 32\u00d7128 with 4 warps likely under-utilizes the 254\u00d7254 spatial domain.\n- Swap the loop order so the inner-most loop is over `ic` with `kh,kw` outside and hoist `x_sp_off` outside the `ic` loop (already done) \u2014 additionally cache `x_val` once per `(kh,kw)` across all `oc` tiles by using a larger `BLOCK_OC` to amortize input loads (the GEMM-K=72 is tiny, so reusing inputs across OC matters).\n- For the groupnorm kernel, CH_PER_GROUP=4 and SPATIAL=64516; force `BLOCK_SIZE \u2208 {4096,8192,16384}` with `num_warps=8`, `num_stages=3`, and fuse the second pass by keeping `x` in registers per tile only if SPATIAL fits \u2014 otherwise add a `tl.multiple_of`/`tl.max_contiguous` hint on the spatial pointer.",
+    "large_guidance": "- Rewrite the convolution as an im2col-style GEMM with one program per `(N, OC_tile, SP_tile)` and an explicit reduction loop over `K = IC*KH*KW` using `tl.dot` on `[BLOCK_OC, BLOCK_K] \u00d7 [BLOCK_K, BLOCK_SP]` tiles; the current scalar outer-product accumulation forgoes tensor cores and is the main reason 14.3 ms > 7.4 ms baseline. With IC=8, KH=KW=3, K=72 fits in one BLOCK_K=72 tile.\n- Use a channels-last (NHWC) input layout so the K dimension (ic varies fastest) is contiguous; transpose `x` and `weight` once at init/forward entry and keep output NHWC until the groupnorm, which can also be rewritten to consume NHWC (one program per `(N, group)` reducing over `SPATIAL * CH_PER_GROUP` contiguously).\n- Consider fusing the sigmoid-epilogue conv output directly into the groupnorm's first reduction pass (single kernel that computes conv tile \u2192 sigmoid \u2192 accumulates per-group sum/sum_sq), eliminating one full write/read of the 128\u00d732\u00d7254\u00d7254 tensor \u2014 the dominant bandwidth cost after a fast conv.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 40,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        1.0321006582633052
+    ]
+}

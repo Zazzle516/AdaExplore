@@ -1,0 +1,29 @@
+{
+    "node_id": 19,
+    "parent_node_id": 8,
+    "context_node_ids": [
+        8
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure is likely because `nn.Linear` weight is `(out_features, in_features) = (N, K)`, and the kernel passes `w.stride(1), w.stride(0)` as `(stride_bk, stride_bn)`. That's correct for treating W as `K x N`. Double-check the GroupNorm: `CG = 8192/16 = 512`, BLOCK=512 \u2014 the reduction in fp32 over 512 elements should be fine, but `inv_cg = 1.0 / CG.to(tl.float32)` where CG is an int kernel arg \u2014 ensure this casts properly; consider passing `inv_cg` precomputed from host as a constexpr float to avoid integer division precision issues.\n- Increase GEMM autotune coverage: add `BLOCK_M=256, BLOCK_N=128, BLOCK_K=64` with `num_warps=8, num_stages=4`, and add a `GROUP_M=8` swizzle for better L2 reuse on M=1024, N=8192.\n- For GroupNorm, try `num_warps=8` unconditionally at BLOCK=512, and consider doing the reduction in fp32 with Welford or compensated sum to reduce the ~1.6e-3 max error (which exceeds 5e-2 tol \u2014 actually it's within tol, so the failure must be something else: verify the `.cuda()` call doesn't move parameters to a different device than `x` and that parameters are initialized on CUDA at module construction).",
+    "large_guidance": "- Max diff is 1.6e-3, well within atol=5e-2, yet correctness reports mismatch \u2014 this suggests the output shape/device/dtype check is failing, not values. A redesign should ensure `ModelNew.forward` returns a tensor on the same device as the *reference* expects (likely the parameters need to be moved to CUDA in `__init__`, and `x` should not be force-moved with `.cuda()` if the harness passes CPU input expecting CPU-style behavior \u2014 but more likely the issue is that `self.weight`/`self.bias` are on CPU when first called). Move parameters to CUDA at init or in the first forward call before reading their `.contiguous()` views.\n- Consider fusing the GEMM epilogue directly with GroupNorm: since each row's groups need full row of GEMM output, a two-stage approach (write GEMM to global, then GN reads it) is fine, but you could use a persistent GEMM kernel writing tiles in N-order and a separate GN kernel that streams per-row \u2014 current design is reasonable.\n- For the GN kernel, since CG=512 is fixed and known, hardcode BLOCK=512 as a compile-time constant and skip the mask entirely (offs always < CG), eliminating predicated loads in the hot reduction path.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 20,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

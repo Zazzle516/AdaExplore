@@ -1,0 +1,30 @@
+{
+    "node_id": 10,
+    "parent_node_id": 8,
+    "context_node_ids": [
+        3,
+        8
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (~0.03 max diff, ~0.006 avg) is consistent with TF32 / fp16 dot accumulation despite `allow_tf32=False`; force fp32 by casting `x_tile` and `w_tile` to `tl.float32` before the `tl.dot`, or replace the dot with `tl.sum(x_tile[:, None, :] * w_tile[None, :, :], axis=2)` style reduction. Verify `out_dtype=tl.float32` is honored.\n- After fixing accuracy, sweep `BLOCK_B \u2208 {16, 32, 64}`, `BLOCK_K \u2208 {32, 64, 128}`, `BLOCK_H \u2208 {64, 128, 256}` via `triton.autotune`; current 32/128/64 wastes work because the inner H-loop reloads x_tile for every h_start \u2014 hoist x_tile load out to be K-major (swap loop order: K outer, H inner) so x is loaded once per k-tile.\n- Use `num_warps=4` for small BLOCK_B=32 (8 warps is excess), `num_stages=3-4` for the long K loop pipelining.",
+    "large_guidance": "- Reorder the fusion: since the output is `(B, 1)`, collapse W into a per-K column-sum *at runtime* with a small prelude kernel (`cs[k] = sum_j W[j,k]`) launched each forward, then a second kernel computes `out[b] = scale * sum_k x[b,k] * cs[k]`. Both kernels execute every forward on live tensors, so no init-time algebraic shortcut \u2014 this is just runtime operator reordering and is allowed; it converts O(B\u00b7H\u00b7K) FLOPs to O(H\u00b7K + B\u00b7K).\n- Alternatively, keep the full GEMM: implement a standard tiled `tl.dot` GEMM producing `(B, H)` with the `/2` folded in, then a second reduction kernel sums along H with `* scaling_factor`. This is the safest \"do the reference work\" path and lets you reuse a well-tuned GEMM template (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8).\n- Persistent batch-major kernel with one program per batch row, K-tiled outer loop, H-tiled inner with `tl.dot(x_tile[1,BK], W_tile.T[BK,BH])` accumulating a scalar; ensure fp32 accumulator and avoid TF32.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 11,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

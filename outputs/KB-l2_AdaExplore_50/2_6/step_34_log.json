@@ -1,0 +1,29 @@
+{
+    "node_id": 34,
+    "parent_node_id": 28,
+    "context_node_ids": [
+        28
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.45224430341430377,
+    "max_reward": 0.45224430341430377,
+    "avg_reward": 0.45224430341430377,
+    "score": [
+        1,
+        1,
+        0.5310155031680062
+    ],
+    "small_guidance": "- The fused conv+softmax+pool kernel reloads the full `[OC, K_SIZE]` weight tile per program but only uses it for POOL^3=64 matvecs; pool_kernel_size=2 means POOL=4, so POOL^3=64 spatial points per program. Try grouping multiple output spatial tiles per program (e.g. tile over a 2x2 block of `(hp, wp)`) so the weight tile is amortized across more matvecs.\n- Add an autotune axis over `BLOCK_SPATIAL` (1, 2, 4) output points per program, and add configs with `num_warps=1` since OC=16 is tiny \u2014 the current `num_warps=2/4/8` likely under-utilize warps for a 16-wide reduction. Also try `num_stages=4`.\n- The matvec `tl.sum(w_tile * xv[None,:], axis=1)` over K_SIZE=128 with OC=16 is memory-bound on weights; consider keeping weights in shared memory across the POOL^3 inner loop (already implicit) but switching to `tl.dot` by padding OC to 16 and K to 128 \u2014 `tl.dot([16,128] x [128,1])` may map better than `sum(w*x)`.",
+    "large_guidance": "- Restructure as one program per `(N, output-pool-tile)` covering a *block* of output pool cells (e.g. 2\u00d72\u00d72 pool outputs = 8 cells \u00d7 64 inner spatial = 512 conv evaluations) so that the weight tile load (OC\u00d7IC\u00d7KD\u00d7KH\u00d7KW = 16\u00d73\u00d727 = 1296 floats) is amortized across hundreds of matvecs instead of 64. Compute conv outputs into a register tile, do channelwise softmax per spatial point, then reduce-max across the pool window in registers.\n- Alternative: split into two kernels \u2014 (1) a proper im2col-GEMM conv kernel with `(N*D_out*H_out*W_out, OC)` GEMM tiles and `tl.dot`, writing the conv result; (2) a fused softmax+max-pool kernel with POOL=4 window. The current direct-conv-per-output-pixel approach wastes the `tl.dot` tensor cores. With OC=16, IC*K=81, output spatial = 14*30*30, GEMM is small but `tl.dot` would still beat the elementwise mul+sum.\n- Consider channels-last (NDHWC) layout for the conv output staging so the softmax reduction over C is along the contiguous axis; current layout puts C with stride D*H*W which forces strided gathers in `fused_softmax_pool_kernel` and in the softmax step inside the fused kernel.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 35,
+    "global_best_node_id": 22,
+    "global_best_score": [
+        1,
+        1,
+        2.689860190720031
+    ]
+}

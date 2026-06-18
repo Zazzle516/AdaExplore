@@ -1,0 +1,27 @@
+{
+    "node_id": 8,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The atomic_add over N tiles is the correctness bug: each (pid_m, pid_n) tile pools only within its BLOCK_N slice, so max-pool windows that straddle tile boundaries are computed independently and then summed \u2014 that's not equivalent to MaxPool1d over the full N. Restructure so each program owns the entire N row for its BLOCK_M rows (grid = (cdiv(M, BLOCK_M),)) and loop over N internally, accumulating pooled-sum in registers; drop the atomic.\n- With a single program owning the full row, you can also drop the `mask_n` -inf padding (N=32768 is divisible by KERNEL_SIZE=2) and the reshape-for-pool becomes a clean pair reduction inside the K-loop epilogue.\n- Once correct, sweep BLOCK_M in {16,32,64}, BLOCK_K in {32,64,128}, num_warps in {4,8}, num_stages 3-4; keep W transposed-load pattern coalesced on K.",
+    "large_guidance": "- Redesign as a row-persistent fused GEMV-style kernel: one program per group of M rows, streaming over N in BLOCK_N chunks. For each chunk, compute the partial (BLOCK_M, BLOCK_N) GEMM tile via tl.dot over the full K (inner K-loop), add bias, max-pool pairs along N (BLOCK_N // 2), sum into a scalar accumulator per row, then move to the next N chunk. Write the final scaled scalar once \u2014 no atomics, no cross-tile pooling hazard.\n- Alternative: split-K design where multiple programs cooperate on K for the same (M-tile, N-chunk), but keep N-chunks owned entirely by one program so pooling is local; use atomic_add only across K-splits of the same row-sum scalar.\n- Consider casting accumulator to fp32 and loading X, W as fp32 but using tf32 in tl.dot (allow_tf32=True) for throughput on the 4090; the reference uses fp32 Linear and the 5e-2 tolerance accommodates this.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 9,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

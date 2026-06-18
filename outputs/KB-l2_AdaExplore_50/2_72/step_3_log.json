@@ -1,0 +1,27 @@
+{
+    "node_id": 3,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4145216885088404,
+    "max_reward": 0.4145216885088404,
+    "avg_reward": 0.4145216885088404,
+    "score": [
+        1,
+        1,
+        0.2198039301979331
+    ],
+    "small_guidance": "- The fused BN+pool kernel is already cheap; the bottleneck is the torch ConvTranspose3d. Tuning BLOCK/num_warps on this tail kernel cannot move fast_p meaningfully. If staying small, at least add `@triton.autotune` over BLOCK\u2208{128,256,512,1024} and num_warps\u2208{2,4,8}, and load scale/shift once per program (gather by `c` without per-element mask since c is in-bounds whenever offs is).\n- Fix the scale/shift load mask: currently uses `mask=mask` against `scale_ptr + c` where `c` is bounded by C; this is fine but wastes lanes \u2014 broadcast a single load per channel by reshaping the program to one program per (n, c, od-tile) so scale/shift are scalars.",
+    "large_guidance": "- Replace the torch ConvTranspose3d with a custom Triton scatter-add kernel: for each input element x[n,ic,d,h,w], scatter `x * W[ic,oc,kd,kh,kw]` into output[n,oc, d*stride - pad + kd, ...]. Fold the BN affine and both 2\u00d72\u00d72 avg-pools (i.e. 4\u00d7 spatial downsample) into the same kernel epilogue by accumulating directly into the pooled output grid (each conv-transpose output position maps deterministically to one pooled-output cell, with weight 1/64). Output shape is (64,16,16,16,16). This collapses the entire forward into one kernel.\n- Alternatively, implement ConvTranspose3d as a GEMM: gather form where each output voxel is a dot product over (ic, kd, kh, kw) with appropriate stride/pad index math. One program per (N, OC tile, output-spatial tile); autotune BLOCK_M/N/K starting at (32,32,16) with num_warps=4, num_stages=2 to fit SMEM. Fuse BN scale/shift + the 4\u00d7 avg-pool reduction in the epilogue by having each program write directly to the pooled grid.\n- Use channels_last_3d layout for the conv output so the OC reduction in the epilogue (and BN channel broadcast) is contiguous; precompute valid (kd,kh,kw) ranges per output tile to avoid in-loop bounds checks.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 4,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.3413425739544373
+    ]
+}

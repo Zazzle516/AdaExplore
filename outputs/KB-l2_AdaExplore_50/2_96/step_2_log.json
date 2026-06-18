@@ -1,0 +1,29 @@
+{
+    "node_id": 2,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4447203067252213,
+    "max_reward": 0.4447203067252213,
+    "avg_reward": 0.4447203067252213,
+    "score": [
+        1,
+        1,
+        0.46894253048307527
+    ],
+    "small_guidance": "- The conv_transpose3d is the dominant cost (~9ms baseline, current 19.3ms means the torch convT3d itself is the bottleneck since the fused tail kernel is fine). Tuning BLOCK/num_warps of the maxpool+avg kernel won't help \u2014 tail is already small. Skip further tuning here.\n- If staying with torch convT3d, at minimum fold the scalar `scale` into `conv_transpose.weight` and `bias` once at init so the post-conv multiply is free; but this alone won't move fast_p meaningfully.\n- For the fused tail kernel, channels-last layout + vectorized loads of the 2\u00d72\u00d72 window (load a contiguous row of W and reduce) would shave a bit, but the headroom is small relative to the conv.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)`, computing the `input \u00d7 weight` outer product and scatter-adding into the output grid with stride=2, padding=1. This is the high-headroom move \u2014 torch's convT3d on this shape is the entire runtime.\n- Fuse the entire pipeline into the convT3d kernel's epilogue: scale, 2\u00d72\u00d72 maxpool, global-avg, clamp. Since output is `(N,C,1,1,1)`, structure as: convT3d writes to a temporary, then a second kernel does maxpool\u2192mean\u2192clamp (already done). Or better, since maxpool window 2 aligns with stride 2, fuse maxpool directly with the scatter so each output of convT3d is immediately reduced into its pooled bucket \u2014 avoiding materializing the full `(N,16,31,63,63)` tensor.\n- Alternative gather-style design: since output spatial (after conv) is 31\u00d763\u00d763 and we then maxpool by 2 then global-avg, formulate as one program per `(N, OC, pooled-spatial tile)` that gathers the convT3d contributions for the 2\u00d72\u00d72 maxpool window directly (each output point of convT is a sum over `IC \u00d7 kd \u00d7 kh \u00d7 kw` valid contributions). This avoids both im2col materialization and a separate reduction pass.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 3,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.46894253048307527
+    ]
+}

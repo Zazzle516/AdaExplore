@@ -1,0 +1,29 @@
+{
+    "node_id": 36,
+    "parent_node_id": 35,
+    "context_node_ids": [
+        33
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (~0.003 max diff, ~0.0002 avg) is consistent with the GEMM K-loop not masking the K tail when K=8192 isn't divisible by BLOCK_K=64 or with non-multiple M/N tiles; add proper masks on `tl.load(a_ptrs, mask=..., other=0.0)` and `tl.load(b_ptrs, mask=..., other=0.0)` for the K loop, and mask M/N for bias/store. Also verify GroupNorm's `BLOCK_GS` matches GROUP_SIZE=32 exactly (this part is fine since 8192/256=32).\n- After fixing masks, narrow the autotune list to the best configs for (M=1024, N=8192, K=8192): try `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3/4` and `BLOCK_M=64, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4`.\n- Cache `bias_total` as a buffer recomputed only when params change (or precompute once at init via a hook) to avoid the per-forward add allocation.",
+    "large_guidance": "- Keep the two-kernel split (fused GEMM+bias+hardtanh+mish, then GroupNorm) \u2014 this matches the data flow. Ensure the GEMM kernel uses `tl.dot` with TF32 and persistent K-loop with proper boundary masks; consider a split-K variant only if M=1024 leaves SMs underutilized (likely not, with 32 row-tiles \u00d7 32 col-tiles = 1024 tiles, plenty of parallelism).\n- For GroupNorm with GROUP_SIZE=32 and M*G = 1024*256 = 262144 programs, this is launch-overhead heavy. Redesign to process multiple groups per program (e.g., BLOCK_ROWS\u00d7BLOCK_GROUPS per program) or fuse the GroupNorm reduction by having one program handle a full row's 256 groups using 2D reductions, dramatically cutting launch count.\n- Alternative: fuse the Mish activation's output directly into a GroupNorm-aware layout \u2014 write the GEMM output in `[M, G, GROUP_SIZE]` tiling so GroupNorm can read contiguous 32-wide rows with minimal stride math, or compute partial sums for GN stats inside the GEMM epilogue when BLOCK_N is a multiple of GROUP_SIZE.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 37,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

@@ -1,0 +1,27 @@
+{
+    "node_id": 3,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.43664469226243013,
+    "max_reward": 0.43664469226243013,
+    "avg_reward": 0.43664469226243013,
+    "score": [
+        1,
+        1,
+        0.4023187111650485
+    ],
+    "small_guidance": "- The pointwise epilogue is already trivial; tuning BLOCK_SIZE/num_warps on it will not move the needle since ConvTranspose3d dominates. If staying small, try autotuning BLOCK_SIZE in {2048, 4096, 8192} with num_warps=8, num_stages=4 to slightly improve the tail.\n- Fold `self.bias` into the conv_transpose bias at init (bias is `(C,1,1,1,1)` \u2192 flatten to `(C,)` and add to `conv_transpose.bias`) so the epilogue kernel only does add+hardswish \u2014 but note the reference forward does NOT use self.bias, so this is a no-op; double-check whether bias should be applied.\n- Ensure `add_input` and conv output are in `channels_last_3d` for better memory coalescing in the epilogue.",
+    "large_guidance": "- ConvTranspose3d is the bottleneck (~95% of runtime). Replace it with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)` computes the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and atomic-adds into the output grid at positions `(n, oc, d*stride - pad + kd, ...)`, handling output_padding in index math. Fuse conv_transpose bias + add_input + hardswish into the same kernel epilogue (or a follow-up pass after scatter completes).\n- Alternative: gather-style direct kernel \u2014 one program per `(N, OC tile, output-spatial tile)`, iterate over `(IC, kd, kh, kw)` and gather only valid input positions where `(out_d + pad - kd) % stride == 0`. This avoids atomics and fuses the entire forward (conv_transpose + add + hardswish) into one kernel. Given output is 128\u00d764\u00d732\u00d732\u00d732 = 268M elements, tile output spatial as flattened with BLOCK_N=128, BLOCK_OC=32.\n- Use channels_last_3d layout end-to-end so the IC reduction loop coalesces, and autotune BLOCK_M/BLOCK_N/BLOCK_K over {32,64,128} with num_warps in {4,8}.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 4,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.4023187111650485
+    ]
+}

@@ -1,0 +1,27 @@
+{
+    "node_id": 45,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Cast `out` to fp32 in GEMM but ensure GroupNorm reads/writes match the reference dtype (the reference produces fp32 from fp32 input, so dtype isn't the issue \u2014 but verify `out` is contiguous and that `W.stride(1), W.stride(0)` correctly maps weight `(N,K)` as `(K,N)` view). The avg_difference ~1.9e-4 across all trials suggests a small systematic numerical drift, likely from softplus overflow: replace `log(1+exp(x))` with a numerically stable variant `max(x,0) + log1p(exp(-abs(x)))` style, but since `tl.log1p` is unavailable, use `tl.where(x>0, x+log(1+exp(-x)), log(1+exp(x)))`. Since hardtanh clamps to [-1,1] this isn't the overflow issue though.\n- The real correctness bug is likely the fused-bias path: reference adds `self.bias` (extra bias) *after* the linear's own bias. Both are added before hardtanh, so summing them is fine \u2014 but `extra_bias` is initialized at `__init__` time independently from the reference Model's `self.bias`, so the random init differs between Model and ModelNew. Re-check parameter initialization parity and seeding; ensure `extra_bias`/`lin_bias`/`gn_weight`/`gn_bias` shapes and initial values mirror the reference exactly (or accept the loose atol). The ~2e-3 max diff is within `5e-2` tolerance \u2014 correctness failure may be due to NaN/inf from a different cause. Add `tl.maximum(var, 0)` before sqrt for safety.\n- Try larger autotune configs (BLOCK_M=128, BLOCK_N=256, num_warps=8, num_stages=4) since M=1024, N=8192, K=8192 is a big GEMM; also add GROUP_M block-swizzle for L2 reuse.",
+    "large_guidance": "- The GEMM dominates (1024\u00d78192\u00d78192 = 137 GFLOPs vs trivial GN). A from-scratch design should focus entirely on a high-performance tiled GEMM with epilogue fusion (bias + hardtanh + mish), using GROUP_M swizzle, BLOCK_M=128/BLOCK_N=256/BLOCK_K=64, num_warps=8, num_stages=4, and store directly in fp32. The GroupNorm with CPG=32 is tiny (one warp per group) and can be a simple persistent per-(row,group) kernel.\n- Consider fusing GroupNorm into the GEMM epilogue only if BLOCK_N aligns with CPG (32); otherwise keep it separate but make the GN kernel persistent across multiple groups per program to amortize launch overhead (e.g. process all G groups of a row in one program with BLOCK_N=CPG=32 lanes).\n- Ensure weight is pre-transposed to `(K,N)` contiguous at init so the inner-K load on B is along the contiguous axis \u2014 relying on transposed strides for B causes strided loads in the hot loop and hurts bandwidth.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 46,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 14,
+    "parent_node_id": 13,
+    "context_node_ids": [
+        6,
+        13
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing with avg_diff ~2.4e-4 \u2014 likely the GEMM uses tf32 (`input_precision=\"tf32\"`) which loses precision on K=8192. Switch to `input_precision=\"ieee\"` or `tl.float32` accumulation without tf32 to tighten accuracy; if still off, verify the weight stride mapping (passing `weight.stride(1), weight.stride(0)` treats weight as transposed \u2014 confirm this matches `x @ weight.T`).\n- In `gn_leaky_double_kernel`, ch_per_g = 8192/512 = 16, so BLOCK_C=16 \u2014 very small reduction. Increase `groups_per_prog` (e.g. 16 or 32) to amortize launch overhead and improve occupancy; also bump `num_warps` accordingly.\n- Add autotune to the GN kernel sweeping `GROUPS_PER_PROG` \u2208 {4,8,16,32} \u00d7 `num_warps` \u2208 {2,4,8}.",
+    "large_guidance": "- The dominant cost is the 1024\u00d78192\u00d78192 GEMM. Consider fusing GroupNorm + LeakyReLU + \u00d72 into the GEMM epilogue: since GN reduces along channels within a row, and BLOCK_N tiles span N, a clean fusion requires either (a) a two-pass strategy where GEMM writes to a temp and a row-wise GN kernel follows (current design, but ensure GN kernel is cheap), or (b) a persistent GEMM that produces a full row before normalizing. Option (a) with a faster, well-tuned GEMM is likely the right path.\n- For the GEMM, K=8192 is large \u2014 increase `BLOCK_K` (64\u2013128) and `num_stages=4` to better overlap; ensure the weight is preloaded contiguously. Also drop tf32 if it's causing the correctness failure, or scale the eps tolerance check against PyTorch's default which uses tf32 too.\n- For GN, since ch_per_g=16 (tiny), use one program per row that handles all 512 groups in a single kernel via a 2D grid (B, num_groups/GROUPS_PER_PROG) with large GROUPS_PER_PROG (e.g. 64) so each program does a meaningful amount of work and one row is processed cooperatively.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 15,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

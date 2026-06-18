@@ -1,0 +1,30 @@
+{
+    "node_id": 21,
+    "parent_node_id": 20,
+    "context_node_ids": [
+        19,
+        20
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (avg diff ~2.4e-4, max ~6e-3) suggests the GN kernel's reduction is fine but the `y + y` fusion combined with leaky_relu is correct \u2014 investigate the GEMM: with K=8192 and BLOCK_K=32-64 plus fp32 accumulation the result should be exact. The likely culprit is loading `wt = weight.t()` with strides (1, K) and using it as B(K,N) \u2014 verify `stride_bk=1, stride_bn=K` is consistent with the kernel's `b_ptrs = B_ptr + offs_k[:, None] * stride_bk + offs_n[None, :] * stride_bn`; this should be correct, so check GroupNorm gamma/beta indexing \u2014 `gamma_offs = (g_start + g_offs)[:, None] * CG + c_offs[None, :]` is correct only if gamma is laid out per-channel (it is, shape [C]).\n- Add larger autotune configs targeting M=1024,N=8192,K=8192: try `BLOCK_M=128,BLOCK_N=256,BLOCK_K=64,num_warps=8,num_stages=4` and `BLOCK_M=256,BLOCK_N=128,BLOCK_K=64,num_stages=4`.\n- For GN with C=8192, G=512, CG=16: `GROUPS_PER_PROG=16, BLOCK_CG=16` gives a 256-element tile per program \u2014 bump `num_warps=2` (small tile) and consider `GROUPS_PER_PROG=32` to reduce launch count.",
+    "large_guidance": "- Rewrite as two kernels but make the GN kernel persistent per-row: one program handles an entire (N row, all G groups) using a 2D tile [G_TILE, CG] with CG=16 fixed as constexpr, eliminating the launch-count overhead of 1024*512/GROUPS_PER_PROG programs.\n- Consider fusing the leaky_relu+double directly into the GEMM epilogue is not possible (needs GN stats), but you can fuse the GN normalize+leaky_relu+double into a single pass that reads the GEMM output once, computes mean/var, and writes \u2014 exactly the current design. Focus redesign on the GEMM: at M=1024,N=K=8192 a split-K or stream-K GEMM may outperform the basic tiled version on a single 4090.\n- Verify correctness by comparing intermediate `triton_linear` output to `F.linear` directly; the 2.4e-4 average difference is suspiciously uniform across trials and looks like a systematic indexing or accumulation-order issue rather than random fp noise.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 22,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

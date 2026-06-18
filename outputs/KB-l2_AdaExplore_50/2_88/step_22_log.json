@@ -1,0 +1,30 @@
+{
+    "node_id": 22,
+    "parent_node_id": 7,
+    "context_node_ids": [
+        3,
+        5
+    ],
+    "depth": 5,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing with avg_diff ~5e-5 and max ~3.7e-3. The likely culprit is `allow_tf32=True` in `tl.dot` for the 8192\u00d78192 GEMM, which on Ada accumulates with reduced precision. Set `allow_tf32=False` (or cast inputs to fp32 explicitly with `acc = tl.dot(a, b, acc)` after ensuring fp32) and retest; if still off, double-check the GroupNorm eps=1e-5 matches PyTorch default.\n- The K-loop mask `offs_k[None, :] < K - k*BLOCK_K` is fine since K=8192 is divisible by BLOCK_K, but the `% M` / `% N` trick on offs_am/offs_bn means out-of-bounds rows wrap and pollute `acc`; rely on the store mask only \u2014 replace `% M`/`% N` with raw offsets and add load masks on M/N too, to avoid wrap-around contamination at tile boundaries (M=1024, N=8192 are divisible by common BLOCK sizes so this is mostly defensive, but worth doing).\n- Add larger autotune configs (BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4) and a (256,128,64) variant tuned for K=8192; expose `GROUP_M` (try 4 and 8) in the autotune key.",
+    "large_guidance": "- Keep the two-kernel structure (GEMM \u2192 fused GN+Swish+Mul+Swish); both are already well-matched to the problem. The GN kernel with CH_PER_G=32 and GROUPS_PER_BLOCK=8 (256 channels/program, 1024 programs/row) is reasonable but consider a single-program-per-row variant that loads the full C=8192 row once into SMEM, computes 256 group stats via tiled reductions, and writes back \u2014 this halves global traffic for gamma/beta/mw which are reused.\n- Alternative: persistent GEMM with epilogue that writes to a staging buffer plus a second pass for GN, OR fuse the per-group reduction directly into the GEMM epilogue when BLOCK_N is an exact multiple of CH_PER_G=32 (each tile contains whole groups), eliminating one full read/write of the 1024\u00d78192 intermediate.\n- For correctness robustness, ensure the GEMM accumulator stays in fp32 with TF32 disabled for inputs that need 5e-2 tolerance margin; the current 3.7e-3 max diff suggests TF32 rounding in tl.dot is the issue, not a logic bug.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 23,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

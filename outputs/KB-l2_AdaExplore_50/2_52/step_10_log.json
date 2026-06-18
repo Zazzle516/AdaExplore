@@ -1,0 +1,27 @@
+{
+    "node_id": 10,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.450415679197995,
+    "max_reward": 0.450415679197995,
+    "avg_reward": 0.450415679197995,
+    "score": [
+        1,
+        1,
+        0.5159293533834587
+    ],
+    "small_guidance": "- The conv output is 64\u00d7128\u00d7126\u00d7126 \u2248 130M elements; at BLOCK=1024 that's ~127K launches. Bump BLOCK to 4096 or 8192 with num_warps=8 to cut launch overhead and improve memory throughput on the elementwise kernels (`_mish_kernel`, `_apply_bn_kernel`, `_mish_bn_kernel`).\n- The training path does three full passes over the tensor (mish, stats, apply-bn). Fuse mish + stats into one kernel: write y while atomically accumulating sum/sqsum per channel (one program per (N, C) tile of HW with vectorized inner loop), then a single apply-bn pass \u2014 eliminates one full read of the 130M-element tensor.\n- For `_stats_kernel` use a larger BLOCK (e.g. 2048) and num_warps=8 since HW=15876 per (n,c); fewer iterations of the reduction loop and better SM occupancy.",
+    "large_guidance": "- The torch `nn.Conv2d` (64\u00d7128\u00d764 in_channels, 3\u00d73, 128\u00d7128 input \u2192 126\u00d7126 output) dominates runtime; the elementwise mish+BN tail is small relative to it. Replace the conv with a custom Triton im2col-style GEMM kernel: program tiles over (N\u00b7OH\u00b7OW, OC) with K=IC\u00b7KH\u00b7KW=576, autotune over (BM,BN,BK) \u2208 {(64,64,32),(128,64,32),(64,128,32),(32,128,32)} with num_warps=4, num_stages=2. Verify SMEM fits.\n- Fuse the entire pipeline into the conv epilogue at eval time: after the GEMM accumulator, apply mish (`x*tanh(softplus(x))`) and then the folded BN affine (`scale*y + shift`) before the store. This removes all post-conv passes over the 130M-element tensor.\n- Use channels_last (NHWC) layout so the K-dim of the GEMM (IC\u00b7KH\u00b7KW) is contiguous; convert weights once at init. For training, keep a separate pass that fuses mish+welford-stats inline with the conv epilogue to write only once.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 11,
+    "global_best_node_id": 10,
+    "global_best_score": [
+        1,
+        1,
+        0.5159293533834587
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 19,
+    "parent_node_id": 9,
+    "context_node_ids": [
+        2
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4444273092053943,
+    "max_reward": 0.4444273092053943,
+    "avg_reward": 0.4444273092053943,
+    "score": [
+        1,
+        1,
+        0.4665253009445028
+    ],
+    "small_guidance": "- The current fallback path materializes ConvTranspose3d via cuDNN (which dominates the 19.4ms runtime); tuning BLOCK/num_warps on the tail maxpool+mean kernel will not move fast_p meaningfully. If staying small, at least try `num_warps=8`, `num_stages=3`, and BLOCK=512 since pooled_total per (n,c) is only (16*32*32)/(2^3)... actually output of convT is (32,64,64) \u2192 pooled (16,32,32)=16384, so use BLOCK=2048 with num_warps=8.\n- Add `triton.autotune` over (BLOCK \u2208 {1024,2048,4096}, num_warps \u2208 {4,8}, num_stages \u2208 {2,3}) keyed on pooled_total.\n- Fuse the scale multiplication directly into the convT epilogue once convT is replaced; for now ensure scale is applied once on the reduced scalar (already done) \u2014 no other tuning headroom in the tail.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: for each input element (n, ic, id, ih, iw), compute the outer product with weight[ic, :, :, :, :] and scatter-add into output[n, oc, id*stride - pad + kd, ...]. This is the dominant cost (~10ms+) and the only path to fast_p > 1.\n- Better: fuse convT + scale + maxpool into a single gather kernel where each program computes one (n, oc, pd, ph, pw) output by, for each of the PK^3 window positions, evaluating the convT sum (over IC*KD*KH*KW with validity masks) and taking the max \u2014 then doing the global average across pooled positions in the same program (one program per (n, oc), accumulate sum across all pooled positions). The previous gather kernel attempt had this structure but used static_range over all spatial dims producing huge unrolled code; instead use runtime `range` loops over pd/ph/pw and `static_range` only over the small (KD,KH,KW,PK) constants, with IC vectorized via `tl.arange(0, IC_NEXT_POW2)`.\n- Channels-last (NDHWC) layout for input/weight will let the IC reduction be a contiguous load and enable using `tl.dot` for the IC\u00d7OC contraction; consider one program per (n, pd, ph, pw) tile producing all OC outputs at once via a small GEMM.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 20,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.46894253048307527
+    ]
+}

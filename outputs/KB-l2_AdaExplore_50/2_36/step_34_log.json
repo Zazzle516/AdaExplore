@@ -1,0 +1,31 @@
+{
+    "node_id": 34,
+    "parent_node_id": 33,
+    "context_node_ids": [
+        9,
+        5,
+        33
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.46317720204174634,
+    "max_reward": 0.46317720204174634,
+    "avg_reward": 0.46317720204174634,
+    "score": [
+        1,
+        1,
+        0.621211916844407
+    ],
+    "small_guidance": "- The conv_transpose GEMM is the bottleneck. Add more aggressive autotune configs targeting larger M tiles for the big spatial dim (OH*OW = 256*256 = 65536): try BLOCK_M=128/256 with BLOCK_N=128, BLOCK_K=64, num_warps=8, num_stages=3-4. Also swap the program_id order so pid_sp varies fastest (better L2 reuse of weight tiles across spatial blocks within a single OC tile).\n- The min\u2192sum\u2192GELU kernel launches N*OW=16*256=4096 programs each reducing OC*OH=128*256 elements \u2014 make BLOCK_H cover the whole OH (256) in one iteration (single-pass), and consider grouping multiple OW columns per program to amortize the bias load and erf cost.\n- Cache the permuted weight on the module as a buffer set once at init (currently `_get_permuted_weight` calls `.cuda()` every forward on the cache-miss path); also precompute and cache the contiguous bias tensors to avoid per-forward `.contiguous().cuda()` overhead.",
+    "large_guidance": "- Switch ConvTranspose2d from the input-gather/im2col GEMM to a scatter-add formulation: one program per (N, IC tile, IH*IW tile) loads x and weight, computes the outer product, and scatter-adds into the OC\u00d7OH\u00d7OW output. With stride=2, each input pixel contributes to only KH*KW=9 output positions, so the scatter is sparse and avoids the divisibility-mask waste (currently ~75% of (oh,ow,kh,kw) combinations fail `ih_num % SH == 0`). This eliminates the dominant source of wasted work in the current gather kernel.\n- Fuse the channel-min reduction directly into the conv-transpose epilogue: since min is over OC, have each (N, oh, ow) program compute all OC outputs in registers and reduce to a scalar min before storing. This removes the full (N,OC,OH,OW)=16*128*256*256=128M-element intermediate write/read \u2014 that traffic alone is a large fraction of the 5ms runtime.\n- Better still, fuse the entire chain (conv_transpose \u2192 min over C \u2192 sum over H \u2192 GELU \u2192 bias) into a single kernel keyed on (N, ow): each program iterates oh, computes the full OC vector for (n, oh, ow) via the conv-transpose accumulation, takes min across OC, accumulates into a sum over H, then applies GELU+bias once at the end. Output is only (N, OW) elements \u2014 minimal global memory traffic.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 35,
+    "global_best_node_id": 26,
+    "global_best_score": [
+        1,
+        1,
+        1.3353401460373366
+    ]
+}

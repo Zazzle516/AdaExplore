@@ -1,0 +1,29 @@
+{
+    "node_id": 27,
+    "parent_node_id": 20,
+    "context_node_ids": [
+        20
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.48388691078421,
+    "max_reward": 0.48388691078421,
+    "avg_reward": 0.48388691078421,
+    "score": [
+        1,
+        1,
+        0.7920670139697322
+    ],
+    "small_guidance": "- The output store uses `offs_n[None, :] * OC + offs_m[:, None]` which has a strided pattern (channel-fastest in NHWC means consecutive `offs_m` are contiguous, but here `offs_m` is the row dim of the tile). Swap the tile orientation so OC is the inner contiguous axis: store `out[..., offs_n[:, None] * OC + offs_m[None, :]]` with `acc` transposed, or accumulate as `(BLOCK_N, BLOCK_M)` so the OC axis is contiguous in writes.\n- Add larger autotune configs now that small ones compile: `(BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, num_warps=8, num_stages=2)` and `(BLOCK_M=256, BLOCK_N=64, BLOCK_K=16)`. With IC=64 a `BLOCK_K=64` (full IC in one step) eliminates the inner ic loop entirely \u2014 try `(64,64,64)` and `(128,64,64)`.\n- The current `x_ptrs = x_ptr + x_row_off[None,:] + ic[:,None]` loads x as (K,N) but spatial neighbors across `offs_n` are not contiguous in memory (different `oh*IW+ow` rows); coalescing is poor. Re-tile so the BLOCK_N spans contiguous `ow` only (fix `oh`) per program, restoring contiguous loads along the inner dim.",
+    "large_guidance": "- Switch to an implicit-GEMM where the M dimension is OC and the N dimension is `(N*OH*OW)` flattened, with one program per `(OC tile, OW-contiguous tile, batch*OH)`. This guarantees the gather along N dim hits contiguous input rows (since IW is contiguous in NHWC) and unlocks proper L2 reuse across the kh,kw loop.\n- Hold the entire IC=64 reduction in a single BLOCK_K=64 step (no inner ic loop) and unroll KH\u00d7KW=9 fully; the K dimension per output is only 576 so the whole reduction fits in one tl.dot pipeline. This eliminates loop overhead and lets the compiler schedule 9 independent dots.\n- Avoid the two `permute().contiguous()` reformats per forward by writing the kernel to consume NCHW input directly (compute `n,c,h,w` offsets in the kernel) and write NCHW output. The pre/post permutes are pure memory traffic of the full activation tensor and are likely a meaningful chunk of the 8.59 ms.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 28,
+    "global_best_node_id": 6,
+    "global_best_score": [
+        1,
+        1,
+        1.328878056640625
+    ]
+}

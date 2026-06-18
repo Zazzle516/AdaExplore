@@ -1,0 +1,27 @@
+{
+    "node_id": 37,
+    "parent_node_id": 1,
+    "context_node_ids": [],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GN+min kernel loops over NUM_GROUPS=512 inside one program per row, doing 512 masked sum/min reductions over a BLOCK_N=8192 tile \u2014 this is the dominant cost. Replace the per-group `tl.where` loop with a 2D reshape approach: load the row as `[NUM_GROUPS, GROUP_SIZE]` and use `tl.sum(..., axis=1)` / `tl.min(..., axis=1)` to get all 512 group stats in one shot, then take a final `tl.min` to fuse the min reduction.\n- For the GEMM, add larger tiles and group-M swizzle to the autotune configs (e.g. `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4`, plus `GROUP_M=8` L2 swizzle); M=N=K=8192 strongly favors big tiles.\n- Fuse the final bias-add kernel into the GN+min epilogue: have the GN kernel directly write `out[1, n, m, 1] = min_val + bias[n]` for all N via a single store, eliminating the separate `add_bias_kernel` launch and the intermediate `min_vals` tensor.",
+    "large_guidance": "- Restructure GN+min as a 2D-tiled kernel: program grid `(M, NUM_GROUPS)` (or `(M,)` with reshape to `[NUM_GROUPS, GROUP_SIZE]`), computing per-group mean/var with a vector reduction along the GROUP_SIZE axis (16 elements), then a single block-wide min across groups. This removes the 512-iteration Python-level loop currently inside the kernel.\n- Consider fusing the GEMM epilogue directly with GN: after the K-loop, each `(M_tile, N_tile)` already has the post-bias activations; if N_tile aligns to group boundaries, compute partial group sums in the GEMM kernel and write them out plus the activations, then a small second pass finalizes mean/var/normalize/min. Alternatively, since `out_features=8192` fits in a row, keep GEMM separate but make GN+min+bias-add a single persistent kernel that emits the final `[1, N, M, 1]` tensor in one launch.\n- Reconsider the output layout: writing `[1, N, M, 1]` from a per-row min requires an N-way broadcast. Have the fused GN+min+bias kernel produce its N outputs for a given m in a single program, vectorizing the bias add over N with `BLOCK_N` tiles, so the broadcast happens in registers rather than via a separate elementwise launch.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 38,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

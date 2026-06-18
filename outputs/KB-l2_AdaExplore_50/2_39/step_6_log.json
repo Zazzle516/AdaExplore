@@ -1,0 +1,29 @@
+{
+    "node_id": 6,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        4
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing (avg diff ~3e-4). The bug is in training mode: BN uses the *biased* variance for the current batch normalization (the unbiased is only for running_var). The current code does this correctly, but the BN forward also expects `mean`/`var` in fp32; ensure `gemm_out` is fp32 too. More likely culprit: `col_stats_kernel` uses `BLOCK_M=1024` with `M=16384` and accumulates `sum_x += tl.where(mask, x, 0.0)` \u2014 this is fine, but `mean = s / M` where `M` is a runtime int may be integer-divided; cast `M` to float (`mean = s / M.to(tl.float32)`) \u2014 same for var.\n- Also fuse the BN epilogue into the GEMM-scale kernel for the eval path, and fuse mean/var computation into a single pass per column using a persistent reduction with `BLOCK_M=2048`, `num_warps=8`, `num_stages=3`.\n- Sweep `bn_apply_kernel` tiles (256\u00d764, 128\u00d7128) with `num_warps=4` and contiguous-N inner loads; verify `stride_n==1` so the inner load is coalesced.",
+    "large_guidance": "- Restructure as a two-stage pipeline: (1) a tiled GEMM that writes `y = (x@W\u1d40 + b) * scale` to `gemm_out` *and* simultaneously atomically accumulates per-column `sum` and `sum_sq` into N-sized fp32 buffers (one atomic-add per (M-tile, N-tile)), eliminating the separate column-stats pass. (2) a fused BN-apply kernel that reads `gemm_out` and writes the final output using `mean`, `invstd`, `weight`, `bias` computed from the accumulated sums.\n- Alternatively, since N=4096 fits per-column reductions well, make `col_stats_kernel` persistent with one program per column and a 2D tile over M, using `tl.sum` after a single vectorized pass; avoid redundant materialization by reading the post-scale GEMM output (this is what's done, but ensure fp32 reduction accumulators).\n- Use `tf32` (`tl.dot(..., allow_tf32=True)`) explicitly and consider splitK for the 16384\u00d74096\u00d74096 GEMM if a single tile column has poor occupancy; otherwise keep the BLOCK_M=128, BLOCK_N=256, BLOCK_K=64 config as the autotune winner.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 7,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

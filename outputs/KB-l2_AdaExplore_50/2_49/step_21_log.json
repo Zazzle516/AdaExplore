@@ -1,0 +1,29 @@
+{
+    "node_id": 21,
+    "parent_node_id": 13,
+    "context_node_ids": [
+        13
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.44367768181818185,
+    "max_reward": 0.44367768181818185,
+    "avg_reward": 0.44367768181818185,
+    "score": [
+        1,
+        1,
+        0.460340875
+    ],
+    "small_guidance": "- The softmax/sigmoid epilogue is cheap; the ConvTranspose3d call dominates runtime. Further tuning of `BLOCK_C`, `num_warps`, or `num_stages` on the epilogue kernel won't close the gap \u2014 fast_p is stuck around 0.46 because torch's conv_transpose3d is the bottleneck.\n- If keeping the current structure, at least try `num_warps=2` for the contigC kernel (C=64 is small, one warp covers it) and add a `triton.autotune` over `{num_warps\u2208{1,2,4}, num_stages\u2208{2,3}}` to shave the epilogue.\n- Ensure channels_last_3d path is actually taken after conv_transpose (verify the output stride pattern); otherwise the strided kernel runs and loads are non-coalesced.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, input-spatial tile, IC tile)` scattering `input \u00d7 weight` outer products into the output grid with stride/padding/output_padding index math. This is the high-headroom move since the torch op dominates runtime.\n- Alternatively, implement ConvTranspose3d as a gather-style GEMM: for each output voxel, gather contributing input positions (those `(id,ih,iw)` such that `od = id*stride - pad + kd`, etc.) and accumulate. Tile as `(N\u00b7D_out\u00b7H_out\u00b7W_out_tile, OC tile)` \u00d7 `(IC\u00b7KD\u00b7KH\u00b7KW)` with `BLOCK_M=32, BLOCK_N=32, BLOCK_K=16, num_warps=4, num_stages=2` to stay within SMEM budget.\n- Fuse the softmax+sigmoid epilogue directly into the conv-transpose kernel's store path: write a two-stage design where stage 1 computes the full output into a scratch buffer (since softmax needs reduction across OC for each spatial voxel), then stage 2 reads OC-contiguous slices and applies softmax+sigmoid. Or, if OC=64 fits in registers, make the conv-transpose kernel emit a full OC vector per voxel and fuse the softmax/sigmoid before storing \u2014 eliminating one full output read/write pass.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 22,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.5287083316831683
+    ]
+}

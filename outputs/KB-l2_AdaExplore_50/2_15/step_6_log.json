@@ -1,0 +1,29 @@
+{
+    "node_id": 6,
+    "parent_node_id": 2,
+    "context_node_ids": [
+        2
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.42056488735389297,
+    "max_reward": 0.42056488735389297,
+    "avg_reward": 0.42056488735389297,
+    "score": [
+        1,
+        1,
+        0.269660320669617
+    ],
+    "small_guidance": "- The conv_transpose3d_scatter_kernel is unused (forward calls self.conv_transpose, the torch op). Either delete the dead kernel or actually dispatch to it. Currently runtime is dominated by torch's ConvTranspose3d.\n- Fuse the BN affine (eval-mode scale/shift) and the spatial mean subtraction into a single kernel: one program per (N, C), two-pass over S \u2014 accumulate sum of (x*scale+shift), then write (x*scale+shift - mean). Avoids two full passes over the conv output.\n- For sub_mean_kernel, increase BLOCK_SIZE to 2048 with num_warps=8 (S = 32*64*64 = 131072 here; D*H*W actually = 32*64*64 after stride=2, padding=1: OD=31, OH=63, OW=63 \u2248 123k), and skip the second loop by caching x in registers when S fits.",
+    "large_guidance": "- Replace torch.nn.ConvTranspose3d with a custom Triton kernel \u2014 it is the runtime bottleneck (fast_p=0.27 means conv dominates). Use a gather formulation: one program per (N, OC tile, output-spatial tile), where each output voxel (od,oh,ow) gathers contributions from input positions (id,ih,iw) such that id*SD - PD + kd = od, i.e. iterate kd,kh,kw and check (od+PD-kd) % SD == 0 and the resulting id in [0,ID). This avoids atomic_add and is far more efficient than scatter.\n- Fuse the eval-mode BN affine (scale, shift folded from running stats) and the spatial-mean subtraction into the conv-transpose epilogue. Specifically, have the conv kernel write y = conv(x) * scale[oc] + shift[oc] and accumulate per-(n,oc) partial sums into a workspace; a second small kernel computes mean and subtracts. Or do conv to scratch, then a single fused mean-and-subtract pass.\n- Lay out the conv as an implicit-GEMM: M=OC, N=output-spatial-tile, K=IC*KD*KH*KW, with tiles like (BM=32,BN=32,BK=16) num_warps=4 num_stages=2 to fit SMEM. Use channels-last (NDHWC) for coalesced K-axis loads.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 7,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.32290846370039283
+    ]
+}

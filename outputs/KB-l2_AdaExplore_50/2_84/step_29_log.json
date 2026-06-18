@@ -1,0 +1,27 @@
+{
+    "node_id": 29,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.48010596914215153,
+    "max_reward": 0.48010596914215153,
+    "avg_reward": 0.48010596914215153,
+    "score": [
+        1,
+        1,
+        0.7608742454227501
+    ],
+    "small_guidance": "- The training path falls back to `F.linear` plus an unfused `lin_out * a + b`, which is the bottleneck for this benchmark (training mode by default). Fuse the affine into a custom GEMM epilogue for the training path too: run the GEMM once, do a second pass over the materialized `lin_out` to compute per-column mean/var with a Triton reduction kernel, then apply the affine fused into the softmax kernel (skip writing `y`).\n- Add larger autotune tiles for M=1024,N=8192,K=8192 (e.g. `BLOCK_M=128,BLOCK_N=256,BLOCK_K=64, num_warps=8, num_stages=3/4`) and a `GROUP_M=8` swizzle for L2 reuse; current configs top out at 64x256 which under-utilizes the SM.\n- Increase softmax `BLOCK_N` to 2048 or 4096 with `num_warps=8` so the 8192-wide row needs only 2-4 iterations per pass; even better, do online (single-pass) softmax to cut from 3 passes to 1.",
+    "large_guidance": "- Redesign as a two-kernel pipeline that actually executes BN at runtime but fuses everything else: (1) a tiled GEMM that writes `lin_out` and simultaneously accumulates per-column sum and sum-of-squares into atomically-updated `[N]` buffers (or via a separate column-reduction kernel right after), (2) a softmax kernel that on-the-fly loads `lin_out`, applies `a*x+b` using mean/var/scale/bn_affine in its epilogue, and runs an online (single-pass) max+sum softmax. This eliminates the separate elementwise affine pass and the multi-pass softmax loads.\n- For M=1024, N=8192 the softmax row is large but fits in registers across a CTA \u2014 use a persistent softmax kernel with one program per row, `BLOCK_N=2048` or `4096`, online softmax (running max + corrective rescale of the sum), and load `lin_out` only twice (once during the running-max/sum pass, once during normalization) or once if you keep tiles in registers.\n- Keep `nn.BatchNorm1d` semantics intact (compute batch mean/var at runtime, update running stats); the fusion target is the affine application + softmax, not the BN statistics themselves. Avoid any rewrite that precomputes a folded `(weight @ scale*bn_w/sqrt(var))` at init time \u2014 that would violate the safety contract.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 30,
+    "global_best_node_id": 13,
+    "global_best_score": [
+        1,
+        1,
+        0.774583691286223
+    ]
+}

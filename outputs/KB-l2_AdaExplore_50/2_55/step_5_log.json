@@ -1,0 +1,29 @@
+{
+    "node_id": 5,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The atomic-add accumulation across N tiles is the correctness bug: each N-tile independently computes a per-row max-pool+sum and adds, but max-pool is non-linear so summing per-tile maxes \u2260 global max-pool then sum. Restrict the grid to a single program per row-tile along N (i.e. BLOCK_N must cover full N, or do a two-stage reduction), or split only along M and loop K\u00d7N inside the kernel.\n- If you keep a 2D grid, write the per-tile pooled+summed scalar to a temporary `(M, num_n_tiles)` buffer and do a second small kernel that sums across n-tiles \u2014 but only if pool windows never straddle tile boundaries (they don't here since BLOCK_N % KERNEL_SIZE == 0). The atomic_add is actually fine for the sum part; the bug is the `-inf` masking interacting with bias on partial K \u2014 double-check bias is only added once (it is). Real issue: confirm BLOCK_N >= KERNEL_SIZE and N % BLOCK_N == 0 for all autotune configs (N=32768, kernel=2 \u2014 OK), so the math should work. Re-check the `tl.trans(w)` + dot ordering and dtype.\n- Add configs with BLOCK_K=128 and num_stages=4 for K=32768 to overlap loads better; also try BLOCK_M=32 since M=128 (only 4 row tiles).",
+    "large_guidance": "- Since M=128 is tiny and N=K=32768 is huge, restructure as: one program per row (or pair of rows), persistent across the full N dimension. Loop over N in chunks of BLOCK_N inside the kernel, doing GEMV-style `tl.dot` (BLOCK_M=16/32, BLOCK_N=128, BLOCK_K=64), fusing max-pool (pairs of adjacent N) and the running sum in registers. This eliminates atomics entirely and guarantees correctness of the non-linear pool.\n- Alternative: split-K is unnecessary here (K=32768 fits a serial loop), but split-N with a two-pass reduction (kernel 1 writes per-row per-N-tile pooled-sum partials, kernel 2 sums them) is a clean fix if you want to keep large grids. Pool windows align with tile boundaries so this is safe.\n- Keep bias+scale fused into the epilogue of the row-persistent kernel; scale_factor multiply happens once on the final accumulator before the single store per row.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 6,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

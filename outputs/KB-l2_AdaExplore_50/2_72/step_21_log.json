@@ -1,0 +1,30 @@
+{
+    "node_id": 21,
+    "parent_node_id": 12,
+    "context_node_ids": [
+        11,
+        12
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4145216885088404,
+    "max_reward": 0.4145216885088404,
+    "avg_reward": 0.4145216885088404,
+    "score": [
+        1,
+        1,
+        0.2198039301979331
+    ],
+    "small_guidance": "- The current kernel uses `BLOCK_OC=16` with `num_warps=1` and one program per output voxel (N\u00b7POD\u00b7POH\u00b7POW = 64\u00b78\u00b78\u00b78 = 32768 programs), which severely underutilizes the GPU. Increase parallelism: tile over OC as well so each program handles one (n, pd, ph, pw, oc_tile) with BLOCK_OC covering all 16 OC in one program but launch more programs by splitting the 4\u00d74\u00d74 pooling window into separate output points (one program per output element of post-pool, with OC vectorized). Try `num_warps=4, num_stages=2`.\n- Add `@triton.autotune` over `(BLOCK_OC, num_warps, num_stages) \u2208 {(16,2,2),(16,4,2),(16,4,3),(32,4,2)}` keyed on `(OC, POD*POH*POW)`.\n- Hoist the `id_/ih_/iw_` index math: precompute per-(dd,kd) the valid id_ and validity mask outside the ic loop, since they don't depend on ic; this removes redundant integer divides inside the IC*KD*KH*KW*64 inner body.",
+    "large_guidance": "- Restructure as a true scatter-add ConvTranspose3d followed by a separate fused BN+avg-pool kernel. The current gather formulation iterates 3\u00b73\u00b73\u00b73\u00b764=5184 valid-checked loads per output voxel \u2014 most are masked out because stride=2 means only ~1/8 of (dd,hh,ww,kd,kh,kw) combos are valid. A scatter-add (one program per input voxel, accumulating its 3\u00d73\u00d73 outer product with the kernel into the output grid via atomic adds in fp32) does exactly the real work with no wasted masked loads.\n- Alternatively, reformulate as im2col-style GEMM: lay out the implicit-gather as `(N\u00b7OD\u00b7OH\u00b7OW, OC) = (N\u00b7OD\u00b7OH\u00b7OW, IC\u00b7KD\u00b7KH\u00b7KW) @ (IC\u00b7KD\u00b7KH\u00b7KW, OC)` with one Triton GEMM kernel (BLOCK_M=64, BLOCK_N=16, BLOCK_K=32, num_warps=4, num_stages=2), then fuse BN + 2\u00d7avg_pool as the epilogue writing directly to the 4\u00d74\u00d74-pooled output (accumulate 64 spatial outputs into one register tile before the BN+scale+shift).\n- Move to channels-last (NDHWC) layout for input/weight so the IC dimension is contiguous and the K-loop loads coalesce; this is the dominant memory pattern for the GEMM-K reduction.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 22,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        0.36042383585251137
+    ]
+}

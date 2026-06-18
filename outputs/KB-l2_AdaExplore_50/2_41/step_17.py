@@ -1,0 +1,136 @@
+import torch
+import torch.nn as nn
+import triton
+import triton.language as tl
+import math
+
+
+@triton.autotune(
+    configs=[
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 128, 'BLOCK_K': 32, 'GROUP_M': 8}, num_warps=4, num_stages=4),
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 128, 'BLOCK_K': 32, 'GROUP_M': 8}, num_warps=4, num_stages=3),
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 128, 'BLOCK_K': 32, 'GROUP_M': 4}, num_warps=4, num_stages=4),
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 128, 'BLOCK_K': 32, 'GROUP_M': 16}, num_warps=4, num_stages=4),
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 128, 'BLOCK_K': 64, 'GROUP_M': 8}, num_warps=4, num_stages=3),
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 128, 'BLOCK_K': 64, 'GROUP_M': 8}, num_warps=4, num_stages=4),
+        triton.Config({'BLOCK_M': 256, 'BLOCK_N': 64, 'BLOCK_K': 32, 'GROUP_M': 8}, num_warps=4, num_stages=4),
+        triton.Config({'BLOCK_M': 256, 'BLOCK_N': 64, 'BLOCK_K': 32, 'GROUP_M': 8}, num_warps=8, num_stages=3),
+        triton.Config({'BLOCK_M': 256, 'BLOCK_N': 128, 'BLOCK_K': 32, 'GROUP_M': 8}, num_warps=8, num_stages=3),
+        triton.Config({'BLOCK_M': 256, 'BLOCK_N': 128, 'BLOCK_K': 64, 'GROUP_M': 8}, num_warps=8, num_stages=3),
+        triton.Config({'BLOCK_M': 64, 'BLOCK_N': 128, 'BLOCK_K': 32, 'GROUP_M': 8}, num_warps=4, num_stages=4),
+        triton.Config({'BLOCK_M': 64, 'BLOCK_N': 256, 'BLOCK_K': 32, 'GROUP_M': 8}, num_warps=4, num_stages=4),
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 64, 'BLOCK_K': 32, 'GROUP_M': 8}, num_warps=4, num_stages=4),
+    ],
+    key=['M', 'N', 'K'],
+)
+@triton.jit
+def gemm_bn_gelu_relu_kernel(
+    A_ptr, B_ptr, scale_ptr, shift_ptr, C_ptr,
+    M, N, K,
+    stride_am, stride_ak,
+    stride_bk, stride_bn,
+    stride_cm, stride_cn,
+    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
+    GROUP_M: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    num_pid_m = tl.cdiv(M, BLOCK_M)
+    num_pid_n = tl.cdiv(N, BLOCK_N)
+    num_pid_in_group = GROUP_M * num_pid_n
+    group_id = pid // num_pid_in_group
+    first_pid_m = group_id * GROUP_M
+    group_size_m = min(num_pid_m - first_pid_m, GROUP_M)
+    pid_m = first_pid_m + ((pid % num_pid_in_group) % group_size_m)
+    pid_n = (pid % num_pid_in_group) // group_size_m
+
+    offs_am = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_bn = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    offs_k = tl.arange(0, BLOCK_K)
+
+    a_ptrs = A_ptr + (offs_am[:, None] * stride_am + offs_k[None, :] * stride_ak)
+    b_ptrs = B_ptr + (offs_k[:, None] * stride_bk + offs_bn[None, :] * stride_bn)
+
+    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+    for k in range(0, tl.cdiv(K, BLOCK_K)):
+        a = tl.load(a_ptrs)
+        b = tl.load(b_ptrs)
+        acc += tl.dot(a, b)
+        a_ptrs += BLOCK_K * stride_ak
+        b_ptrs += BLOCK_K * stride_bk
+
+    # apply scale & shift (fused bias + batchnorm affine)
+    offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    scale = tl.load(scale_ptr + offs_n)
+    shift = tl.load(shift_ptr + offs_n)
+    y = acc * scale[None, :] + shift[None, :]
+
+    # GELU (erf-based) then ReLU
+    inv_sqrt2 = 0.70710678118654752440
+    gelu = 0.5 * y * (1.0 + tl.erf(y * inv_sqrt2))
+    out = tl.maximum(gelu, 0.0)
+
+    offs_cm = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_cn = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    c_ptrs = C_ptr + (offs_cm[:, None] * stride_cm + offs_cn[None, :] * stride_cn)
+    tl.store(c_ptrs, out)
+
+
+class ModelNew(nn.Module):
+    def __init__(self, in_features, out_features):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.gemm = nn.Linear(in_features, out_features)
+        self.batch_norm = nn.BatchNorm1d(out_features)
+        self._cache_valid = False
+        self._w_t = None
+        self._scale = None
+        self._shift = None
+
+    def _build_cache(self):
+        W = self.gemm.weight  # (N, K)
+        bias = self.gemm.bias  # (N,)
+        bn = self.batch_norm
+        eps = bn.eps
+        invstd = torch.rsqrt(bn.running_var + eps)
+        scale = (bn.weight * invstd).contiguous()
+        shift = (bn.bias - bn.running_mean * scale + bias * scale).contiguous()
+        # transpose W to (K, N) contiguous so B loads are vectorized along N
+        w_t = W.t().contiguous()
+        self._w_t = w_t
+        self._scale = scale.to(torch.float32)
+        self._shift = shift.to(torch.float32)
+        self._cache_valid = True
+
+    def forward(self, x):
+        x = x.contiguous()
+        if self.training:
+            self._cache_valid = False
+            x = self.gemm(x)
+            x = self.batch_norm(x)
+            x = torch.nn.functional.gelu(x)
+            x = torch.relu(x)
+            return x
+
+        if not self._cache_valid:
+            self._build_cache()
+
+        M, K = x.shape
+        N = self.out_features
+
+        w_t = self._w_t  # (K, N) contiguous
+        scale = self._scale
+        shift = self._shift
+
+        out = torch.empty((M, N), device=x.device, dtype=x.dtype)
+
+        grid = lambda META: (triton.cdiv(M, META['BLOCK_M']) * triton.cdiv(N, META['BLOCK_N']),)
+
+        gemm_bn_gelu_relu_kernel[grid](
+            x, w_t, scale, shift, out,
+            M, N, K,
+            x.stride(0), x.stride(1),
+            w_t.stride(0), w_t.stride(1),  # B = W_t: stride_bk=N, stride_bn=1
+            out.stride(0), out.stride(1),
+        )
+        return out

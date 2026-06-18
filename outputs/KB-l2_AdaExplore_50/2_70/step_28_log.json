@@ -1,0 +1,30 @@
+{
+    "node_id": 28,
+    "parent_node_id": 25,
+    "context_node_ids": [
+        3,
+        25
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness failure: avg diff ~3e-4 with input being `torch.rand` (positive) suggests the residual/sigmoid math is fine but the GEMM accumulation likely has an issue. Verify the bias load mask path and ensure `acc` is computed in fp32 \u2014 current code looks correct, so the most likely culprit is the autotune sweeping configs that produce out-of-bounds K-tile loads or pointer drift; add `tl.multiple_of`/`tl.max_contiguous` hints and clamp pointer advances, and re-check that `weight.stride(0)=K, stride(1)=1` matches the `(offs_n*stride_wn + offs_k*stride_wk)` indexing.\n- The reference does `sigmoid(x)*scale + x`; current kernel matches. But note `nn.Linear` uses `x @ W.T + b`; here weight is `(N, K)` and we load `w[offs_n, offs_k]` \u2014 that's correct. Try removing autotune and pinning a single config (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, warps=4, stages=3) to isolate whether one specific config is wrong.\n- Tighten tolerance: max diff 0.0017 likely fails a stricter check; ensure accumulator stays fp32 and avoid converting `acc` to fp16/bf16 before sigmoid. Also try `tl.dot(x, w, allow_tf32=False)` to see if TF32 reduction is the source of the mismatch.",
+    "large_guidance": "- Rewrite as a standard tiled GEMM that loads B (weight) in its natural `(N, K)` layout with `BLOCK_N` along rows and `BLOCK_K` along cols, using `tl.dot(x, tl.trans(w))` \u2014 this avoids the swapped-axis pointer arithmetic that's likely causing the numerical drift.\n- Use a persistent-kernel design with a fixed grid of `num_SMs` programs iterating over (M,N) tiles to amortize launch overhead for this 1024\u00d78192\u00d78192 GEMM, and fuse sigmoid+scale+residual in the epilogue with fp32 accumulator.\n- Consider splitting K across programs only if needed; for K=8192 a single-program K-loop with BLOCK_K=64, num_stages=4 should saturate the 4090. Disable TF32 (`allow_tf32=False`) inside `tl.dot` to match PyTorch's fp32 matmul precision and pass the correctness check.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 29,
+    "global_best_node_id": 19,
+    "global_best_score": [
+        1,
+        1,
+        1.3665782787321958
+    ]
+}

@@ -1,0 +1,31 @@
+{
+    "node_id": 46,
+    "parent_node_id": 45,
+    "context_node_ids": [
+        3,
+        35,
+        45
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure is likely a tolerance miss from TF32 accumulation in the GEMM combined with fp32 GroupNorm stats. Try `allow_tf32=False` in `tl.dot` (or accumulate `tl.dot(a, b, out_dtype=tl.float32)` with TF32 disabled) since K=8192 amplifies rounding error; verify the max_diff drops below 5e-2 (it's already close, but mismatch flag suggests a subtle issue \u2014 double-check that `bias` is loaded in fp32 and added before store, which it is).\n- The Linear weight layout: `nn.Linear` computes `x @ W.T`, and you pre-transpose to `Bt = W.t().contiguous()` of shape `(in_features, out_features)`. That's correct, but ensure the cache invalidation handles the first forward properly \u2014 the `_version` check is fine. Consider pre-transposing once in `__init__` and registering as a buffer to avoid the per-forward branch.\n- Sweep narrower GEMM configs targeted at M=1024, N=8192, K=8192: add `BLOCK_M=64, BLOCK_N=128, BLOCK_K=64` and `BLOCK_M=128, BLOCK_N=64, BLOCK_K=128`, and try `num_stages=4-5` to overlap the long K loop.",
+    "large_guidance": "- For GroupNorm with C_PER_G = 8192/16 = 512, a single program per (row, group) reducing 512 elements is fine, but consider fusing the GroupNorm directly into the GEMM epilogue: have the GEMM write its row tile to an intermediate, then a second kernel that loads one full row (C=8192) per program, computes all 16 group stats in-register via segmented reduction, and applies affine+hardtanh \u2014 this halves the number of launches and keeps the row resident.\n- Alternatively, write a split-K GEMM that produces the per-row, per-group partial sum and sum-of-squares alongside the activations in a single fused pass \u2014 fully avoiding the round-trip through HBM for the GN input.\n- For the standalone GN kernel, switch to one program per row (not per group), loading the full row of 8192 elements tiled along C, computing all 16 group means/vars in a single pass with masked segment reductions. This reuses the row load once instead of 16 separate loads.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 47,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

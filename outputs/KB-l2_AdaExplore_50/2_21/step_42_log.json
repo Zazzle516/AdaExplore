@@ -1,0 +1,29 @@
+{
+    "node_id": 42,
+    "parent_node_id": 41,
+    "context_node_ids": [
+        41
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness bug: each group has CPG_C * H_out * W_out elements, but `sum_val`/`sum_sq` are reduced via `tl.sum` over a [CPG_C, BLOCK_HW] tile while the masked-out lanes are zeroed only on the W axis \u2014 that's fine, but the per-program statistics use the wrong group_size if any tile is partially masked. More importantly, `sum_val = tl.zeros([1], ...)` accumulating with `tl.sum(acc)` (a scalar) into a [1] vector is the likely root cause of mismatch; switch to scalar fp32 accumulators (`sum_val = 0.0`) so the running reduction is well-defined.\n- Verify `group_size = CPG_C * H_out * W_out` is computed as fp32 (currently int division \u2192 float promotion) and that `mean`/`rstd` are scalars before broadcasting; cast explicitly with `.to(tl.float32)`.\n- After fixing correctness, raise `BLOCK_HW` to 512 or 1024 and try `num_warps=8`, `num_stages=2`; CPG_C=4 makes the [CPG_C, BLOCK_HW] tile small so larger BLOCK_HW will pay off.",
+    "large_guidance": "- Restructure as a two-kernel pipeline: (1) a conv-bias-scale-sigmoid kernel implemented as an implicit-im2col GEMM with one program per (N, OC-tile, HW-tile) writing the activated output; (2) a GroupNorm kernel with one program per (N, group) doing a two-pass Welford over CPG*H_out*W_out. The current single-kernel design forces a tiny GEMM (CPG_C=4) and leaves most tensor-core throughput on the table; separating lets the conv use BLOCK_M=64/BLOCK_N=128/BLOCK_K=32 tiles via `tl.dot`.\n- For the conv kernel, lay the weight out as [OC, IC*KH*KW] and gather input patches implicitly inside the K loop; fuse `(cb+eb)*sc` then sigmoid in the epilogue before the store. This is the dominant-runtime op and the highest-leverage change.\n- For GroupNorm, use channels-last temporary storage (or load CPG channels contiguously per HW position) so the per-group reduction is one contiguous stream of `CPG*H*W` floats per program; tile the reduction with BLOCK=1024 and combine partials via two passes (mean, then var) inside the same kernel.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 43,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        1.0321006582633052
+    ]
+}

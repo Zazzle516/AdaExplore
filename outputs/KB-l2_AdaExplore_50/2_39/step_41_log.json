@@ -1,0 +1,29 @@
+{
+    "node_id": 41,
+    "parent_node_id": 38,
+    "context_node_ids": [
+        38
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing (max diff ~0.0024). The likely cause is the BN stats kernel reading X with strided access `X_ptr + offs_m * N + n` (one column per program) which is fine numerically, but `bn_apply_kernel` reads back `x` from the same buffer while stats are computed in fp32 \u2014 convert `x` to fp32 inside `bn_apply_kernel` before subtracting mean to avoid precision loss, and cast the final `y` back to the output dtype on store.\n- Increase `BLOCK_M_STATS` to 4096 and use `num_warps=8` for the stats kernel since M=16384, N=4096 \u2014 fewer iterations of the M loop and better occupancy. Also tile bn_apply with `BLOCK_M=128, BLOCK_N=128, num_warps=4` for better memory throughput.\n- Consider fusing the BN apply pass into the GEMM epilogue at eval time (running_mean/var are constants), turning the entire forward into a single GEMM kernel and one stats kernel for training.",
+    "large_guidance": "- Rewrite as a two-kernel pipeline: (1) fused GEMM + scale + bias that writes y in fp32, and simultaneously accumulates per-column sum and sum-of-squares via `tl.atomic_add` into N-sized buffers (one atomic per N tile, not per element) \u2014 this removes the second full read of y for stats. (2) A fused normalize-apply kernel that reads y, computes mean/invstd from the accumulated buffers, and writes the BN output. This halves the memory traffic over y.\n- Alternatively split-K stats: launch a 2D grid (M_tiles, N) for stats, each program reduces a chunk of M into partial sums, then a small second kernel finalizes mean/invstd. Avoids the long sequential M loop per column.\n- For the apply kernel, use a 1D grid over rows with `BLOCK_N` covering the full N=4096 in one program (4096 fp32 = 16KB, fits easily) so per-row mean/invstd/weight/bias are loaded exactly once and reused \u2014 eliminates the 2D tiling redundancy.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 42,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.7791481785714286
+    ]
+}

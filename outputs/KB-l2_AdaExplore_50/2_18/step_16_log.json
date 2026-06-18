@@ -1,0 +1,29 @@
+{
+    "node_id": 16,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness bug is the atomic_add race: multiple N-tiles writing to the same M rows accumulate fine numerically, but the issue is that `out` is fp32 and the reference output goes through sum\u2192max\u2192mean\u2192logsumexp\u2192logsumexp which is identity after sum, so the result should match `sum(linear(x))`. Verify the row-partial sum is masking K correctly \u2014 `offs_k` is reused but `x_ptrs`/`w_ptrs` already include `offs_k`, then you add `k * stride_xk` again; this is correct, but ensure K=8192 with BLOCK_K=32 doesn't accumulate fp32 drift beyond 5e-2 tolerance (max_diff 16428 says it's not just drift).\n- Likely real bug: `tl.atomic_add(out_ptr + offs_m, row_partial, mask=m_mask)` \u2014 when multiple pid_n write to same pid_m rows, this is fine, but `offs_m` may exceed M and the mask helps. More likely the bias is being added once per N-tile (so bias contribution is multiplied by num_pid_n). Fix: only add bias on pid_n==0, or add bias separately, or sum bias once outside.\n- After fixing the bias double-count, add a swizzled grid and try BLOCK_M=64, BLOCK_N=256, BLOCK_K=32 for the M=1024,N=8192 shape; consider num_stages=4.",
+    "large_guidance": "- Since downstream max/mean/logsumexp over a size-1 dim are identities, the entire model reduces to `rowsum(x @ W^T + b) = (x @ W^T).sum(1) + b.sum()`. The honest custom kernel is a fused GEMM+row-reduction: one program per M-tile, loop over N-tiles inside the kernel (persistent in N), accumulate a per-row scalar in registers, then a single non-atomic store. This eliminates the atomic and the bias double-count.\n- Alternative: split-K style \u2014 one program per (M-tile, N-tile-group), accumulate row-partial into a small `[num_n_splits, M]` workspace, then a tiny second kernel reduces along the split axis and adds `b.sum()` (precomputed once). Avoids atomics entirely.\n- Keep bias addition outside the N-tile loop (add `b.sum()` scalar once to the final row total). Load W as (N,K) with K contiguous to match `tl.dot` layout without transpose in the hot loop \u2014 preload W tile once per N-iteration.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 17,
+    "global_best_node_id": 11,
+    "global_best_score": [
+        1,
+        1,
+        0.6167747552424558
+    ]
+}

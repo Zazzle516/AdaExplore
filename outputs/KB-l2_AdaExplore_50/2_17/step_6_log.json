@@ -1,0 +1,29 @@
+{
+    "node_id": 6,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        4
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5133392233896757,
+    "max_reward": 0.5133392233896757,
+    "avg_reward": 0.5133392233896757,
+    "score": [
+        1,
+        1,
+        1.0350485929648243
+    ],
+    "small_guidance": "- The conv now dominates (HW=16384, BLOCK=16384, num_warps=16 is likely too wide for a single-pass kernel). Try BLOCK=4096 streaming via the `_large` path with num_warps=8, num_stages=3 \u2014 this avoids 64KB register pressure from holding 16384 floats per program.\n- Add a `triton.autotune` over (BLOCK \u2208 {1024, 2048, 4096}, num_warps \u2208 {4, 8}, num_stages \u2208 {2, 3}) keyed on HW for the streaming kernel, and route everything through it (single-pass kernel is rarely a win when HW=16384).\n- Fuse the conv bias add into the norm kernel: drop conv bias via `bias=False` on the Conv2d (keep weight identical) is invalid; instead, pass `conv.bias` as an additive offset that cancels in mean/var computation \u2014 but since bias is per-channel it shifts only the mean and is already absorbed. Verify the conv is actually emitting NCHW contiguous; if not, force `.contiguous()` only when needed to save a copy.",
+    "large_guidance": "- The InstanceNorm+div kernel is already ~free; runtime is dominated by `nn.Conv2d` (cuDNN ~9.5ms for N=128, C=64\u2192128, 128\u00d7128, k=3). Replace the conv with a custom Triton im2col-GEMM kernel: one program per (N, OC tile, output-spatial tile), implicit im2col gather, GEMM tiles BLOCK_M=64/BLOCK_N=128/BLOCK_K=32, autotuned.\n- Fuse the conv epilogue with InstanceNorm: have the conv kernel write per-(N,OC) partial sums of `y` and `y\u00b2` to a small scratch, then a second tiny kernel computes mean/rstd, then a third applies `(y-mean)*rstd/divide_by`. Or two-pass: conv\u2192store, then existing IN kernel (already fast). The big win is the conv replacement.\n- Use channels-last (NHWC) layout end-to-end so the GEMM-K (IC*kh*kw) axis is contiguous, enabling coalesced loads. Fold the `/divide_by` scalar into the final affine step (multiply by `inv_div` in the IN epilogue, already done).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 7,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.0371332829808662
+    ]
+}

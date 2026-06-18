@@ -1,0 +1,29 @@
+{
+    "node_id": 42,
+    "parent_node_id": 41,
+    "context_node_ids": [
+        41
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4496315968379447,
+    "max_reward": 0.4496315968379447,
+    "avg_reward": 0.4496315968379447,
+    "score": [
+        1,
+        1,
+        0.5094606739130435
+    ],
+    "small_guidance": "- The conv3d dominates runtime (fast_p ~0.51 means custom is 2x slower than baseline; the mish+tanh fusion is fine but cuDNN conv is the bottleneck). Tuning the standalone activation kernel further (BLOCK_SIZE, warps) will not close the gap \u2014 at most a few % since it's already memory-bound and small relative to conv.\n- If staying small, try BLOCK_SIZE=8192 with num_warps=8, num_stages=2, and ensure `.contiguous()` isn't forcing an extra copy (conv output is already contiguous, so the call is a no-op but verify).\n- Consider channels_last_3d memory format on the conv input/weight to let cuDNN pick a faster algorithm on Ampere/Ada \u2014 sometimes 1.3-1.5x on Conv3d.",
+    "large_guidance": "- Replace the `nn.Conv3d` with a custom Triton im2col-style GEMM kernel: one program per (N, OC tile, output-spatial tile), gather input via implicit im2col indexing, accumulate into a `BLOCK_M x BLOCK_N` tile over the K=IC*kD*kH*kW reduction. Fuse bias add, mish, and tanh into the epilogue on the accumulator before storing. This is the high-headroom move per the skills (conv dominates and epilogue is already fused).\n- Use a channels-last (NDHWC) layout so the GEMM-K axis (IC*kD*kH*kW) is contiguous along input channels, enabling coalesced loads. Autotune over BLOCK_M \u2208 {64,128}, BLOCK_N \u2208 {32,64,128}, BLOCK_K \u2208 {16,32}, num_warps \u2208 {4,8}, num_stages \u2208 {2,3}.\n- Alternatively, if the GEMM tile is hard to tune for kernel_size=3, implement a direct conv3d kernel where each program computes a tile of output spatial points for a fixed (n, oc-tile), looping explicitly over the 3x3x3 window and IC; pre-load the 3x3x3 weight slab into registers/SMEM once per program. Fuse bias + mish + tanh in the epilogue.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 43,
+    "global_best_node_id": 39,
+    "global_best_score": [
+        1,
+        1,
+        1.6597160764872523
+    ]
+}

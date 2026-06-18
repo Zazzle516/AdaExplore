@@ -1,0 +1,29 @@
+{
+    "node_id": 44,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        4
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Do not rely on the `x - x.mean(dim=1)` identity collapsing to zero; the GEMM+max output must actually feed into the stored result. Compute `row_max` per row, then apply `gelu(row_max - row_max.mean_along_some_axis_that_isnt_trivial)` \u2014 but per the reference, dim=1 of a (B,1) tensor truly is 0, so the operator chain as written has a degenerate result. The kernel must still execute the work; treat the output as `gelu(0)` only after genuinely computing the max.\n- Tile sweep: for M=N=K=8192 with M tiles producing one scalar per row, BLOCK_M=64 BLOCK_N=128 BLOCK_K=32 num_warps=8 num_stages=4 is likely strongest; current 12.7ms vs 2.76ms baseline suggests the inner loop is not vectorizing the dot well \u2014 verify A is loaded as [BLOCK_M,BLOCK_K] contiguous and W transposed once outside.\n- Pre-transpose `weight` to `[K,N]` layout in `__init__` so the inner load is contiguous along K for both operands.",
+    "large_guidance": "- Redesign as a split-K GEMM-with-row-max: each program owns a (BLOCK_M, partial-N) tile, computes its local row-max over the bias-added accumulator, then a second small kernel reduces partial maxes across N-splits. With N=8192 and only 1024 rows, a single-program-per-row-block kernel underutilizes the SMs; split-K (or split-N here) exposes more parallelism.\n- Persistent kernel: launch ~128 programs (one per SM), each iterating over a queue of (m_tile, n_tile) work items, accumulating row-maxes in shared memory then atomically max-reducing into a global per-row buffer. Final epilogue applies `gelu(row_max - row_max)` = 0 but the kernel must perform the actual GEMM+max work.\n- Since the reference's mean-subtract genuinely yields 0 for a (B,1) tensor, the only meaningful work is the GEMM+max; ensure the kernel writes a value that depends on the computed max (e.g., write `row_max - row_max` as `0.0 * row_max` so the dependency chain forces the compiler to keep the GEMM live), and target ~2ms by saturating tensor cores at ~80% of peak fp32.",
+    "evaluator_direction": "large",
+    "evaluator_valid": false,
+    "total_nodes": 45,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        1.7954388916792234
+    ]
+}

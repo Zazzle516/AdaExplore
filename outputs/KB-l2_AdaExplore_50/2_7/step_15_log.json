@@ -1,0 +1,31 @@
+{
+    "node_id": 15,
+    "parent_node_id": 12,
+    "context_node_ids": [
+        10,
+        11,
+        12
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.493636170974925,
+    "max_reward": 0.493636170974925,
+    "avg_reward": 0.493636170974925,
+    "score": [
+        1,
+        1,
+        0.8724984105431309
+    ],
+    "small_guidance": "- Add a `triton.autotune` over tile configs centered on `(BLOCK_M, BLOCK_N, BLOCK_K)` in {(64,32,32), (128,32,32), (64,64,32), (32,64,32), (128,64,16)} with `num_warps \u2208 {4, 8}` and `num_stages \u2208 {2, 3}`, keyed on `(OC, DHW_out, K_TOTAL)` \u2014 the current single config (128,32,32, warps=4, stages=3) leaves OC=32 producing only one N-tile, so widening BLOCK_N to 64 (padding OC) or shrinking BLOCK_M to 64 will trade off occupancy vs. reuse.\n- Hoist the per-`k` index decomposition: since `K_TOTAL = IC*KD*KH*KW = 8*27 = 216` is tiny, unroll the K loop with `BLOCK_K=K_TOTAL` (pad to 256) so the inner `tl.dot` runs once per (M,N) tile and the kd/kh/kw/ic divisions become compile-time constants, eliminating the loop overhead entirely.\n- Precompute `x_base = pid_b*IC*DHW_in + d_out*HW_in + h_out*W_in + w_out` once per program and add `(ic*DHW_in + kd*HW_in + kh*W_in + kw)` as a pure-K offset vector \u2014 this removes the broadcasted multiplies inside the K loop and lets the compiler hoist them.",
+    "large_guidance": "- Switch to a channels-last (NDHWC) layout for both input and output so the GEMM-K axis (IC) is the innermost contiguous dim; this makes the im2col gather coalesce across IC, which is currently strided by DHW_in. Pair with a weight layout of `[OC, KD*KH*KW, IC]` or `[KD*KH*KW*IC, OC]` so the inner `tl.dot` is a clean `(BLOCK_M, BLOCK_K) x (BLOCK_K, BLOCK_N)` with contiguous weight loads.\n- Consider a direct-conv formulation that tiles output as `(N, OC_tile, D_out, H_tile*W_tile)` and loops `ic, kd, kh, kw` explicitly (since `K_TOTAL=216` is small) accumulating into a register tile of shape `(OC_tile, H_tile*W_tile)`. With OC=32, set `OC_tile=32` and `spatial_tile=128` so each program emits a full OC column and reuses input loads across all 32 output channels \u2014 much higher arithmetic intensity than the current im2col-GEMM.\n- Fuse the trailing `+ extra_bias` (per-OC) into the same epilogue as the conv bias (already done), and ensure the sigmoid/gelu math is computed in fp32 on the accumulator before the single store. The current kernel already does this; the design change is purely layout + tiling to raise compute intensity.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 16,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.95764876344086
+    ]
+}

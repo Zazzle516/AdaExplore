@@ -1,0 +1,27 @@
+{
+    "node_id": 13,
+    "parent_node_id": 12,
+    "context_node_ids": [],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure likely comes from `acc = tl.where(n_mask[None, :], acc, 0.0)` interacting with the masked `tl.dot`: when N is a multiple of BLOCK_N (8192/256 etc.) this is fine, but the real issue may be that `tl.dot(x_vals, tl.trans(w_vals))` accumulates K-direction contributions that aren't masked properly when K is padded. Since K=8192 is divisible by BLOCK_K=32, that's fine \u2014 but verify by using `tl.dot(x_vals, w_vals.T)` allow_tf32=False to rule out TF32 accuracy loss causing the ~1.1 avg diff (TF32 on 8192-wide reduction easily produces errors >5e-2).\n- Add `allow_tf32=False` to the `tl.dot` call (or cast inputs to fp32 explicitly) \u2014 the magnitude of avg_difference\u22481.1 on a sum-of-8192 reduction strongly suggests TF32 rounding rather than a logic bug.\n- Once correct, sweep larger BLOCK_M (128, 256) since the output is only M rows and the N-loop is the hot path; also try BLOCK_K=64/128 with num_stages=4 to better hide K-direction loads.",
+    "large_guidance": "- Restructure as a two-pass reduction: pass 1 computes per-(m, n-tile) partial sums into a small (M, num_n_tiles) scratch tensor; pass 2 reduces across n-tiles and applies scale. This avoids serializing the entire N loop inside one program and lets the GEMM tiles run with a 2D grid (pid_m, pid_n), exposing far more parallelism (currently only ceil(M/BLOCK_M) programs \u2248 16-32, severely underutilizing the 4090).\n- Alternative single-pass design: compute `v = (W.sum over rows weighted by x)` by recognizing the math is `sum_n (x @ W.T)[m,n] = x[m,:] @ W.T.sum(dim=1) = x[m,:] @ W.sum(dim=0)`. **DO NOT do this** \u2014 it violates the safety contract (collapses the GEMM into a matvec). Keep the full GEMM materialized per-tile and reduce on the fly.\n- Use fp32 accumulation explicitly and disable TF32 in `tl.dot` to meet the 5e-2 tolerance over an 8192-wide reduction; the current accuracy failure must be fixed before perf tuning matters.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 14,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

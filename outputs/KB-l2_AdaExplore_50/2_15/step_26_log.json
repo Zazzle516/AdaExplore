@@ -1,0 +1,30 @@
+{
+    "node_id": 26,
+    "parent_node_id": 25,
+    "context_node_ids": [
+        24,
+        25
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4207638894815953,
+    "max_reward": 0.4207638894815953,
+    "avg_reward": 0.4207638894815953,
+    "score": [
+        1,
+        1,
+        0.27130208822316104
+    ],
+    "small_guidance": "- Increase BLOCK_SP to 128 or 256 and BLOCK_OC to 64, and add a `triton.autotune` over `{(BLOCK_SP, BLOCK_OC, num_warps) \u2208 {(128,32,4),(128,64,4),(256,32,8),(64,64,4)}}` keyed on `(IC, OC, ID*IH*IW)`; the current scatter launches `N*IC * ceil(SP/64) * ceil(OC/32)` programs each doing only KD*KH*KW=27 atomic adds per (sp, oc), so larger OC tiles amortize the x-load and weight-load.\n- Hoist the weight load out of the spatial loop: for each `(kd,kh,kw)` load `w_vals[BLOCK_OC]` once and reuse across the entire `BLOCK_SP` (already the case), but also hoist `oc_offs * KDKHKW` index math outside the kd/kh/kw loops by precomputing `w_base_oc = ic*OC*KDKHKW + oc_offs*KDKHKW` once.\n- For the BN+sub-mean kernel, S=33*65*65\u2248139k is too large for a single persistent row; keep BLOCK_S=2048 with num_warps=8, and consider storing the partial `y` in registers/scratch to avoid the second pass re-loading and re-applying `x*scale+shift` (use a two-pass over x but compute y on the fly is already done \u2014 fine).",
+    "large_guidance": "- Replace the scatter-add ConvTranspose3d with a gather-style GEMM: one program per `(N, OC tile, output-spatial tile)` that, for each output voxel `(od,oh,ow)`, iterates over `(ic, kd, kh, kw)` and gathers the input voxel `((od+pD-kd)/sD, ...)` only when the stride divides evenly. This eliminates all atomic_adds (currently `N*IC*ID*IH*IW*KD*KH*KW \u2248 16*16*16*32*32*27 \u2248 113M` atomics) and turns the work into a coalesced fp32 GEMM with `K = IC*KD*KH*KW = 432` and `M = OD*OH*OW \u2248 140k`, `N = OC = 32`.\n- Fuse the BN affine (folded `scale`,`shift`) and the bias add into the conv-transpose GEMM epilogue, then do the spatial-mean subtraction in a separate two-pass kernel \u2014 or even better, accumulate the per-(n,c) sum inside the conv epilogue via a second atomic_add into a `[N,OC]` accumulator, then a tiny finalize kernel divides and subtracts in one fused pass over the output.\n- Use `channels_last_3d` memory layout for the output so the OC axis is contiguous; pick tile `(BLOCK_M=64, BLOCK_N=32, BLOCK_K=32, num_warps=4, num_stages=2)` as the safe starting autotune config (SMEM = (64*32+32*32)*4*2 = 24KB), then sweep upward to `(128,32,32)` and `(64,64,32)`.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 27,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.32290846370039283
+    ]
+}

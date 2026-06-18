@@ -1,0 +1,30 @@
+{
+    "node_id": 35,
+    "parent_node_id": 30,
+    "context_node_ids": [
+        27,
+        30
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.45280400354939526,
+    "max_reward": 0.45280400354939526,
+    "avg_reward": 0.45280400354939526,
+    "score": [
+        1,
+        1,
+        0.5356330292825106
+    ],
+    "small_guidance": "- The fused conv+softmax+pool kernel uses POOL=4 (pool_kernel_size*pool_kernel_size), so each program does 64 spatial points \u00d7 27 kernel taps \u00d7 OC\u00d7IC matmul redundantly per output. Reduce the per-program work: use POOL=pool_kernel_size (=2) and chain two pool reductions, or split into two kernels (conv+softmax producing intermediate, then 2-stage pool). Try `num_warps=8, num_stages=3` and sweep `IC_C` matching real IC=3 (no padding to 4 needed; mask cost dominates).\n- Add `@triton.autotune` over `(num_warps, num_stages)` \u2208 {(4,2),(4,3),(8,2),(8,3)} keyed on `(N, OC, Dp, Hp, Wp)`.\n- Move bias broadcast and OC-arange hoist outside the spatial loops (currently `bias` is reloaded conceptually each iter \u2014 ensure `acc = bias` reuses register, and consider accumulating into a [POOL,POOL,POOL,OC] register tile then doing softmax+max once per output element to amortize.",
+    "large_guidance": "- Redesign as an im2col-style GEMM: one program per `(N, output-spatial tile, OC)` computing the conv output for a tile of size `(POOL_d*POOL_h*POOL_w)` directly, with K = IC*KD*KH*KW = 81. Use `tl.dot` on `[BLOCK_M=64 spatial, BLOCK_N=16 OC, BLOCK_K=81]` to leverage tensor cores instead of the current scalar FMA loop.\n- Fuse the entire chain (conv \u2192 softmax over OC \u2192 2\u00d7 maxpool with combined POOL=4) into one kernel where each program owns one final output element `(n, dp, hp, wp)` and a full OC vector: compute the 4\u00d74\u00d74=64 conv outputs across OC=16 as a single GEMM tile, softmax across OC per spatial point, then reduce-max across the 64 spatial points per channel \u2014 all in registers.\n- Use channels-last (NDHWC) layout for the input load so the K-axis (IC\u00d7KD\u00d7KH\u00d7KW gather) is contiguous along IC, enabling vectorized loads; pre-pack weights to `[OC, KD*KH*KW*IC]` at init.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 36,
+    "global_best_node_id": 22,
+    "global_best_score": [
+        1,
+        1,
+        2.689860190720031
+    ]
+}

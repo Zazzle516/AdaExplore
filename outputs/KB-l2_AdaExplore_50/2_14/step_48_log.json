@@ -1,0 +1,27 @@
+{
+    "node_id": 48,
+    "parent_node_id": 44,
+    "context_node_ids": [],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure is likely from the scratch-tile sizing: `max_num_n_tiles` is computed assuming `BLOCK_N=128` (smallest in configs), but if autotune picks `BLOCK_N=256` then `actual_num_n_tiles` is smaller and writes use `pid_n * stride_st` with the same stride layout \u2014 that's fine, but allocating `(max_num_n_tiles, M)` then computing strides means `scratch.stride(0) = M` always. The bug is that unused rows of scratch contain uninitialized data; however reduce only reads `actual_num_n_tiles` rows so that's ok. More likely culprit: `tl.where(mask_n[None, :], acc, 0.0)` correctness is fine, but `weight` is loaded as `(N, K)` rows so `stride_wn=K, stride_wk=1` \u2014 verify the autotune key doesn't cache stale config across shape changes. Add `torch.zeros` instead of `torch.empty` for scratch as a safety net.\n- Sweep larger `BLOCK_M` (64, 128) since M=1024 is plentiful, and try `BLOCK_N=256, BLOCK_K=32` with `num_warps=8, num_stages=4` for the 8192\u00d78192 K loop.\n- Fuse the final reduction into the GEMM kernel via `atomic_add` to a per-row accumulator, eliminating the scratch + second kernel entirely.",
+    "large_guidance": "- Redesign as a single-pass kernel: one program per row-tile of M, looping over the full K and N dimensions internally, accumulating `sum_n sum_k x[m,k]*w[n,k]` directly into a `(BLOCK_M,)` register vector. Since the output is just a per-row scalar, you don't need to materialize the `(M,N)` GEMM at all \u2014 but you still must execute the full M*N*K arithmetic to honor the safety contract. Structure: outer loop over N tiles, inner loop over K tiles, do `tl.dot` to get a `(BLOCK_M, BLOCK_N)` partial, then reduce along N into the row accumulator before the next N tile. This avoids the scratch buffer and the second reduction kernel.\n- Alternative: split-K style with `atomic_add` into a `(M,)` output buffer \u2014 each program handles a `(BLOCK_M, BLOCK_N)` output tile, computes its `tl.dot`, sums across N within the tile, and atomically adds to `out[m]`. Apply scaling in a tiny epilogue kernel or fold `*scaling_factor*0.5` into the atomic by scaling the partial before adding.\n- Ensure the weight is pre-transposed once at init (store as `(K, N)` contiguous) so the inner `tl.dot` reads B contiguously along K without `tl.trans` in the hot loop.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 49,
+    "global_best_node_id": 27,
+    "global_best_score": [
+        1,
+        1,
+        0.8119585150360703
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 45,
+    "parent_node_id": 42,
+    "context_node_ids": [
+        42
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.505235304304459,
+    "max_reward": 0.505235304304459,
+    "avg_reward": 0.505235304304459,
+    "score": [
+        1,
+        1,
+        0.9681912605117857
+    ],
+    "small_guidance": "- Fuse the two-pass GN stats into the apply kernel: since C=64 fits easily in registers, load the full [C, BLOCK_S] tile once, but do per-group reductions via masked `tl.sum` across channels grouped by `g_offs`. Better, run a single persistent kernel per (N, group) that loops over all S tiles, accumulates sum/sumsq, then loops again over S tiles for apply+LSE \u2014 eliminating the conv_ptr re-read between kernels and the mean/invstd round-trip through HBM.\n- Add autotune configs with BLOCK_S in {64, 128, 256} and num_warps in {2, 4, 8}; current kernel loads C=64 \u00d7 BLOCK_S floats per program \u2014 at BLOCK_S=512 with 8 warps that is 128KB/program, likely register-spilling. Try smaller BLOCK_S=128 with num_warps=4 and num_stages=3.\n- Convert layout so spatial axis S=16384 is the contiguous inner axis (already is via reshape) and ensure gamma/beta/mean/invstd loads are hoisted outside any S loop \u2014 currently fine, but consider broadcasting them once and reusing across S tiles in a persistent kernel.",
+    "large_guidance": "- The conv (Conv2d 8\u219264, 3\u00d73, 128\u00d7128) is now the dominant cost since fast_p\u22480.97 with the GN+tanh+HS+res+LSE fully fused. Replace `nn.Conv2d` with a custom Triton im2col-style GEMM kernel: one program per (N, OC tile, output-spatial tile), tile (BLOCK_OC=64, BLOCK_S=64, BLOCK_K=in_channels*kh*kw=72), and fuse bias add into the epilogue. With OC=64 small, a single program can hold the full OC dim and only tile spatial.\n- Go further and fuse conv \u2192 GN-stats \u2192 GN-apply \u2192 tanh \u2192 HS \u2192 residual \u2192 LSE in a single persistent per-(N, group) kernel: each program computes its group's CH_PER_GROUP=4 channels of conv output for all S pixels, holds them in SMEM/registers, computes group mean/var, then applies norm+activation+residual+LSE-partial. A second small kernel combines the per-group LSE partials into the channel-reduced output. This eliminates the conv output tensor entirely.\n- If full fusion is too aggressive, at minimum write the conv kernel and keep conv output in fp16/bf16 staging or use channels_last to halve the bandwidth of the GN re-read.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 46,
+    "global_best_node_id": 43,
+    "global_best_score": [
+        1,
+        1,
+        1.068909143316703
+    ]
+}

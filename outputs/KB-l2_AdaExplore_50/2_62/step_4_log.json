@@ -1,0 +1,29 @@
+{
+    "node_id": 4,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing with avg_diff ~2.4e-4 and max ~6e-3, likely due to fp32 accumulation precision in GEMM tiles being fine, but the GroupNorm kernel computes variance via `E[x^2] - E[x]^2` which is numerically unstable. Switch to a two-pass mean-then-variance computation (or Welford) inside the kernel: compute `mean = sum_x / CH_PER_G`, then `var = sum((x-mean)^2) / CH_PER_G`.\n- With `CH_PER_G = 8192/512 = 16`, BLOCK=16 with `num_warps=1` is fine but reduction across 16 elements with one warp wastes lanes. Consider grouping multiple `(b,g)` per program (e.g. process 8 groups per program by tiling along the batch\u00d7group axis) to improve occupancy. Keep `num_warps=1`, `num_stages=2`.\n- For the GEMM with M=N=K=8192, prune autotune to the best 2-3 configs (e.g. 128x128x32 nw=8 ns=3, 128x256x32 nw=8 ns=3) and ensure weight_t cache is reused across forwards.",
+    "large_guidance": "- The current split (GEMM kernel + GN/LeakyReLU/double kernel) requires writing then re-reading the full 1024x8192 activation. Consider a fused GEMM-epilogue design that keeps a row's worth of output in SRAM after the GEMM and immediately does the GroupNorm reduction across the group's channels before writing \u2014 but since groups span tiles, a cleaner fusion is GEMM \u2192 store, then a single persistent norm+activation kernel (what we have); ensure the norm kernel uses numerically stable two-pass variance.\n- Alternatively, reorder the GEMM so each program tile covers a full group's channels (BLOCK_N = CH_PER_G = 16 is too small; instead, multiple groups per BLOCK_N=128 means 8 groups per tile), enabling fused in-register GroupNorm if BLOCK_M=1 row tile holds one row of those channels. Then a row of 128 channels = 8 groups can be normalized in-register.\n- Use Welford's online algorithm for in-kernel variance to eliminate catastrophic cancellation; this likely fixes the correctness failure entirely.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 5,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

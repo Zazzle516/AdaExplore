@@ -1,0 +1,30 @@
+{
+    "node_id": 21,
+    "parent_node_id": 8,
+    "context_node_ids": [
+        3,
+        8
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.41591086227077645,
+    "max_reward": 0.41591086227077645,
+    "avg_reward": 0.41591086227077645,
+    "score": [
+        1,
+        1,
+        0.23126461373390556
+    ],
+    "small_guidance": "- The current gather kernel has each program tile a 64\u00d764 output region but loops over all (KH\u00b7KW\u00b7IC) \u2014 try autotuning over BLOCK_OC \u2208 {32,64,128}, BLOCK_SP \u2208 {32,64,128}, BLOCK_IC \u2208 {16,32,64} with num_warps \u2208 {4,8} and num_stages \u2208 {2,3,4}. With stride=2, only ~1/4 of (kh,kw) combinations contribute per output, so larger BLOCK_IC (64) plus num_warps=8 is likely a better balance.\n- The inner `tl.dot` has K=BLOCK_IC=32 which is tiny \u2014 restructure the K dimension to be IC\u00d7(valid kh,kw) accumulated in one dot per kh,kw position so K stays at 32 but increase BLOCK_IC to 64 so each dot does meaningful work. Also hoist the `ih`,`iw` index computation outside the `ic_start` loop (it already is \u2014 but recompute pointers via base+stride instead of broadcasting multiplies each iteration).\n- Switch the output store layout / pointer math so consecutive `sp_offs` map to consecutive memory (already true since OW is innermost), but transpose the accumulator tile to `(BLOCK_OC, BLOCK_SP)` so the store coalesces along OW for each oc row instead of along oc for each sp \u2014 current store has stride OH*OW between adjacent rows of the tile, which is bad.",
+    "large_guidance": "- Switch from gather (one program per output tile pulling sparse inputs) to scatter-add (one program per input tile pushing input\u00d7kernel outer products into the output). With stride=2, gather wastes 3/4 of (kh,kw) iterations on invalid positions; scatter visits every (ih,iw,ic)\u2192(oh,ow,oc) exactly once. Use `tl.atomic_add` into the output, or better, partition so each program owns a disjoint output region and accumulates locally.\n- Alternatively reformulate as explicit im2col-style GEMM: treat the transposed conv as `W^T @ X` reshaped, where W is (IC, OC*KH*KW) and X is (IC, N*IH*IW), producing (OC*KH*KW, N*IH*IW) which is then col2im-scattered into output. This gives a single large dense GEMM (K=IC=64, M=OC*KH*KW=576, N=N*IH*IW=128*128*128\u22482M) that maps cleanly to a tiled Triton matmul with large BLOCK_M/N and num_warps=8.\n- Adopt channels-last (NHWC) layout for both input and output so the IC reduction axis is contiguous, allowing a single vectorized load of all 64 input channels per spatial position. Fuse Mish + add + Hardtanh + scale in the epilogue (already done) and write output directly in NHWC, transposing back only if needed (or keep NHWC end-to-end).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 22,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        1.4695815
+    ]
+}

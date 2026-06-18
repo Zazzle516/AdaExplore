@@ -1,0 +1,31 @@
+{
+    "node_id": 28,
+    "parent_node_id": 24,
+    "context_node_ids": [
+        8,
+        21,
+        24
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.481207189216938,
+    "max_reward": 0.481207189216938,
+    "avg_reward": 0.481207189216938,
+    "score": [
+        1,
+        1,
+        0.7699593110397381
+    ],
+    "small_guidance": "- The fused softmax kernel is fine; the bottleneck is the 1024\u00d78192\u00d78192 GEMM (`torch.mm`). Tuning the softmax kernel further (BLOCK is already 8192 covering the whole row) won't move the needle \u2014 try `num_warps=8, num_stages=2` as the locked-in config and drop the larger warp variants that waste registers.\n- Consider fusing the affine+softmax into the GEMM epilogue so the M\u00d7N intermediate is never written to HBM \u2014 but only if you replace `torch.mm` with a custom Triton GEMM.\n- Ensure `Wt` cache is built once on a `.cuda()` device check and that A/Bp are fp32 contiguous (already) \u2014 no further wins on the elementwise side.",
+    "large_guidance": "- Replace `torch.mm` with a custom tiled Triton GEMM (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8, num_warps=8, num_stages=3-4) using `tl.dot` with TF32 input cast. The current cuBLAS call is ~2.5ms and dominates the 3.35ms runtime; beating it requires an in-kernel fused epilogue.\n- Two-stage design: (1) a custom GEMM that writes y = x @ Wt + (fused bias/affine) into HBM, (2) the existing softmax kernel reads it. Fold A*y + Bp directly into the GEMM epilogue so the affine pass disappears.\n- For maximum fusion, since each row's softmax requires the full row's max/sum, a single-kernel GEMM+softmax requires a persistent kernel that holds an entire output row (8192 floats) \u2014 feasible per row with BLOCK_N=8192 split across the K loop, then reduce across N tiles via atomics or two-pass. Alternatively, keep GEMM and softmax as two kernels but ensure GEMM's epilogue does the affine.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 29,
+    "global_best_node_id": 13,
+    "global_best_score": [
+        1,
+        1,
+        0.774583691286223
+    ]
+}

@@ -1,0 +1,27 @@
+{
+    "node_id": 3,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM (1024\u00d78192\u00d78192) dominates runtime at this size; the GN+Swish fused kernel is fine but tuning it further won't help. Keep current fused epilogue, but expose `num_warps` and `num_stages` via `triton.autotune` (warps 4/8, stages 2/3) for CH_PER_G=32.\n- Cast loads to bf16 only if accuracy permits \u2014 otherwise keep fp32 but ensure the input `x` after GEMM is already contiguous (it is from Linear).\n- Consider fusing the Linear bias add into a custom matmul epilogue rather than into GN (GN subtracts mean anyway, so bias is wasted \u2014 but must still execute per safety contract).",
+    "large_guidance": "- Replace `nn.Linear` with a custom Triton tiled GEMM (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8, num_warps=8, num_stages=3-4) that computes `x @ W.T + bias` and writes the result. This is the dominant cost (1024\u00d78192\u00d78192 \u2248 137 GFLOPs per forward) and the current code calls cuBLAS via `nn.Linear` which is reasonable but leaves no room to fuse anything downstream.\n- Better: fuse the GEMM with the subsequent GroupNorm by having each GEMM program write its (M tile, N tile) into a staging buffer, then launching a second kernel for GN+Swish+Mul+Swish. Or, since num_groups=256 and CH_PER_G=32, tile N along group boundaries (BLOCK_N=32 or 64 = multiple of CH_PER_G) so a row-persistent kernel can finish the GEMM for one row's group, immediately reduce mean/var, and apply the full epilogue \u2014 eliminating the GEMM output round-trip to HBM.\n- Alternatively, persistent-row kernel: one program per (batch row, group) loads its 32 output channels' weight columns from W, accumulates the K=8192 dot products, then does GN+swish+mul+swish in registers and stores 32 outputs. This trades GEMM throughput for fusion but removes a full N\u00d7M tensor write/read.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 4,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

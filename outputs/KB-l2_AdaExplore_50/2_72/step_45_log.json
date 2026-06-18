@@ -1,0 +1,30 @@
+{
+    "node_id": 45,
+    "parent_node_id": 42,
+    "context_node_ids": [
+        34,
+        42
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4145216885088404,
+    "max_reward": 0.4145216885088404,
+    "avg_reward": 0.4145216885088404,
+    "score": [
+        1,
+        1,
+        0.2198039301979331
+    ],
+    "small_guidance": "- The current kernel still calls `self.conv_transpose(x)` via cuDNN \u2014 the fused convt+bn+pool kernel is defined but never used. Wire `fused_convt_bn_pool` into `forward` (eval path) so the heavy ConvTranspose3d is actually replaced; that alone should yield the biggest win.\n- For the existing `fused_bn_avgpool4_kernel`, raise BLOCK to 512-1024 and try `num_warps=8, num_stages=3`; also load `scale`/`shift` once per program via `tl.load` indexed by the vector of `c` lanes (gather) \u2014 already done, but ensure scale/shift loads use `mask=mask` only (no `other=0`) and that the kernel uses `channels_last` strides for coalesced reads.\n- Add a `@triton.autotune` decorator over `BLOCK \u2208 {256, 512, 1024}` \u00d7 `num_warps \u2208 {4,8}` \u00d7 `num_stages \u2208 {2,3}`, keyed on `(N*C*OD*OH*OW,)`.",
+    "large_guidance": "- Replace ConvTranspose3d with a scatter-add Triton kernel: one program per `(N, IC tile, ID*IH*IW tile)` reads input voxels and scatters `x[n,ic,d,h,w] * w[ic,oc,kd,kh,kw]` into the padded output grid using `tl.atomic_add` over the OC axis. Fuse the bias add, BN affine (folded scale/shift), and the combined 4\u00d74\u00d74 avg-pool reduction by accumulating directly into the pooled output (each pooled output cell sums 64 padded positions; have the kernel write into a pooled accumulator divided by 64). This eliminates materialization of the 64\u00d7 larger intermediate tensor.\n- Alternatively, an im2col/gather formulation: one program per `(N, OC tile, pooled output spatial tile)` computes 64 padded positions per pooled output via the standard transposed-conv index math (input index = (padded_pos+pad-k)/stride with divisibility test), accumulates IC\u00d7KD\u00d7KH\u00d7KW MACs as a GEMM-K loop, sums the 64 spatial contributions, divides by 64, applies fused BN affine, and stores once. With stride=2, only ~1/8 of (kd,kh,kw,spatial) combos are valid \u2014 exploit this by precomputing valid (kd,kh,kw,dd,hh,ww) tuples on the host and passing as a constant table.\n- Use `channels_last_3d` layout for the input and weight (permute IC to the inner GEMM-K axis) so the IC reduction is contiguous; tile OC at 16 or 32, IC at 4 (full), and pooled-spatial at 8-16 per program.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 46,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        0.36042383585251137
+    ]
+}

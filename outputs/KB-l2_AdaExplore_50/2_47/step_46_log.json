@@ -1,0 +1,31 @@
+{
+    "node_id": 46,
+    "parent_node_id": 45,
+    "context_node_ids": [
+        41,
+        44,
+        45
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.43198793713532846,
+    "max_reward": 0.43198793713532846,
+    "avg_reward": 0.43198793713532846,
+    "score": [
+        1,
+        1,
+        0.3639004813664596
+    ],
+    "small_guidance": "- The current kernel runs conv via cuDNN then a tiny pointwise epilogue; epilogue is already cheap, so tuning BLOCK_SIZE/num_warps on `_mish_tanh_kernel_cl` will not move the needle. Only marginal win: drop bias add into conv by keeping `self.conv.bias` inside `F.conv3d` and let the kernel just do mish\u2192tanh (saves a gather of bias per element).\n- If staying with cuDNN, try `torch.backends.cudnn.benchmark = True` and ensure input is `channels_last_3d` truly contiguous (`.contiguous(memory_format=torch.channels_last_3d)`) so cuDNN picks the NHWC implicit-GEMM algo.\n- Verify the epilogue mask is correct for channels_last layout \u2014 `offsets % C` is only valid when C is the innermost contiguous dim, which holds for channels_last_3d; good as-is.",
+    "large_guidance": "- Conv3d dominates (>95% of 16ms). Replace `F.conv3d` with a custom Triton implicit-GEMM kernel: one program per `(N, OC_tile, D*H*W_tile)`, GEMM-K = `IC * kD * kH * kW = 32*27 = 864`. Use BLOCK_M=64 (OC), BLOCK_N=64 (spatial), BLOCK_K=32, channels_last input layout so loads along K coalesce. Fuse bias + mish + tanh in the epilogue on the accumulator before store.\n- Compute input gather offsets implicitly: decode `n, oc, (od,oh,ow)` from program ids, then loop over `kD*kH*kW` with precomputed per-k offsets; mask padding (padding=0 here so no mask needed on input bounds for stride=1, size 30\u00d762\u00d762).\n- Wrap with `triton.autotune` over BLOCK_M \u2208 {32,64,128}, BLOCK_N \u2208 {64,128,256}, BLOCK_K \u2208 {16,32,64}, num_warps \u2208 {4,8}, num_stages \u2208 {2,3}. Target shapes: OC=64, spatial=30*62*62=115320, K=864 \u2014 this is GEMM-friendly and should beat cuDNN's NHWC path on a 4090 for this small OC.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 47,
+    "global_best_node_id": 39,
+    "global_best_score": [
+        1,
+        1,
+        1.6597160764872523
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 47,
+    "parent_node_id": 45,
+    "context_node_ids": [
+        45
+    ],
+    "depth": 5,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The residual add is wrong: reference adds the GELU scalar to `original_x` (the input), but the kernel writes `x + g` where `x` is the same input \u2014 that part is actually fine. The real bug: `mean(dim=1)` divides by N (out_features) \u2713, but then `logsumexp` over a single-element dim is identity (= mean), then GELU is applied \u2014 that matches. However, the atomic-add row reduction uses fp32 atomics across many program tiles, which on 4090 is fine for correctness but may have ordering noise; more importantly, masked-out N lanes are zeroed before sum so that's ok. Re-check: `b - sub` is added per-tile; if a row is covered by multiple N-tiles, the bias+sub contribution is added once per tile rather than once per row \u2192 **this is the correctness bug**. Fix: subtract `(b - sub)` contribution once (e.g. only on `pid_n == 0` tile, or precompute `sum(b - sub)` on host and add to RowSum after the kernel).\n- After fixing, keep the autotune set but add a `BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, num_warps=4` config; for M=2048,N=8192,K=8192 the 128/256/64 tile is good but try 256/128/32 with num_stages=4.\n- Drop the second kernel: fuse GELU+residual into a tiny epilogue that reads RowSum once; or even compute the scalar on host (single fp32 reduction is trivial) and do `out = x + scalar` via `torch.add`.",
+    "large_guidance": "- Restructure as a split-K GEMM that accumulates `acc = X @ Wt + b - sub` per (M-tile, N-tile), then performs an in-kernel row reduction summing across N within the tile and atomic-adds the **row sum of activations** only; handle the `(b - sub)` contribution exactly once per row by precomputing `C = sum(b - sub)` on host (a length-N reduction, cheap) and adding `C` to RowSum after the GEMM. This eliminates the duplicate-bias bug structurally.\n- Alternative: make the kernel persistent over N for each M-tile (one program per M-tile, loop over all N-tiles internally), so the per-row sum is computed in registers and written non-atomically. With M=2048 and BLOCK_M=128 that's only 16 programs \u2014 too few; instead use split-N with a fixed number of programs per M-tile and a small atomic-add at the end (one atomic per M-tile per split, vastly fewer atomics).\n- Fuse the final GELU+residual into a single pointwise kernel that takes RowSum and X and writes Y; compute `s = RowSum[m] / N`, `g = 0.5*s*(1+erf(s*inv_sqrt2))`, `y = x + g`. Keep BLOCK_K large (2048-4096), num_warps=8, to saturate bandwidth on the 8192-wide rows.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 48,
+    "global_best_node_id": 36,
+    "global_best_score": [
+        1,
+        1,
+        1.66307092995426
+    ]
+}

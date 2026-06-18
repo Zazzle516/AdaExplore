@@ -1,0 +1,190 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import triton
+import triton.language as tl
+
+
+GEMM_CONFIGS = [
+    triton.Config({'BLOCK_M': 64, 'BLOCK_N': 128, 'BLOCK_K': 32}, num_warps=4, num_stages=3),
+    triton.Config({'BLOCK_M': 128, 'BLOCK_N': 128, 'BLOCK_K': 32}, num_warps=4, num_stages=3),
+    triton.Config({'BLOCK_M': 128, 'BLOCK_N': 64, 'BLOCK_K': 32}, num_warps=4, num_stages=3),
+    triton.Config({'BLOCK_M': 64, 'BLOCK_N': 64, 'BLOCK_K': 32}, num_warps=4, num_stages=3),
+    triton.Config({'BLOCK_M': 128, 'BLOCK_N': 256, 'BLOCK_K': 32}, num_warps=8, num_stages=3),
+    triton.Config({'BLOCK_M': 64, 'BLOCK_N': 256, 'BLOCK_K': 32}, num_warps=8, num_stages=3),
+]
+
+
+@triton.autotune(configs=GEMM_CONFIGS, key=['M', 'N', 'K'])
+@triton.jit
+def gemm_bias_kernel(
+    A_ptr, B_ptr, Bias_ptr, C_ptr,
+    M, N, K,
+    stride_am, stride_ak,
+    stride_bk, stride_bn,
+    stride_cm, stride_cn,
+    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
+):
+    pid_m = tl.program_id(0)
+    pid_n = tl.program_id(1)
+
+    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    offs_k = tl.arange(0, BLOCK_K)
+
+    a_ptrs = A_ptr + offs_m[:, None] * stride_am + offs_k[None, :] * stride_ak
+    b_ptrs = B_ptr + offs_k[:, None] * stride_bk + offs_n[None, :] * stride_bn
+
+    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+    mask_m = offs_m < M
+    mask_n = offs_n < N
+
+    for k in range(0, tl.cdiv(K, BLOCK_K)):
+        k_remaining = K - k * BLOCK_K
+        a_mask = mask_m[:, None] & (offs_k[None, :] < k_remaining)
+        b_mask = (offs_k[:, None] < k_remaining) & mask_n[None, :]
+        a = tl.load(a_ptrs, mask=a_mask, other=0.0)
+        b = tl.load(b_ptrs, mask=b_mask, other=0.0)
+        acc += tl.dot(a, b)
+        a_ptrs += BLOCK_K * stride_ak
+        b_ptrs += BLOCK_K * stride_bk
+
+    bias = tl.load(Bias_ptr + offs_n, mask=mask_n, other=0.0)
+    acc += bias[None, :]
+
+    c_ptrs = C_ptr + offs_m[:, None] * stride_cm + offs_n[None, :] * stride_cn
+    c_mask = mask_m[:, None] & mask_n[None, :]
+    tl.store(c_ptrs, acc, mask=c_mask)
+
+
+@triton.jit
+def gn_min_kernel(
+    X_ptr, Gamma_ptr, Beta_ptr, Out_ptr,
+    M, N,
+    NUM_GROUPS: tl.constexpr,
+    GROUP_SIZE: tl.constexpr,
+    eps,
+    BLOCK_N: tl.constexpr,
+):
+    row = tl.program_id(0)
+    if row >= M:
+        return
+
+    offs = tl.arange(0, BLOCK_N)
+    mask = offs < N
+    x = tl.load(X_ptr + row * N + offs, mask=mask, other=0.0)
+    gamma = tl.load(Gamma_ptr + offs, mask=mask, other=0.0)
+    beta = tl.load(Beta_ptr + offs, mask=mask, other=0.0)
+
+    # We need per-group normalization. NUM_GROUPS=512, GROUP_SIZE=16
+    # Compute group means/vars via segmented reduction.
+    # group_id for each elem:
+    group_id = offs // GROUP_SIZE  # int
+
+    # Build per-group sums via masked reductions. Too many groups for a loop here,
+    # so use approach: process group-by-group via reshape-equivalent indexing.
+    # Instead: launch with one program per row and loop over groups internally.
+    # Use tl.where mask per group is too expensive.
+    # Better: compute sum across full row -> not enough, we need per-group.
+    # Use a small inner loop over NUM_GROUPS.
+
+    running_min = float('inf')
+    # Loop over groups
+    for g in range(NUM_GROUPS):
+        gmask = (group_id == g) & mask
+        x_g = tl.where(gmask, x, 0.0)
+        s = tl.sum(x_g, axis=0)
+        sq = tl.sum(x_g * x_g, axis=0)
+        mean = s / GROUP_SIZE
+        var = sq / GROUP_SIZE - mean * mean
+        inv = 1.0 / tl.sqrt(var + eps)
+        # normalized values for this group
+        norm = (x - mean) * inv * gamma + beta
+        # apply only where in group, else +inf so doesn't affect min
+        cand = tl.where(gmask, norm, float('inf'))
+        gmin = tl.min(cand, axis=0)
+        running_min = tl.minimum(running_min, gmin)
+
+    tl.store(Out_ptr + row, running_min)
+
+
+@triton.jit
+def add_bias_kernel(
+    MinVal_ptr, Bias_ptr, Out_ptr,
+    M, N,
+    BLOCK: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    offs = pid * BLOCK + tl.arange(0, BLOCK)
+    total = M * N
+    mask = offs < total
+    # output shape [1, N, M, 1]; index = n * M + m
+    n_idx = offs // M
+    m_idx = offs % M
+    minv = tl.load(MinVal_ptr + m_idx, mask=mask, other=0.0)
+    bias = tl.load(Bias_ptr + n_idx, mask=mask, other=0.0)
+    tl.store(Out_ptr + offs, minv + bias, mask=mask)
+
+
+def triton_gemm_bias(x, weight, bias):
+    M, K = x.shape
+    N, K2 = weight.shape
+    assert K == K2
+    x = x.contiguous()
+    w_t = weight.t().contiguous()
+    out = torch.empty((M, N), device=x.device, dtype=x.dtype)
+    grid = lambda meta: (triton.cdiv(M, meta['BLOCK_M']), triton.cdiv(N, meta['BLOCK_N']))
+    gemm_bias_kernel[grid](
+        x, w_t, bias, out,
+        M, N, K,
+        x.stride(0), x.stride(1),
+        w_t.stride(0), w_t.stride(1),
+        out.stride(0), out.stride(1),
+    )
+    return out
+
+
+class ModelNew(nn.Module):
+    def __init__(self, in_features, out_features, num_groups, bias_shape):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.num_groups = num_groups
+        self.group_size = out_features // num_groups
+        self.eps = 1e-5
+
+        self.gemm = nn.Linear(in_features, out_features)
+        self.group_norm = nn.GroupNorm(num_groups, out_features)
+        self.bias = nn.Parameter(torch.randn(bias_shape))
+
+    def forward(self, x):
+        M = x.shape[0]
+        N = self.out_features
+
+        # GEMM + bias
+        gemm_out = triton_gemm_bias(x.contiguous(), self.gemm.weight, self.gemm.bias)
+
+        # GN + min along dim=1 -> per row scalar
+        min_vals = torch.empty((M,), device=x.device, dtype=x.dtype)
+
+        # BLOCK_N must be >= N and power of 2
+        BLOCK_N = triton.next_power_of_2(N)
+
+        gn_min_kernel[(M,)](
+            gemm_out, self.group_norm.weight, self.group_norm.bias, min_vals,
+            M, N,
+            self.num_groups, self.group_size,
+            self.eps,
+            BLOCK_N=BLOCK_N,
+            num_warps=8,
+        )
+
+        # min_vals shape [M] -> reshape to [1,1,M,1]; bias is [1,N,1,1]
+        # output: [1,N,M,1]
+        bias_flat = self.bias.view(-1)  # [N]
+        out = torch.empty((1, N, M, 1), device=x.device, dtype=x.dtype)
+        total = M * N
+        BLOCK = 1024
+        grid = ((total + BLOCK - 1) // BLOCK,)
+        add_bias_kernel[grid](min_vals, bias_flat, out, M, N, BLOCK=BLOCK)
+        return out

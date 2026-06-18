@@ -1,0 +1,30 @@
+{
+    "node_id": 10,
+    "parent_node_id": 9,
+    "context_node_ids": [
+        8,
+        9
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.47067389331915654,
+    "max_reward": 0.47067389331915654,
+    "avg_reward": 0.47067389331915654,
+    "score": [
+        1,
+        1,
+        0.683059619883041
+    ],
+    "small_guidance": "- The current kernel recomputes the conv tile for every BLOCK_M slice of OC in the inner OC-loop, which is wasteful. Increase BLOCK_M so a single iteration covers the full OC=128 (e.g., BLOCK_M=128 with the OC-loop folded out), and keep BLOCK_N at 64 or 128 with BLOCK_K=32; then the per-output reduction over OC happens once.\n- Add autotune configs that target this shape: `(BLOCK_M=128, BLOCK_N=64, BLOCK_K=32, num_warps=4, num_stages=2/3)` and `(BLOCK_M=128, BLOCK_N=32, BLOCK_K=64, num_warps=4, num_stages=3)`. Verify SMEM: 128\u00b732 + 32\u00b764 = 6144 floats = 24KB \u00b7 stages \u2014 safe. Drop the `BLOCK_N=256` config which oversizes SMEM.\n- Hoist `sp_base = oh*stride_xh + ow*stride_xw` and `k_offset` math into one fused index expression and precompute `ic*stride_xc` once per BLOCK_K outside the hot path; avoid recomputing `kh//KW`, `kh%KW` per inner iteration by precomputing all KH\u00b7KW\u00b7IC offsets in a small lookup if the compiler doesn't already CSE it.",
+    "large_guidance": "- Restructure as one program per `(N, output-spatial tile)` that holds a single accumulator of shape `[BLOCK_OC_FULL=128, BLOCK_N]` and streams the IC*KH*KW reduction once, then takes `tl.min` over axis 0 at the end. This eliminates the outer OC loop entirely (OC=128 fits in one tile) and visits the input/weight exactly once per output element instead of `OC/BLOCK_M` times.\n- Switch input layout to NHWC (channels_last) before the kernel: the GEMM-K axis is `IC*KH*KW`, and contiguous IC makes the `x_vals` gather coalesced across the K dimension. Pre-permute weight to `(KH, KW, IC, OC)` so weight loads are also contiguous along K.\n- Fuse the channelwise min into the same kernel epilogue (already done) and write only the `(N, OH, OW)` output \u2014 but consider tiling the output spatial dim more aggressively (e.g., BLOCK_N=128) now that BLOCK_M can stay small (=OC) and SMEM headroom is freed by removing the OC loop's redundant traffic.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 11,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.1340116019417477
+    ]
+}

@@ -1,0 +1,27 @@
+{
+    "node_id": 3,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5319170904299917,
+    "max_reward": 0.5319170904299917,
+    "avg_reward": 0.5319170904299917,
+    "score": [
+        1,
+        1,
+        1.1883159960474308
+    ],
+    "small_guidance": "- Add `triton.autotune` over `BLOCK_M \u2208 {32,64,128}`, `BLOCK_N \u2208 {64,128,256}`, `BLOCK_K \u2208 {32,64}`, `num_warps \u2208 {4,8}`, `num_stages \u2208 {3,4}`; current 32/128/32 with 4 warps and 2 stages severely under-utilizes the 4090 for an 8192\u00d78192\u00d78192 GEMM (this is the dominant cost).\n- Add a `GROUP_M` block-swizzle (e.g. 8) to improve L2 reuse of W across N-tile rows, and pre-transpose W to (K, N) once in `__init__` so the inner load on W is contiguous along K (current `stride_wk=1` is fine but `tl.trans(w)` in the hot loop costs a transpose per K-step \u2014 load W as `[BLOCK_K, BLOCK_N]` directly).\n- Drop the partial-tile masking on the K loop when K is a multiple of BLOCK_K (it is: 8192 % 32 == 0) \u2014 remove `k_mask` to cut load overhead; similarly hoist bias add out of mask path when N % BLOCK_N == 0.",
+    "large_guidance": "- The kernel is GEMM-bound (1024\u00d78192\u00d78192 \u2248 137 GFLOPs); current 2.5 ms \u2248 55 TFLOPs which is mediocre. Rewrite as a proper tiled GEMM with `BLOCK_M=128, BLOCK_N=128, BLOCK_K=32`, `GROUP_M=8`, `num_warps=8`, `num_stages=3-4`, fusing scale/clamp + per-tile partial (max, sumexp) into the epilogue. This is the canonical Triton matmul template and should reach >100 TFLOPs on a 4090.\n- Pre-transpose weight to `(K, N)` contiguous at init so the GEMM's B operand loads coalesce on N (the inner dim) without a per-iteration `tl.trans`.\n- Keep the two-kernel structure (partial-LSE then final-reduce+mish) \u2014 it's correct and the reduce kernel is negligible. Optionally fuse the final reduce into a single program-per-row when `ntiles_n` is small enough (here 64), using a single persistent kernel per row that loops the K dim for all N tiles, but only if the GEMM tile config can still saturate; otherwise the split-K-style two-pass is better.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 4,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        1.7373040877886414
+    ]
+}

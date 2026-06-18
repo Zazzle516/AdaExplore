@@ -1,0 +1,29 @@
+{
+    "node_id": 29,
+    "parent_node_id": 27,
+    "context_node_ids": [
+        27
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM (1024\u00d78192\u00d78192) dominates runtime; replace `torch.addmm` with a tiled Triton GEMM using `BLOCK_M=128, BLOCK_N=128, BLOCK_K=32`, `GROUP_M=8`, `num_warps=4`, `num_stages=3-4`, and autotune over a few configs. This is where the 1.87 ms is spent.\n- Fuse the GEMM's epilogue with GroupNorm's first-pass partial sums (sum and sum-of-squares per group) so the [M,N] matrix is never materialized to HBM \u2014 write only [M, num_groups] reduction partials plus the normalized output streamed into the min reduction.\n- For `gn_partial_min_kernel`, GROUP_SIZE=16 is tiny; bump `num_warps=1` is fine but coalesce by processing multiple groups per program (e.g. 8 groups \u00d7 16 elems = 128 lanes per program), cutting launch overhead from 512 to 64 per row.",
+    "large_guidance": "- Replace `torch.addmm` with a custom tiled Triton GEMM that fuses bias add + GroupNorm partial reductions in the epilogue: each `(BLOCK_M, BLOCK_N)` tile, where `BLOCK_N` is a multiple of GROUP_SIZE (16), accumulates per-group sum and sum-of-squares directly into a [M, num_groups] workspace via atomics or pre-tiled layout. This eliminates the [1024, 8192] intermediate write/read.\n- Then a second kernel reads the [M, num_groups] stats, recomputes (or re-streams) the normalized values, and produces the per-row min in one persistent pass \u2014 since each row only needs 8192 fp32 reloads but stats are already done, this collapses GN+min into a single launch.\n- Final bias-add output is [1, 8192, 1024, 1] \u2014 note the broadcast result is just `min_out[None,:,None] + bias[:,None,None]`; keep this as a tiny epilogue or a single elementwise kernel with coalesced stores along M. The big win (>5\u00d7) is the fused GEMM, not the post-GEMM kernels.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 30,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

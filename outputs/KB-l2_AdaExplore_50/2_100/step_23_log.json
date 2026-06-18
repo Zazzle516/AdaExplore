@@ -1,0 +1,29 @@
+{
+    "node_id": 23,
+    "parent_node_id": 13,
+    "context_node_ids": [
+        10
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The compile error is from `tl.dot(w_vals, tl.trans(x_vals))` where `w_vals` is `[BLOCK_K, BLOCK_M]` and `tl.trans(x_vals)` is `[BLOCK_K, BLOCK_N]` \u2014 incompatible. Fix by accumulating as `[BLOCK_N, BLOCK_M]`: `acc_nm += tl.dot(x_vals, w_vals)` with `acc` shaped `(BLOCK_N, BLOCK_M)`, then store with `out_ptrs = out_ptr + out_base + offs_n[:, None] * OC + offs_m[None, :]` and mask `mask_n[:, None] & mask_m[None, :]`.\n- After fixing, sweep `BLOCK_M \u2208 {64,128}`, `BLOCK_N \u2208 {32,64,128}`, `BLOCK_K \u2208 {32,64}` with `num_warps \u2208 {4,8}`, `num_stages \u2208 {2,3,4}` via `triton.autotune` keyed on `(OC, ODHW, IC)`.\n- Hoist the IC loop outside the (kd,kh,kw) loop is hard given different input offsets per tap \u2014 instead, with stride=2 and ~12.5% taps valid, consider precomputing the parity check `(od+P) & 1` once per program rather than per tap.",
+    "large_guidance": "- Keep the gather-GEMM design (one program per `(OC tile, output-spatial tile, batch)`) \u2014 it's the right structure for ConvTranspose3d on this hardware. Lay out the accumulator as `[BLOCK_N, BLOCK_M]` so `tl.dot(x[N,K], w[K,M])` is the natural shape; transpose only at store time if needed, or store with `offs_n` as the row axis directly.\n- Pack weight as `[KD*KH*KW, IC, OC]` contiguous on OC (already done) and consider further packing as `[KD, KH, KW, IC, OC]` with the kernel-tap loop unrolled via `tl.static_range` so the compiler can hoist `w_base` math; this is already largely done, just confirm BLOCK_M aligns to OC=128 for full tiles.\n- Spatial tile decode (od,oh,ow) currently does div/mod per program; since OD*OH*OW = 48*96*96 \u2248 442k per batch, prefer a 3D grid `(OC_tile, OW_tile \u00d7 OH \u00d7 OD, N)` or split spatial into `(pid_d, pid_hw)` to avoid integer division inside the kernel and improve L2 reuse on the W axis (consecutive ow share id_/ih_ for many taps).",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 24,
+    "global_best_node_id": 21,
+    "global_best_score": [
+        1,
+        1,
+        0.6530324045801528
+    ]
+}

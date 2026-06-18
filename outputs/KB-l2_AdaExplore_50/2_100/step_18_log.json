@@ -1,0 +1,30 @@
+{
+    "node_id": 18,
+    "parent_node_id": 6,
+    "context_node_ids": [
+        4,
+        6
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.444132113540468,
+    "max_reward": 0.444132113540468,
+    "avg_reward": 0.444132113540468,
+    "score": [
+        1,
+        1,
+        0.4640899367088608
+    ],
+    "small_guidance": "- The current gather kernel iterates `KD*KH*KW=27` taps \u00d7 IC tiles per output element, doing 27\u00d7 more masked work than necessary since stride=2 means only 1/8 of taps are valid per output. Add autotune configs with larger `BLOCK_SP` (256, 512) and smaller `BLOCK_OC` (32, 64) to amortize tap-loop overhead, and try `IC_TILE=128` with `num_stages=4` to get more K-dim reuse per `tl.dot`.\n- Reorder weight as `(OC, KD*KH*KW, IC)` and have each program load its OC tile's weight slice once across all taps \u2014 currently weight is reloaded per tap inside the IC loop. Alternatively cache `w_vals` across the `BLOCK_SP` dimension since all spatial elements in a tile share the same weight.\n- Switch the spatial tiling to be 3D-aware (e.g. tile over `(OD_tile, OH_tile, OW_tile)` with `BLOCK_SP = bd*bh*bw`) so that within a tile, the set of valid `(kd,kh,kw)` taps is more uniform \u2014 reduces divergence in the masked loads.",
+    "large_guidance": "- Rewrite as a **scatter-add** kernel keyed on the input: one program per `(N, IC tile, input-spatial tile)` loads `x[n, ic, id, ih, iw]`, multiplies by the full `weight[ic, :, kd, kh, kw]` outer product, and atomically (or via deterministic partition) adds into the output. Stride=2 means each input element contributes to exactly `KD*KH*KW` outputs with no masking \u2014 eliminates the 8\u00d7 wasted work from the gather's divisibility masks.\n- Alternatively, implement as **im2col-GEMM**: materialize the gather as `(N*OD*OH*OW, IC*KD*KH*KW)` via an indexing kernel, then call cuBLAS GEMM (`OC \u00d7 K`) and fuse clamp+div in an epilogue. The GEMM shape `(2M outputs \u00d7 1728 K \u00d7 128 OC)` is large and cuBLAS will outperform a hand-rolled `tl.dot` here.\n- Fuse bias+clamp+div into the GEMM/scatter epilogue (already done). Consider channels-last (NDHWC) output layout so the OC-contiguous store coalesces \u2014 currently the store pattern is `out[n, oc, sp]` with OC stride = `SP = 110k`, which means each warp's OC stride store is non-coalesced across the BLOCK_OC dimension.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 19,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        0.4640899367088608
+    ]
+}

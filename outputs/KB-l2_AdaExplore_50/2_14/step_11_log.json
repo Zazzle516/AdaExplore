@@ -1,0 +1,27 @@
+{
+    "node_id": 11,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure is from `tl.dot(x_vals, tl.trans(w_vals))` accumulating with BLOCK_N=64 partial that gets multiplied by 0.5 and summed \u2014 the math is fine, but try removing the inner BLOCK_N loop entirely: since we sum over N anyway, precompute `w_col_sum[k] = sum_n w[n,k]` is forbidden by safety contract, so instead keep the matmul but use larger BLOCK_N (128) and use `tl.dot` with proper `(BLOCK_M, BLOCK_K) @ (BLOCK_K, BLOCK_N)` layout by loading W transposed.\n- Add autotune configs with BLOCK_M=64/128, BLOCK_N=128, BLOCK_K=32/64, num_warps=8, num_stages=3-4 to better overlap loads with the large K=8192.\n- Ensure `out` is shape `(M, 1)` but kernel stores to `out_ptr + offs_m` (1D) \u2014 verify stride; output dtype/shape mismatch could be the correctness issue.",
+    "large_guidance": "- Redesign as a standard tiled GEMM producing the full `(M, N)` matmul tile-by-tile with `tl.dot((BM,BK) @ (BK,BN))`, and in the epilogue accumulate `row_sum += sum(tile, axis=1) * 0.5`. Use a 2D grid `(cdiv(M, BM), cdiv(N, BN))` with atomic-add to a `(M,)` partial-sum buffer, then a tiny second kernel multiplies by `scaling_factor`. This preserves all operators while exploiting the full `tl.dot` throughput.\n- Alternative: split-K persistent kernel where each program owns BLOCK_M rows and streams over all (N, K) tiles, keeping the row-sum accumulator in registers \u2014 avoids atomics and writes only M scalars at the end.\n- Pre-transpose weight once in `__init__` to layout `[K, N]` contiguous so the inner `tl.dot` loads B with unit stride on the contiguous axis; this is the dominant perf lever for M=N=K=8192.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 12,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

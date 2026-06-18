@@ -1,0 +1,29 @@
+{
+    "node_id": 35,
+    "parent_node_id": 2,
+    "context_node_ids": [
+        6
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.45912281891168605,
+    "max_reward": 0.45912281891168605,
+    "avg_reward": 0.45912281891168605,
+    "score": [
+        1,
+        1,
+        0.5877632560214094
+    ],
+    "small_guidance": "- The conv kernel's per-output thread does `IC*KD*KH*KW = 3*64 = 192` scalar FMAs with scalar weight loads broadcast across `BLOCK_SP` \u2014 try larger `BLOCK_SP` (1024, 2048) with `num_warps=8/16` to amortize the weight-load latency, and add configs with `num_stages=4` to overlap the streaming input loads.\n- In the GroupNorm kernel, the one-hot `tl.where` trick to update `chan_sums` is expensive; instead load all `CPG=4` channels at once as a `[CPG, BLOCK_S]` 2D tile and reduce along axis=1 to get per-channel sums directly, then reduce along axis=0 for the group sum \u2014 this removes the `tl.static_range(CPG)` inner loop and the mask vector.\n- Tune `BLOCK_S` over {512, 1024, 2048, 4096} and `num_warps` in {4, 8} via `triton.autotune` keyed on `S`; for `S=2197` a single-block path (BLOCK_S=4096) eliminates the outer loop.",
+    "large_guidance": "- Restructure conv3d as an implicit-GEMM: one program per `(B, OC_tile, OSP_tile)` with `BLOCK_OC=16` (the full OC), `BLOCK_SP=64/128`, and `BLOCK_K = IC*KD*KH*KW = 192` reduced via `tl.dot` on a `[BLOCK_SP, BLOCK_K] x [BLOCK_K, BLOCK_OC]` matmul. This converts the current scalar-FMA loop into tensor-core mma and should be 3-5\u00d7 faster on the conv stage which dominates runtime.\n- Fuse hardswish + GroupNorm's first-pass statistics into the conv epilogue: each conv program writes its tile and atomically accumulates `sum_x`, `sum_x2` per `(B, group)` into a small workspace, eliminating one full read of the `(B, OC, OD, OH, OW)=1024*16*2197` conv output for the stats pass.\n- Then a tiny second kernel grid `(B, num_groups)` computes mean/rstd from the workspace and a third kernel does the channel-mean + affine reduction by re-reading conv_out once. Alternatively, since the final output is just `(B, OC)`, fuse everything: conv writes conv_out, then a single GN+mean kernel does two passes over conv_out (current design is fine \u2014 focus headroom is the conv itself).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 36,
+    "global_best_node_id": 30,
+    "global_best_score": [
+        1,
+        1,
+        0.8530881206706803
+    ]
+}

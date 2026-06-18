@@ -1,0 +1,29 @@
+{
+    "node_id": 37,
+    "parent_node_id": 32,
+    "context_node_ids": [
+        29
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.47257196220046094,
+    "max_reward": 0.47257196220046094,
+    "avg_reward": 0.47257196220046094,
+    "score": [
+        1,
+        1,
+        0.6987186881538028
+    ],
+    "small_guidance": "- Add `triton.autotune` over `BLOCK_SP \u2208 {32, 64, 128}`, `BLOCK_OC \u2208 {32, 64, 128}`, `BLOCK_IC \u2208 {16, 32, 64}`, `num_warps \u2208 {4, 8}`, `num_stages \u2208 {2, 3}` keyed on `(OC, IC, H_out*W_out)` \u2014 the current fixed 64/32/16 with num_warps=4 is almost certainly not optimal for the (OC=128, IC=64, ~14\u00b2) shape.\n- Hoist the IC tile loop to be the outermost loop and accumulate into all four (dh,dw) tiles simultaneously inside one pass over IC \u2014 currently the kernel reloads weights and inputs 4\u00d7KH\u00d7KW times; restructuring to load `x[BLOCK_SP, BLOCK_IC]` once per (h_pre,w_pre) and dot against all kw,kh slices reuses operand registers.\n- Replace the `if (dh==0)&(dw==0): acc00 += ...` pattern (which still executes all four IC loops) with four separate explicit `acc_dh_dw` accumulations done inline without redundant work; better: fuse pool into the last reduction by tracking `tl.maximum` of pre-pool tanh outputs in a streaming fashion to halve registers.",
+    "large_guidance": "- Switch to an explicit im2col-style GEMM formulation for the transposed-conv: precompute, per output (h_pre,w_pre), the (ic, kh, kw) gather indices and run a single tiled GEMM `[BLOCK_SP_pre, BLOCK_OC] += X_gather[BLOCK_SP_pre, BLOCK_K] @ W[BLOCK_K, BLOCK_OC]` with K = IC\u00b7KH\u00b7KW. This collapses the 5 nested loops into one K-loop and lets `tl.dot` run at full tensor-core throughput; the 4-pixel pool tile then becomes a 2\u00d72 stride over the pre-pool spatial axis stored in registers and reduced before write.\n- Use a channels-last (NHWC) layout for both x and the output buffer so IC loads coalesce along the GEMM-K axis; pre-permute weight to `(KH*KW*IC, OC)` once at init (eval-time constant) and keep it as a contiguous matrix for the inner dot.\n- Fuse GroupNorm's first pass (mean/var) into the conv epilogue: have each program emit partial sum and sum-of-squares per (n, group) via `atomic_add` into small scratch tensors, then a tiny second kernel reads scratch, computes inv_std, and applies the affine in-place \u2014 eliminates the full re-read of the output tensor that the current standalone GN does twice.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 38,
+    "global_best_node_id": 16,
+    "global_best_score": [
+        1,
+        1,
+        0.9062588925559223
+    ]
+}

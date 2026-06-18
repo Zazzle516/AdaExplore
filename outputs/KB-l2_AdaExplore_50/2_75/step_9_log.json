@@ -1,0 +1,29 @@
+{
+    "node_id": 9,
+    "parent_node_id": 8,
+    "context_node_ids": [
+        8
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The GN+min kernel uses `tl.atomic_min` on float32 which is not supported on Ampere/Ada for fp32 \u2014 this is likely the correctness failure. Replace the atomic pattern with a two-stage reduction: first kernel writes per-group min to a `(M, G)` buffer, second kernel reduces along G to get the per-row min, then fuses bias add.\n- Initialize `min_buf` correctly and avoid atomics entirely. Increase `num_warps` for the GN kernel to 4 (CPG=16 here is tiny, but launching `M*G = 1024*512 = 524288` programs is heavy \u2014 consider grouping multiple groups per program).\n- For the GEMM (M=N=K=8192), add larger tile configs like `BLOCK_M=256, BLOCK_N=128, BLOCK_K=32, num_warps=8` and `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64`; current configs may be suboptimal for square 8192.",
+    "large_guidance": "- Restructure the post-GEMM pipeline: one program per row processes all C=8192 elements. With CPG=16 and G=512, load the entire row into registers/SRAM in tiles, compute per-group mean/var with `tl.sum` reshaped over `(G_tile, CPG)`, normalize, take row-wide min via `tl.min`, broadcast-add bias, and store \u2014 single kernel, no atomics, no intermediate `(M,G)` buffer.\n- Alternatively, split into two clean kernels: (1) GN producing normalized `(M, C)` + per-row min via in-kernel reduction (no atomics), (2) elementwise `min + bias` broadcast. Keep all reductions register-local.\n- Consider fusing the GEMM's epilogue with GN's first pass when M-tile aligns with row boundaries, but given C=8192 and BLOCK_N\u2264256 this requires cross-tile communication \u2014 likely not worth it; keep GEMM separate and focus the fused kernel on GN+min+bias.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 10,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

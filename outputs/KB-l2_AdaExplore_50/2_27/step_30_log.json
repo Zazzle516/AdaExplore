@@ -1,0 +1,30 @@
+{
+    "node_id": 30,
+    "parent_node_id": 15,
+    "context_node_ids": [
+        10,
+        12
+    ],
+    "depth": 5,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4912834085661431,
+    "max_reward": 0.4912834085661431,
+    "avg_reward": 0.4912834085661431,
+    "score": [
+        1,
+        1,
+        0.8530881206706803
+    ],
+    "small_guidance": "- The fused kernel uses CPG=4 < 16 so it falls back to torch.conv3d + post-fused kernel. The conv dominates; tuning BLOCK_S/num_warps of the post kernel won't move the needle. If staying small, try padding CPG to 16 (zero-pad weights/bias along OC within group) so tl.dot is legal and the fused conv path actually runs.\n- For the post-conv kernel, S=13456 per channel: try BLOCK_S=8192/16384 with num_warps=8, num_stages=2, and load with `eviction_policy='evict_last'` for gamma/beta. Also consider channels-last view so the inner reduction across S is contiguous (it already is, but ensure the gather over c_offs uses a contiguous stride-1 axis by transposing layout to (B, S, C) and iterating over S outer).\n- Add autotune configs spanning BLOCK_S \u2208 {2048,4096,8192,16384} \u00d7 num_warps \u2208 {4,8} \u00d7 num_stages \u2208 {2,3,4} keyed on (C,S).",
+    "large_guidance": "- Replace torch.conv3d with a true custom Triton conv. The reference conv is the dominant cost (output volume 1024\u00d716\u00d713\u00d729\u00d729 \u2248 200M elements, K_VOL=192). Implement im2col-style implicit GEMM: one program per (B, OC_tile, output-spatial tile) with BLOCK_M=OC(=16 padded to 32), BLOCK_N=64\u2013128 over output spatial, BLOCK_K=32 over IC*KD*KH*KW=192. Fuse HardSwish in epilogue, and write to a (B, C, S) buffer that the post kernel reads \u2014 or fuse the spatial-mean + GroupNorm into the conv epilogue via atomic_add per (B, group) accumulators of sum, sumsq, per-channel-sum.\n- Alternative single-pass design: persistent kernel per (B, group) that streams over output-spatial tiles, computing conv for the 4 channels in that group directly (CPG=4 means use elementwise FMA, not tl.dot \u2014 manual outer product over K_VOL with a register tile of (BLOCK_S, CPG)). This avoids materializing the conv output entirely and finishes mean+GN in one launch \u2014 exactly the structure already attempted, but without the CPG<16 fallback (drop tl.dot, use broadcasted multiply-accumulate).\n- Preload weights (only 16\u00d7192=3072 floats) into registers/SMEM once per program; iterate output-spatial in BLOCK_S=128 tiles; reuse input gathers across the CPG=4 channel dim. With B=1024 and 4 groups, grid=4096 is plenty for the 4090.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 31,
+    "global_best_node_id": 30,
+    "global_best_score": [
+        1,
+        1,
+        0.8530881206706803
+    ]
+}

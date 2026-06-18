@@ -1,0 +1,29 @@
+{
+    "node_id": 36,
+    "parent_node_id": 33,
+    "context_node_ids": [
+        33
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4207638894815953,
+    "max_reward": 0.4207638894815953,
+    "avg_reward": 0.4207638894815953,
+    "score": [
+        1,
+        1,
+        0.27130208822316104
+    ],
+    "small_guidance": "- The BN+submean kernel is fine but it's only ~5% of work; tuning it further won't move fast_p. If staying small, try BLOCK_S=4096 with num_warps=8, num_stages=2, and load via vectorized fp32x4 (use a 2D tile of [BLOCK_S] with `tl.load` on contiguous offsets) to saturate L2 bandwidth for the 16*32*16*32*32 tensor.\n- Consider single-pass Welford-style accumulation so the reload of `x` is avoided \u2014 store `scale*x` directly while accumulating sum, then do a second small pass only over the result to subtract the now-known mean (or keep it two-pass but mark `x` for L2 cache hint via `eviction_policy=\"evict_last\"` on the first read).\n- Autotune over (BLOCK_S \u2208 {1024, 2048, 4096, 8192}, num_warps \u2208 {4,8}, num_stages \u2208 {2,3}) keyed on S.",
+    "large_guidance": "- The dominant cost is `nn.ConvTranspose3d` (16\u00d716\u00d716\u00d732\u00d732 \u2192 16\u00d732\u00d731\u00d763\u00d763, kernel 3\u00b3, stride 2). At fast_p=0.27 with the epilogue already fused, the only path to large speedup is replacing the conv-transpose itself with a custom Triton kernel. Implement it as a scatter-add of `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` outer product into output positions `(d*stride - pad + kd, \u2026)`, handling stride/padding directly in index math; do not approximate with a regular conv.\n- Use channels_last3d layout so OC is the contiguous GEMM-N axis; one program per `(N, OC tile, output-spatial tile)` performing an implicit-im2col gather form (gather is easier than scatter to parallelize: for each output voxel, sum over `ic, kd, kh, kw` where the corresponding input index is integer-valid given stride). Start with BLOCK_M=32, BLOCK_N=64, BLOCK_K=16, num_warps=4, num_stages=2 to fit SMEM, then sweep upward.\n- Fuse the BN affine (folded scale/shift from running stats) and the subtract-mean into the conv epilogue: accumulate per-(n, oc) spatial sum in a second kernel pass, or write conv output then run the existing fused kernel \u2014 but the big win is eliminating the cuDNN conv-transpose launch, not the tail.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 37,
+    "global_best_node_id": 29,
+    "global_best_score": [
+        1,
+        1,
+        0.3246729908244386
+    ]
+}

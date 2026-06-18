@@ -1,0 +1,30 @@
+{
+    "node_id": 8,
+    "parent_node_id": 7,
+    "context_node_ids": [
+        1,
+        7
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure is from indexing W with `stride_wn, stride_wk` but loading with `offs_n[None,:]*stride_wn + offs_k[:,None]*stride_wk`: W is shape (N, K) row-major so stride_wn=K, stride_wk=1; the mask should also tile-mask K (use `offs_k[:,None] < K - k*BLOCK_K` inside the loop) \u2014 current code only masks N, so out-of-bounds K loads read garbage when K % BLOCK_K != 0. Here K=8192 is divisible, so the more likely issue is the x mask: it only masks M, not K \u2014 fix with proper k-bound masking each iteration.\n- Add `tl.multiple_of` / `tl.max_contiguous` hints on `offs_k` and pointer offsets, and ensure `allow_tf32=True` matches reference precision (TF32 may exceed atol; try `allow_tf32=False` first to confirm correctness, then re-enable once mask bug is fixed).\n- Expand autotune with `BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, num_warps=4, num_stages=4` and a `GROUP_M=8` swizzle parameter exposed in configs for M=1024,N=8192 shape.",
+    "large_guidance": "- Rewrite as a persistent-grid GEMM with split-K disabled (K=8192 is fine for a single-pass loop), fused bias + `x + sigmoid(x)*scale` epilogue on the accumulator, storing once. Use cp.async-style staged loads via `num_stages=3-4`.\n- Pre-transpose W to (K, N) once in `__init__` (store as a buffer) so the inner loop loads B contiguously along N \u2014 the current load pattern strides B by `stride_wn=K` along the N axis which kills coalescing. This is the biggest perf win available.\n- Consider a 2D launch grid `(cdiv(M,BLOCK_M), cdiv(N,BLOCK_N))` with explicit `tl.program_id(0/1)` plus group swizzle on the M axis only, and tile shapes tuned for (1024,8192,8192): try BLOCK_M=64, BLOCK_N=256, BLOCK_K=32, num_warps=8, num_stages=4.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 9,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.5441855338128208
+    ]
+}

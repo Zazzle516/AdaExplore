@@ -1,0 +1,30 @@
+{
+    "node_id": 34,
+    "parent_node_id": 33,
+    "context_node_ids": [
+        30,
+        33
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4058870331806811,
+    "max_reward": 0.4058870331806811,
+    "avg_reward": 0.4058870331806811,
+    "score": [
+        1,
+        1,
+        0.14856802374061903
+    ],
+    "small_guidance": "- The fused pool+sum kernel is tiny (~16*5*5*5 = 2000 programs); the 70ms runtime is dominated by `nn.ConvTranspose3d`. Tuning this kernel further (BLOCK_C, num_warps) will not move fast_p meaningfully \u2014 at best save <1ms out of 70ms.\n- If staying small, try `num_warps=1` since BLOCK_C=32 is one warp's worth of lanes, and consider merging multiple (od,oh,ow) per program to amortize launch overhead \u2014 but this is marginal.\n- Confirm via profiling: the conv_transpose call is ~98% of runtime; tuning the pool kernel alone cannot reach fast_p \u2265 0.8.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile), computing the outer product of the input tile with the kernel (5\u00d75\u00d75) and atomic-adding into the output grid at strided/padded positions. This is the dominant cost (input 16\u00d732\u00d732\u00b3, output 16\u00d764\u00d763\u00b3, kernel 5\u00b3) and has the most headroom.\n- Fold the conv_transpose bias into the scatter epilogue, then chain directly into the existing fused pool+sum kernel \u2014 or better, since maxpool windows are 6\u00d76\u00d76 over the conv-transpose output, fuse the entire pipeline by having each pool-output program gather/recompute its 6\u00b3 window of conv-transpose values on the fly (avoids materializing the 16\u00d764\u00d763\u00b3 intermediate, ~16M elements).\n- Alternative: implement conv_transpose as an im2col-style GEMM with the gather/scatter index math hoisted out of the inner loop; use channels_last layout (NDHWC) so the GEMM-K (IC) axis is contiguous and loads coalesce. Tile (OC=64, output-spatial) with BLOCK_M=64, BLOCK_N=64, BLOCK_K=32, num_warps=4, num_stages=2.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 35,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.9494847335423198
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 20,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM dominates (M=1024, N=8192, K=8192 \u2248 137 GFLOPs). Add larger tile configs to the autotune list: `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3/4` and `BLOCK_M=256, BLOCK_N=128, BLOCK_K=32`. Since M, N, K are all multiples of 128, drop the K-remainder mask in the inner loop (use a guarded tail only if needed) to shrink the hot loop.\n- Cache the transposed weight once at init and skip the `_refresh_weight_t` path in eval (the model is used in eval; current code refreshes on first call when device differs \u2014 fine, but ensure no copy on every forward). Also consider keeping weight as `(N, K)` row-major and using `tl.dot(a, b.T)` via `trans_b`, avoiding the transpose materialization cost (one-time, but uses extra memory).\n- For `gn_min_kernel`, with M=1024 rows the launch is fine, but try `num_warps=8` and persistent loads of gamma/beta (load once outside the loop since GROUPS_PER_BLOCK*C_PER_G covers all 8192 channels in 16 iters). Better: set `GROUPS_PER_BLOCK=num_groups` so the whole row fits in one tile (512\u00d716=8192 elements) \u2014 eliminates the loop and the running_min reduction.",
+    "large_guidance": "- Fuse the final bias-add into `gn_min_kernel`'s epilogue: after computing the scalar `running_min` per row, broadcast-add `self.bias` (shape `(1, N, 1, 1)`) and write `(M, N)` directly. This eliminates the separate `min_buf` allocation and the `out = min_buf + bias` broadcast (which currently materializes an `(1,1,M,N)` \u00d7 bias-shape broadcast \u2014 note the output shape is `(1, out_features, M, 1)` after broadcasting, a 1024\u00d78192 tensor write). Have the kernel write the full `(M, N)` output tile in a second pass after the row-min is known, or split into two kernels: (1) row-min producing `min_buf[M]`, (2) a tiny broadcast-add kernel \u2014 the current code already does this via torch broadcast which is cheap; main win is in the GEMM.\n- Consider a split-K GEMM or persistent-grid GEMM for K=8192: with BLOCK_K=64, the K-loop has 128 iterations, well-suited to `num_stages=4` software pipelining. A persistent kernel with one program per SM iterating over (M,N) tiles can improve occupancy on the 4090 (128 SMs).\n- The reference output shape is `(1, out_features, batch_size, 1)` due to broadcasting `(B,1) + (1,C,1,1)` \u2014 confirm the post-min tensor shape handling. The current `min_buf.view(1,1,M,1) + self.bias` yields `(1, C, M, 1)` which matches; keep this but allocate the output tensor explicitly contiguous to avoid stride surprises downstream.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 21,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

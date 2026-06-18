@@ -1,0 +1,29 @@
+{
+    "node_id": 20,
+    "parent_node_id": 8,
+    "context_node_ids": [
+        12
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure is from padding K_TOTAL up to next_pow2: when `C_in*KD*KH*KW = 81`, you bump to 128 and `k_offs[None,:] < K_TOTAL` is always true, so out-of-range k indices (kw_i, kh_i, kd_i, ic_i computed for k>=81) gather garbage from x and use bogus weight indices. Fix: keep `K_TOTAL` as a constexpr equal to actual `C_in*KD*KH*KW`, and define a separate `K_PADDED = next_pow2(K_TOTAL)` only for tile shape; mask with `k_offs < K_TOTAL` (the real value), not against K_PADDED.\n- Alternatively, make the K dim the inner reduction loop: tile K with BLOCK_K=32, mask by real K_TOTAL=81, accumulate `tl.dot` over K tiles. This avoids the pow2-padding correctness trap and lets you tune BLOCK_K independently.\n- After fixing correctness, add autotune configs varying BLOCK_HW with num_warps\u2208{4,8} and num_stages\u2208{2,3,4}; channels-last on the input (NDHWC) would make the K-gather contiguous along C_in.",
+    "large_guidance": "- Rewrite as an im2col-style GEMM with explicit K-tiling: one program per `(n, OH*OW tile, OC tile)`, inner loop over `od` and over K-chunks of `ic*kd*kh*kw`, masking by the true K=`C_in*KD*KH*KW` (=81 here). Keep the min-over-od reduction in registers and do the channel-softmax epilogue in-kernel \u2014 but only after K-masking is correct.\n- Consider folding the conv bias trivially and fusing the min-then-softmax: for each `(n, hw)`, accumulate per-OC min across od, then a single warp-wide softmax over OC (OC=24 fits in one tile, no second pass needed). Use a 2D program grid `(N, cdiv(OH*OW, BLOCK_HW))` with BLOCK_C = next_pow2(OC)=32.\n- For RTX-4090 with these small shapes (OH*OW=900, OC=24, K=81, OD=22), prefer NDHWC layout and a persistent kernel that keeps the (BLOCK_HW, BLOCK_C) min tile resident across the od-loop, issuing one `tl.dot((BLOCK_HW,BLOCK_K),(BLOCK_K,BLOCK_C))` per (od, k-chunk). This is the structurally right design; the current kernel is close but has the K-padding bug that makes the gather unsound.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 21,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        1.2396817133959623
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 9,
+    "parent_node_id": 8,
+    "context_node_ids": [
+        8
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness fails with max diff ~2.5e-3 and avg ~2e-4: this is suspiciously close to a numeric/dtype issue, not a kernel logic bug. Cast `g` and `b` loaded from `gamma_ptr`/`beta_ptr` to fp32 before the affine, and ensure the final `(x - mean) * rstd * g + b` is computed in fp32 then cast back to the output dtype on store \u2014 currently `g`/`b` mix with fp32 implicitly but the load defaults may not be reliable; explicit `.to(tl.float32)` removes ambiguity.\n- The Hardtanh clamp saturates to \u00b11 frequently, and Mish(1) \u2248 0.8651, Mish(-1) \u2248 -0.3034. Verify the softplus formulation: `tl.maximum(acc, 0.0) + tl.log(1.0 + tl.exp(-abs_acc))` is correct, but pre-clamped values in [-1,1] make `tl.exp(-|x|)` safe \u2014 try the direct `tl.log(1+tl.exp(acc))` since range is bounded, and compare. Most likely culprit is loss of precision from clamping order or bias accumulation; try doing the GEMM accumulation in fp32 (already done) but loading bias `b` with explicit `.to(tl.float32)`.\n- Add more autotune configs for M=N=1024, K=8192 \u2014 try `BLOCK_K=64` and `BLOCK_K=128` with `num_stages=4`, since K is very large and the K-loop dominates. Also try `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8`.",
+    "large_guidance": "- Keep the two-kernel split (fused GEMM+bias+Hardtanh+Mish, then GroupNorm) \u2014 it is the right fusion boundary because GroupNorm needs a full row-group reduction that cannot start until the GEMM tile finishes. Do not try to fuse GN into the GEMM epilogue.\n- For GroupNorm with C=32 channels-per-group and G=256 groups, a single program per (row, group) is fine but launches 1024*256 = 262K programs. Consider processing multiple groups per program (e.g. 4 groups per program along the group axis) to amortize launch overhead, since each group's reduction is tiny (32 elements).\n- Consider a persistent / split-K GEMM since K=8192 is large relative to M=N=1024; a streaming-K or split-K kernel that does partial accumulation followed by a reduction can better saturate the 4090's SMs when the M*N tile grid is small (only 1024*1024 output = ~64 tiles at 128x128).",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 10,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

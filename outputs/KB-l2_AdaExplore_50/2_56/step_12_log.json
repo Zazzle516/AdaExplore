@@ -1,0 +1,30 @@
+{
+    "node_id": 12,
+    "parent_node_id": 10,
+    "context_node_ids": [
+        8,
+        10
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The atomic_add reduction across N tiles is the correctness bug source: every program adds its partial row_sum to out[m], but if `out` is not zero-initialized correctly across all tiles, or if BLOCK_M doesn't cover M (M=128, BLOCK_M=128 should), check stride_wn/stride_wk \u2014 W is `[N, K]` with stride_wn=K, stride_wk=1, so `w_ptrs = w_ptr + offs_n[None,:] * stride_wn + offs_k[:,None] * stride_wk` is correct. The likely issue is BLOCK_M=128 fixed but tl.dot needs power-of-2 \u226516 for both dims; double-check BLOCK_N\u226516 in all configs (yes). Investigate whether atomic_add float32 accumulation across many tiles introduces nondeterminism / drops; switch to a 2D grid (pid_m, pid_n) with BLOCK_M tiles \u226432 and atomic-add per smaller M tile, or do a single program per row group with BLOCK_N spanning all N.\n- Add configs with BLOCK_N=256, BLOCK_K=128, num_warps=8, num_stages=4 and BLOCK_N=128, BLOCK_K=256 \u2014 K=32768 is huge, deeper pipelining helps.\n- Pass BLOCK_M as a constexpr=128 directly (M is fixed at 128) instead of computing at runtime; this lets autotune cache properly.",
+    "large_guidance": "- Restructure as a 2-stage kernel: stage 1 is a tiled GEMM that writes the full `[M, N]` post-sigmoid tile to a scratch buffer (or directly reduces within the tile along N and writes partial sums to a `[M, num_n_tiles]` buffer); stage 2 is a clean reduction over num_n_tiles into `[M, 1]`. This avoids atomic_add float nondeterminism and the correctness failure, and lets stage 1 use ideal GEMM tile shapes.\n- Alternative single-kernel design: split-K is unnecessary since K dim is summed inside dot; instead make the program iterate the *entire* N dimension inside one program per M-tile (persistent N loop), accumulating sigmoid(acc+b) sums in registers. With M=128, BLOCK_M=64, grid=(2,), each program loops N in chunks of BLOCK_N=128, doing tl.dot over K each time. No atomics, fully deterministic, and reuses the X tile across all N chunks (X stays resident in SRAM/registers).\n- Given M=128, K=N=32768, the workload is ~128*32768*32768*2 = 275 GFLOP. A persistent-per-M-tile kernel with X cached and streaming W/bias is the right shape; consider loading X[BLOCK_M, BLOCK_K_full=some] into SMEM once and streaming W in BLOCK_N\u00d7BLOCK_K tiles.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 13,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

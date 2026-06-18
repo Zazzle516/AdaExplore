@@ -1,0 +1,30 @@
+{
+    "node_id": 38,
+    "parent_node_id": 37,
+    "context_node_ids": [
+        30,
+        37
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure is likely from accumulating `tl.sum(acc, axis=1)` into `row_acc` without masking the N tail: when `n_start + offs_n >= N`, `wt_tile` is masked to 0 but the dot still produces valid zeros \u2014 that part is fine. The real bug is more subtle: `x_tile` is loaded with `m_mask[:, None] & k_mask[None, :]`, which is correct, but the inner K loop uses `tl.dot` which requires BLOCK_K to be a multiple of 16 and contiguous valid data; with K=8192 divisible by all BLOCK_K choices this should be OK. Investigate whether the issue is that `out_flat = out.view(M)` then stored, but output is shape (M,1) \u2014 that's fine. More likely: `SCALE` passed as a Python float to a `tl.constexpr` \u2014 autotune may re-specialize per call; verify by passing scale as a 0-d tensor or applying it outside the kernel.\n- Apply the `*scale` multiply in the host (`out = out * scale`) to eliminate the constexpr-float specialization hazard, and re-verify correctness before tuning further.\n- Once correct, drop the inner N-tile loop: since we only need the row sum, fuse by accumulating `tl.sum(tl.dot(x_tile, wt_tile), axis=1)` directly into `row_acc` per (n,k) tile pair, avoiding the BLOCK_M\u00d7BLOCK_N intermediate register footprint.",
+    "large_guidance": "- Reformulate as: `out[m] = scale * sum_k x[m,k] * (sum_n W[n,k])`. **However**, per the safety contract, precomputing `colsum = W.sum(dim=0)` at init/forward turns the GEMM into a matvec and is forbidden. Instead, keep the full matmul at runtime but restructure the kernel as a 2D reduction: one program per M tile, iterating over (BLOCK_K \u00d7 BLOCK_N) tiles, computing the partial GEMM with `tl.dot`, then reducing the N axis of each tile to a (BLOCK_M,) vector before accumulating \u2014 this keeps all FLOPs but minimizes register pressure.\n- Use a persistent kernel with one program per M-row tile (M=1024 \u2192 8-16 programs) and a 2D inner loop over (n_tiles, k_tiles). With BLOCK_M=64, BLOCK_N=128, BLOCK_K=64, register pressure is low and L2 reuse of the x_tile across N tiles is automatic if K is the outer loop.\n- Consider splitting K across programs (split-K) with atomic_add into the (M,) output, since N reduction collapses the output to 1D and split-K parallelism becomes very cheap; grid = (cdiv(M, BLOCK_M), SPLIT_K) with atomic accumulation.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 39,
+    "global_best_node_id": 27,
+    "global_best_score": [
+        1,
+        1,
+        0.8119585150360703
+    ]
+}

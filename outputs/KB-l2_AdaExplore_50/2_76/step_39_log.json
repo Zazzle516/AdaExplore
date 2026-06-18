@@ -1,0 +1,29 @@
+{
+    "node_id": 39,
+    "parent_node_id": 10,
+    "context_node_ids": [
+        13
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The kernel is incorrect because it computes `x @ wT` where `wT = weight.t()`, which gives the correct result, BUT the issue is likely that `nn.Linear` weight is `(out_features, in_features)` and `F.linear(x, w) = x @ w.t()`. So `x @ wT` should be correct. The real issue may be that `self.training` is True by default and `_refresh_wT` is called, but the eval correctness test sets eval mode \u2014 verify wT is refreshed on first forward regardless of mode, since weight was randomly initialized after `wT` was registered. Force a refresh on the first forward call (or always when not buffered correctly).\n- Use `offs_am = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)` with explicit masking on loads rather than `% M` modulo trick when M is not a multiple of BLOCK_M; with M=1024, N=8192, K=8192 all powers of 2, this isn't the bug, but apply load masks for safety.\n- Once correct, narrow autotune to the top 2-3 configs (likely 128x256x32 nw=8 ns=3 or 128x128x64 nw=8 ns=4) to reduce tuning overhead.",
+    "large_guidance": "- The correctness failure (avg diff ~1e-4, max ~1e-3) suggests stale `wT` buffer: `nn.Linear` is constructed and immediately `wT` is captured, but the test harness may reload weights or compare against a model whose weights changed. Drop the pre-transposed buffer entirely and instead launch the GEMM directly on the original `(N, K)` weight with swapped strides (`stride_bk=weight.stride(1)`, `stride_bn=weight.stride(0)`) \u2014 this also saves the transpose memory and removes any sync issues.\n- Alternatively, do `x @ weight.T` in the kernel by treating B as `weight` with B's K-axis being the inner-contiguous one (since weight is row-major `(N, K)`, K is contiguous). Load B as `weight[n, k]` and feed it into `tl.dot(a, b.T)` \u2014 or equivalently transpose the tile in registers.\n- Consider a split-K or persistent kernel for M=1024, N=8192, K=8192 (only 64 row-blocks \u00d7 64 col-blocks = 4096 tiles at 128\u00d7128), which fits within RTX 4090's 128 SMs with good occupancy; a persistent grid with `num_sms` programs may reduce launch overhead.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 40,
+    "global_best_node_id": 34,
+    "global_best_score": [
+        1,
+        1,
+        2.974663956047386
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 28,
+    "parent_node_id": 27,
+    "context_node_ids": [
+        9,
+        27
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.6013492293523262,
+    "max_reward": 0.6013492293523262,
+    "avg_reward": 0.6013492293523262,
+    "score": [
+        1,
+        1,
+        1.7611311421566904
+    ],
+    "small_guidance": "- The GEMM dominates runtime (8192\u00d78192\u00d78192 \u2192 ~1.1 TFLOPs of work). Add larger tile configs to the autotune sweep: `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3/4` and `BLOCK_M=256, BLOCK_N=128, BLOCK_K=64`. Also try `num_stages=5` for K=8192 to better overlap loads.\n- Pre-transpose `W` to `(K, N)` row-major once in `__init__` so the inner-loop B-load is contiguous along N (currently `w_ptrs` strides by `stride_wn` across columns and `stride_wk` across K \u2014 with the original `nn.Linear` weight `(N, K)`, the K-dim is contiguous which is fine, but caching a `(K, N)` layout lets you use `tl.dot` with a coalesced N-major B and often gets a measurable win).\n- Since `max_dim==1` makes the post-GEMM result mathematically zero, the row_max + row_post kernels are wasted bandwidth but required by the contract. Fuse them into the GEMM epilogue: after computing the BLOCK_M\u00d7BLOCK_N tile, do a row-wise max across N using `tl.atomic_max` into a per-row buffer, then a single final kernel writes `gelu(rm - rm) = 0`. Avoids materializing the full (M, N) Y tensor read-back.",
+    "large_guidance": "- The whole pipeline's bottleneck is the 8192\u00d78192\u00d78192 GEMM writing a 32 MB output that is then reduced. Redesign as a **fused GEMM + row-reduce**: each program computes its BLOCK_M\u00d7BLOCK_N tile of `acc`, takes `tl.max(acc, axis=1)` in the epilogue, and uses `tl.atomic_max` to merge into a `row_max[M]` buffer \u2014 never store the full Y. This cuts the 256 MB write/read of Y entirely and should drop runtime by 30\u201350%.\n- Alternatively, use a **split-K + row-max persistent kernel** where each program owns a strip of rows and streams through all of K, accumulating into registers and computing the row-max locally without atomics. With `M=1024` and N=8192, this is `1024\u00d78192` outputs \u2014 feasible to keep in registers across a persistent grid of ~128 SMs.\n- After the fused row-max, the rest is trivial: a tiny `(M,)` \u2192 `(M,1)` kernel that computes `gelu(rm - rm)` (which is 0 but must execute per the contract). Keep it as a separate small launch; it's negligible.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 29,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        1.7954388916792234
+    ]
+}

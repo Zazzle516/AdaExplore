@@ -1,0 +1,27 @@
+{
+    "node_id": 38,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure is likely in `bn_stats_kernel`: `tl.load(X_ptr + offs_m * N + n, ...)` uses `other=0.0` which is fine, but the issue is that on the last partial tile, masked elements contribute 0 to `sum_x` but the count `M` is still used as divisor (correct). However, double-check that `gemm_scale_kernel` uses `offs_am[:, None] % M` which wraps out-of-bounds rows and lets them contribute garbage to `acc`; the bias/scale epilogue then writes wrapped values. Replace `% M` and `% N` with proper masking on A/B loads (mask rows with `offs_m < M`, cols with `offs_n < N`) to avoid contaminating the accumulator on boundary tiles.\n- Add boundary masks to A and B loads in the K-loop: `mask_a = (offs_am[:, None] < M) & (offs_k[None, :] < k_remaining)` etc. Even if M, N are multiples of BLOCK, this is the most common source of ~1e-3 mismatches.\n- Once correctness is fixed, fuse the BN apply into the GEMM epilogue when in eval mode (running stats are constants), eliminating a full read/write pass over the 16384\u00d74096 tensor.",
+    "large_guidance": "- Restructure into two kernels only: (1) GEMM with scale fused in epilogue producing y, (2) a single fused BN kernel that computes per-column mean/var via a column-parallel reduction and immediately applies normalization+affine, writing the output. With M=16384, N=4096, a two-pass design (stats then apply) costs an extra full read of y; consider a persistent column-tile kernel that streams y tiles into shared memory (or registers across stages) to compute stats and apply in one pass per column.\n- For the GEMM at M=N=K=4096 on a 4090, prefer BLOCK_M=128, BLOCK_N=256, BLOCK_K=32, num_warps=8, num_stages=3 with proper boundary masking (not modulo wrap). Add a split-K variant in autotune for the BN stats reduction since N=4096 columns \u00d7 M=16384 rows benefits from multiple programs per column with atomic combine, or a two-stage reduction kernel.\n- In training mode, the running stat update on CPU-side python (`mul_/add_`) plus the var recomputation `1/(invstd^2)-eps` is fine but launch it asynchronously; better, fuse the running-stat update into the stats kernel using atomic writes or a small follow-up kernel to avoid host sync.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 39,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.7791481785714286
+    ]
+}

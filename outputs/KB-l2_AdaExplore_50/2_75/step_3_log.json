@@ -1,0 +1,27 @@
+{
+    "node_id": 3,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM is M=1024, N=8192, K=8192 \u2014 dominant cost. Add larger autotune configs (BLOCK_M=128/BLOCK_N=256/BLOCK_K=32, BLOCK_M=64/BLOCK_N=256/BLOCK_K=64) and a GROUP_M=8 swizzle to improve L2 reuse across N tiles per row group.\n- Pre-transpose `self.gemm.weight` once in `__init__` to a contiguous (K, N) buffer so the inner B loads are along the contiguous N axis instead of strided over the original (N, K) layout; this typically gives a large bump on K=8192.\n- Replace the atomic-min scratch path with a single-pass kernel: launch one program per row, loop over groups inside the kernel computing GN per group and reducing a running min in registers \u2014 avoids `atomic_min` serialization and the +inf init, and removes the final torch broadcast by writing `min + bias[c]` directly.",
+    "large_guidance": "- Fuse GroupNorm + row-min into one persistent kernel: one program per row, iterate the `num_groups=512` groups with `C_per_g=16` lanes; compute mean/var/normalize per group in registers, take the group min, and reduce a scalar row-min across the loop. This eliminates the M*num_groups atomics entirely and keeps the row's data hot.\n- Make the final stage write `(1, out_features, M, 1)` directly from a tiny Triton kernel: `out[c, m] = row_min[m] + bias[c]`, fused so we never materialize an intermediate broadcast tensor. Grid over (M, cdiv(C, BLOCK_C)).\n- For the GEMM, consider a split-K or persistent-tile design given M=1024 is small relative to N=K=8192; alternatively switch to BLOCK_M=64, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4, with B pre-transposed to contiguous (K,N) and `tl.dot(..., out_dtype=tl.float32)` \u2014 this is generally the sweet spot on Ada/4090 for skinny-M GEMM.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 4,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

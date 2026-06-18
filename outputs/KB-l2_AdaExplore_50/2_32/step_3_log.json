@@ -1,0 +1,27 @@
+{
+    "node_id": 3,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4904727228809838,
+    "max_reward": 0.4904727228809838,
+    "avg_reward": 0.4904727228809838,
+    "score": [
+        1,
+        1,
+        0.846399963768116
+    ],
+    "small_guidance": "- Add larger autotune configs now that the safe grid compiles: `(BLOCK_M=128, BLOCK_N=64, BLOCK_K=16/32, num_warps=8, num_stages=2)` and `(BLOCK_M=64, BLOCK_N=128, BLOCK_K=32, num_warps=8, num_stages=2)`. With OC=128 and OUT_HW=254*254\u224864K, larger BLOCK_M reduces redundant weight loads dramatically; current best is likely BLOCK_N=128 (covers all OC in one tile, eliminating the outer oc_tile loop and the per-tile min/where overhead).\n- Specialize for the common case `BLOCK_N >= OC` (here 128): when one OC tile covers all channels, skip the outer loop and the `tl.where(n_mask, \u2026, INF)` masking \u2014 fold bias+scale+min into a single pass. Also hoist `KH*KW` as a constexpr (KERNEL_VOL=9) so `ic = k_idx // 9` becomes cheap.\n- Try `num_stages=3` with the small-K tiles (BLOCK_K=16) to better overlap the IC*KH*KW=576 K-loop; SMEM cost for `(128*16 + 16*128)*4*3 \u2248 48 KB` is safe.",
+    "large_guidance": "- Switch input layout to channels_last (NHWC) so the GEMM-K dimension (ic, kh, kw) is contiguous in memory; current NCHW gather strides by H*W per ic step, breaking coalescing on the x_vals load. Permute x once in forward, then index `x[n, ih, iw, ic]` with ic as the innermost axis of the K tile.\n- Restructure as one program per (N, output-spatial tile) that iterates OC fully internally and keeps the running `min` in registers \u2014 avoid recomputing input gathers across OC tiles by loading an `[BLOCK_M, BLOCK_K]` x-tile once and reusing it against the full weight slab `[BLOCK_K, OC]` (since OC=128 fits a single BLOCK_N). This converts the kernel from \"GEMM then reduce\" to \"fused matmul-min\" with one pass over input.\n- Alternatively, since the reduction collapses OC to 1, consider a split-K-over-OC streaming kernel: load weight tile + bias for an OC chunk, accumulate partial conv, immediately scale and update running min, then move to next OC chunk \u2014 never materializing the full [M, OC] activation tile in registers, freeing register budget for larger BLOCK_M (e.g., 256).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 4,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.9653156611570249
+    ]
+}

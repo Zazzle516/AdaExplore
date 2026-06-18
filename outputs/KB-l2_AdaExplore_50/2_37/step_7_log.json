@@ -1,0 +1,29 @@
+{
+    "node_id": 7,
+    "parent_node_id": 6,
+    "context_node_ids": [
+        4
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness issue: the GroupNorm kernel only handles `CPG <= BLOCK_CPG` in a single tile, but with `out_features=4096, num_groups=64`, `CPG=64` which is fine \u2014 however the `mask = offs < CPG` is correct. The real bug is likely the GEMM: `W` from `nn.Linear` has shape `(N, K)` with `stride_wn = K, stride_wk = 1`, but the kernel uses `w_ptrs = W_ptr + offs_n[None,:]*stride_wn + offs_k[:,None]*stride_wk` which is correct. Investigate whether the max-diff of ~1.6e-3 stems from TF32 in `tl.dot`; try `allow_tf32=False` or accumulate in fp32 from fp32 inputs explicitly to tighten error (the 5e-2 tolerance should pass \u2014 re-check whether correctness harness uses tighter tolerance for this op).\n- Verify the bias `self.bias` is being added *before* swish in the reference (`x = sigmoid(x)*x; x = x + bias`) \u2014 the kernel currently does `acc + bl; swish; + bp`, which incorrectly applies Linear's bias *before* swish then adds external bias. Reference applies Linear bias inside matmul (so swish sees `Wx+bl`), then adds `bp` after. That ordering matches \u2014 but double-check: reference does `x = self.matmul(x)` \u2192 includes `bl`, then `swish`, then `+bp`. Kernel matches. So correctness mismatch may simply be numerical; try disabling TF32.\n- Add a `GROUP_M=8` swizzle to the GEMM autotune configs and add a 256x64 / 64x256 config for the `M=32768, N=4096, K=1024` shape.",
+    "large_guidance": "- Persistent fused kernel: since `out_features=4096` and `num_groups=64` (CPG=64), each row's post-GEMM activations could be held in registers/shared memory per-program and group-normed inline, avoiding the write+reread of the 32768\u00d74096 intermediate. Design one kernel where each program computes a `BLOCK_M` row tile \u00d7 full `N=4096` (looping N tiles to accumulate GEMM, storing to SMEM), then performs per-group reduction across the SMEM tile, then writes normalized output.\n- Alternatively, split into (1) GEMM+swish+bias writing to global, (2) GroupNorm kernel that uses 2D blocking: one program per `(row, group)` with `BLOCK = 64` (CPG) \u2014 this is what's there. The current single-program-per-row with static_range over 64 groups serializes work; switch to one program per `(row, group)` for ~64\u00d7 more parallelism on 32768 rows (2M programs is too many; keep one program per row but use `num_warps=8` and parallelize groups across warps via a 2D layout `(NUM_GROUPS, BLOCK_CPG)`).\n- For the GEMM, K=1024 is small enough that splitK isn't needed; focus on tile shape `128\u00d7256\u00d732` with `GROUP_M=8` and `num_warps=8, num_stages=4` \u2014 this is the sweet spot for 4090 at these dims.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 8,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

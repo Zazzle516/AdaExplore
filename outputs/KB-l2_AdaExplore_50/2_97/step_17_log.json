@@ -1,0 +1,31 @@
+{
+    "node_id": 17,
+    "parent_node_id": 6,
+    "context_node_ids": [
+        1,
+        2,
+        6
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4749697455328489,
+    "max_reward": 0.4749697455328489,
+    "avg_reward": 0.4749697455328489,
+    "score": [
+        1,
+        1,
+        0.7185004006460027
+    ],
+    "small_guidance": "- The kernel is currently at 3.4ms vs 2.44ms baseline (fast_p 0.72). For M=N=K=8192 on a 4090, try larger tiles like BLOCK_M=128/BLOCK_N=256/BLOCK_K=32 with num_stages=4 and BLOCK_M=256/BLOCK_N=64/BLOCK_K=32; also try num_warps=4 with smaller tiles (64x128x32). The current configs lean very wide on N which may exceed register budget.\n- The `EVEN_K` fast path masks `a` only on `mask_m` and `w` only on `mask_n` \u2014 this is correct only when K is a multiple of BLOCK_K. For K=8192 this is fine, but you can drop the mask entirely on inner-K loads (use plain `tl.load` without mask) to save predication overhead in the hot loop.\n- Pre-transpose the weight matrix once in eval cache to `[K, N]` contiguous so the inner-K loads on W are along the contiguous axis (currently stride_wk=1 with B accessed as `[K,N]` view of `[N,K]` means each K-step jumps by N elements \u2014 non-contiguous along the BLOCK_K reduction axis). A contiguous [K,N] layout will let `tl.dot` issue fully coalesced cp.async loads.",
+    "large_guidance": "- Redesign around a properly laid-out GEMM: cache `W.t().contiguous()` ([K,N]) at eval time so both A and B have their K axis as the inner contiguous dim with `BLOCK_K`-sized vector loads. This is typically the single largest win for square 8192\u00b3 GEMMs on Ampere/Ada.\n- Consider a split-K or persistent-tile design: with M=N=8192 there are 64\u00d764=4096 output tiles for 128\u00d7128 \u2014 well over the 128 SMs on a 4090, so a persistent kernel with block-swizzle and software pipelining (num_stages=4) on the K loop should beat the naive grid. Alternatively split-K=2 with atomic accumulate may help if compute is the bottleneck.\n- The training path currently launches a separate `F.linear` plus several elementwise ops; fuse a training kernel that computes the matmul, reduces mean/var across M in a second pass, then applies the affine+swish, to avoid materializing the [M,N]=64MB tensor twice. Even just fusing the post-BN epilogue (scale/shift/bias/div/swish) into a single elementwise kernel removes 3 launches and 3 full-tensor reads.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 18,
+    "global_best_node_id": 16,
+    "global_best_score": [
+        1,
+        1,
+        1.306364364810914
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 46,
+    "parent_node_id": 9,
+    "context_node_ids": [
+        15
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.48566915149797135,
+    "max_reward": 0.48566915149797135,
+    "avg_reward": 0.48566915149797135,
+    "score": [
+        1,
+        1,
+        0.8067704998582633
+    ],
+    "small_guidance": "- The torch `F.conv3d` dominates runtime here (the post-conv fused kernel is tiny \u2014 ~2K outputs). Tuning the post-conv kernel further won't move the needle. Within current structure, only minor wins: pass `inv_div`/`inv_pool` as regular args (not constexpr) to reduce recompiles, and try `BLOCK_PW=PW` exactly with `num_warps=1` since the work per program is trivial.\n- Materialize the conv output in `channels_last_3d` if planning to feed a custom conv; otherwise no-op.\n- Add autotune over BLOCK_PW \u2208 {32, 64} with num_warps \u2208 {1, 2, 4}.",
+    "large_guidance": "- Replace `F.conv3d` with a custom Triton im2col-GEMM conv kernel: one program per `(N, OC_tile, output-spatial tile)`, with K = IC*kd*kh*kw = 8*27 = 216 (small, fits in a single K-loop). Tile shapes ~ `BLOCK_M=64` (spatial), `BLOCK_N=16` (OC, full), `BLOCK_K=32`, num_warps=4, num_stages=3. Fuse the divide, maxpool-2x2x2, global-avg, bias-add, and sum-over-channels directly into the conv epilogue \u2014 never materialize the (128,16,14,62,62) conv output.\n- Better: since the final output is just `(N,1,1,1)` (sum over OC after global avg), collapse OC into the reduction. Each program handles one `N` and a tile of pooled-spatial cells; accumulate `sum_oc(maxpool(conv/div)) + sum(bias)` into a scalar per N, then global-average. This turns the entire forward into a single-pass reduction kernel keyed on N.\n- Use `channels_last_3d` weight/input layout so the IC dimension is the contiguous GEMM-K axis; precompute kernel-offset tables (kd*H*W + kh*W + kw) at init and pass as a constant tensor to avoid index arithmetic in the inner loop.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 47,
+    "global_best_node_id": 15,
+    "global_best_score": [
+        1,
+        1,
+        0.8067704998582633
+    ]
+}

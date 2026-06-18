@@ -1,0 +1,29 @@
+{
+    "node_id": 13,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5070305327994464,
+    "max_reward": 0.5070305327994464,
+    "avg_reward": 0.5070305327994464,
+    "score": [
+        1,
+        1,
+        0.9830018955954324
+    ],
+    "small_guidance": "- The conv_transpose kernel is the bottleneck. Try `num_warps=4` or `8` with a larger `BLOCK_OC` (pad to 32) and add `num_stages=2-3` so the inner loads pipeline. Also try unrolling only KD/KH/KW (already static_range) but moving the `ic` loop to a vectorized load of all 3 channels at once via `tl.arange(0, 4)` masked.\n- Wrap the conv_transpose kernel in `triton.autotune` over `(BLOCK_OC \u2208 {16,32}, num_warps \u2208 {2,4,8}, num_stages \u2208 {1,2,3})` keyed on `(N, OC, OD, OH, OW)`.\n- Reduce redundant work: the kernel computes 8 conv-transpose outputs per program (POOL_K=2 cubed) but reloads weights each time \u2014 hoist the weight loads `w[ic, :, kd, kh, kw]` outside the pool-window loops (they don't depend on ld/lh/lw) into registers before the pool loop.",
+    "large_guidance": "- Restructure as a gather-GEMM: one program per `(n, oc_tile, pooled_spatial_tile)`. For each pooled output, the 8 conv-transpose outputs in its window share the same weight tensor; precompute the 8 sets of input indices once, then iterate `(ic, kd, kh, kw)` as the GEMM-K with weight loaded once and reused across all 8 spatial positions via an outer product accumulator `[BLOCK_OC, 8]`. This amortizes weight bandwidth 8\u00d7 over the current design.\n- Alternatively, switch to a scatter-add formulation: one program per `(n, ic, id, ih, iw)` input element scatters its `input \u00d7 weight[ic, :, :, :, :]` contribution into the 27 output positions, then a second kernel does maxpool+softmax+sub+swish+chanmax. With IC=3 and stride=2 this has much less redundant arithmetic than the current gather (which recomputes id/ih/iw divisions per output).\n- Keep the second kernel fused as-is but consider folding the pooled-output store of kernel 1 directly into kernel 2 via a persistent design: one program owns a `(n, pd, ph, pw)` location, computes all OC conv-transpose-pool values into registers, then does softmax+sub+swish+max in the same kernel \u2014 eliminates the intermediate `pooled` tensor write/read entirely.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 14,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.385241751724138
+    ]
+}

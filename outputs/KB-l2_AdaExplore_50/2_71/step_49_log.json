@@ -1,0 +1,27 @@
+{
+    "node_id": 49,
+    "parent_node_id": 8,
+    "context_node_ids": [],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.46746722783389455,
+    "max_reward": 0.46746722783389455,
+    "avg_reward": 0.46746722783389455,
+    "score": [
+        1,
+        1,
+        0.6566046296296296
+    ],
+    "small_guidance": "- The current kernel writes output in NHWC then does a `.permute().contiguous()` back to NCHW \u2014 that final copy is pure overhead. Either write directly to NCHW layout (store with `y[n, oc, oh, ow]` strides) or have the kernel produce the final NCHW tensor by swapping the store index math.\n- Add larger autotune configs targeting M=128\u00b7126\u00b7126 (~2M rows) and N=64: try `BLOCK_M=128, BLOCK_N=32, BLOCK_K=72` (full K=72 in one pass, no K-loop), and `BLOCK_M=256, BLOCK_N=64, BLOCK_K=72` with `num_warps=8, num_stages=3`. Since K = 3\u00b73\u00b78 = 72 is tiny, a single-pass K removes loop overhead entirely.\n- The redundant `x.contiguous(channels_last)` followed by `x.permute(0,2,3,1).contiguous()` does two copies of the input. Drop the channels_last call and just do the NHWC permute once (or better, index the original NCHW tensor directly inside the kernel using NCHW strides \u2014 avoids the input copy altogether).",
+    "large_guidance": "- Rewrite as a direct conv (not im2col GEMM) reading NCHW input directly: one program per `(N, OC_tile, OH_tile, OW_tile)`, e.g. tile = (1, 32, 8, 32). Unroll the 3\u00d73\u00d7IC=72 MAC chain fully (constexpr KH, KW, IC) so the compiler emits a tight FMA sequence with no K-loop and no im2col index arithmetic.\n- Eliminate all layout-conversion copies: accept the input in its given NCHW contiguous layout, load weights once (small: 64\u00b78\u00b73\u00b73 = 4608 floats \u2014 fits in registers/SMEM), and store output directly to NCHW. No pre/post permutes.\n- Fuse divisor into the weight and bias at module init (`w_eff = w / divisor`, `b_eff = b / divisor`) so the kernel epilogue is only leaky_relu \u2014 one fewer multiply per output element and lets the autotuner pick smaller register tiles.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 50,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        2.642075260804769
+    ]
+}

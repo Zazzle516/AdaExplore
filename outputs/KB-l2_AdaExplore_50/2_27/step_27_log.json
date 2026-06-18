@@ -1,0 +1,30 @@
+{
+    "node_id": 27,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        20,
+        25
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (NaN avg diff in 1/5 trials) is from a race: the conv kernel uses `tl.atomic_add` into `sum_buf`/`sumsq_buf`, but the finalize kernel is launched without an explicit sync barrier and, more importantly, `sum_buf`/`sumsq_buf` should be zero-initialized \u2014 they are, but autotune re-runs the kernel multiple times against the *same* zero-init buffers across configs, doubling the partials. Allocate the buffers *after* autotune compiles (or use `key=...` that excludes the buffers and re-zero before the launch each call), and/or replace the two-pass atomic accumulation with a per-(B,OC) reduction kernel (one program per (B,OC), loop over BLOCK_SP tiles internally) so no atomics are needed.\n- After fixing correctness, sweep `BLOCK_SP` \u2208 {256, 512, 1024, 2048} with `num_warps` \u2208 {4, 8} \u2014 S = 13\u00b729\u00b729 = 10933 per (B,OC), so a single program per (B,OC) looping over ~11 tiles of 1024 keeps stats in registers and avoids atomics entirely.\n- Bake `D,H,W,OD,OH,OW` as `tl.constexpr` (they are compile-time-known for this fixed shape) so the inner `od/oh/ow` divmods become constants and the address arithmetic collapses.",
+    "large_guidance": "- Restructure as a single fused kernel: one program per `(B, OC)`, looping over output spatial tiles internally. Accumulate conv output to a small scratch (or recompute), apply hardswish, accumulate sum/sumsq in registers, then write conv_out and the stats \u2014 eliminates the atomic_add race and removes one global-memory round-trip on stats.\n- Implement conv3d as an im2col-style GEMM: tile `(B*OD*OH*OW)` along M and `OC` along N with K = `IC*KD*KH*KW = 192`. With OC=16 this is small; alternatively assign one program per `(B, OD*OH*OW tile)` computing all 16 OC at once via a `[BLOCK_SP, OC]` accumulator \u2014 this amortizes the input gather across all output channels (16\u00d7 reuse) which the current per-OC kernel misses entirely. This is likely the single biggest win.\n- Fuse the GroupNorm finalize into the same kernel by having each program emit per-channel partial (sum,sumsq) to a small `[B, OC]` buffer with no atomics (one writer per (B,OC)), then a tiny second kernel does the group reduction and mean output \u2014 keeps the hot path atomic-free and the tail trivial.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 28,
+    "global_best_node_id": 12,
+    "global_best_score": [
+        1,
+        1,
+        0.8509946528898934
+    ]
+}

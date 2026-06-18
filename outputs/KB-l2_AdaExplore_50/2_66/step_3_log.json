@@ -1,0 +1,27 @@
+{
+    "node_id": 3,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM is M=128, N=16384, K=16384. With BLOCK_M=32/64, there are only 2-4 M-tiles but 64-128 N-tiles, giving poor SM occupancy on 4090 (128 SMs). Add a split-K dimension to the autotune (e.g., SPLIT_K=2/4/8) with atomic accumulation, or add larger BLOCK_K (64, 128) configs and num_stages=4 to better overlap loads on the long K dimension.\n- Add a GROUP_M swizzle (group_size_m=8) to improve L2 reuse of the weight tiles across the few M-tiles, and add num_warps=4 variants with BLOCK_M=128/BLOCK_N=64 since N is huge and M is tiny.\n- For softmax over 16384 cols, increase BLOCK_SIZE to 2048 or 4096 with num_warps=8 and num_stages=2; the 3-pass design re-reads input 3x \u2014 fuse into a 2-pass online-softmax (running max+sum) to halve global memory traffic on the 128\u00d716384 tensor.",
+    "large_guidance": "- The dominant cost is the 128\u00d716384\u00d716384 matmul (~68 GFLOPs but heavily memory-bound on weight: 1GB read). Redesign as a **split-K GEMM** with one program per (M_tile, N_tile, K_split) and atomic-add into the output, then a separate fused bias+softmax pass. With M=128, a single (BLOCK_M=128) covers all rows, freeing the grid to scale across N and K splits \u2014 this can easily 4-8\u00d7 the SM utilization vs the current shape.\n- Alternatively, since M=128 is small, treat it as a **tall-skinny GEMV-like kernel**: persistent kernel per N-tile that streams K, with BLOCK_M=128 fixed, BLOCK_N=64, BLOCK_K=64-128, num_stages=4. Fuse bias add into the epilogue and write directly to a buffer consumed by softmax.\n- Consider fusing **bias + softmax** into the GEMM epilogue when the full N row can be tiled within one program (it can't here at N=16384), or alternatively build a **two-kernel pipeline** where the GEMM writes fp16/bf16 (if the test tolerates) to halve softmax bandwidth. At minimum, fuse bias into the matmul (already done) and rewrite softmax as a single-pass online algorithm with vectorized 4-element loads.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 4,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

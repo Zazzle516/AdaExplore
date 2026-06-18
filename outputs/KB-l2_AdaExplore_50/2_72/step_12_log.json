@@ -1,0 +1,29 @@
+{
+    "node_id": 12,
+    "parent_node_id": 11,
+    "context_node_ids": [
+        11
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.41442114926117984,
+    "max_reward": 0.41442114926117984,
+    "avg_reward": 0.41442114926117984,
+    "score": [
+        1,
+        1,
+        0.21897448140473333
+    ],
+    "small_guidance": "- The current kernel iterates a 4\u00d74\u00d74 output tile per program with fully static-ranged loops; this serializes too much work per program and limits occupancy. Reduce the per-program tile to 2\u00d72\u00d72 (or 1\u00d71\u00d71) and launch more programs so the GPU has more parallel blocks. Keep BLOCK_OC=16 (matches OC=16) and try num_warps=4, num_stages=2/3.\n- Hoist the input load out of the OC inner reduction: for each (n, ic, id_, ih, iw) load `x_val` once into a scalar and broadcast against the `w_val[BLOCK_OC]` vector \u2014 currently `tl.load(x_ptr + x_off)` is scalar so that's fine, but ensure weight loads are coalesced by laying weight as `[KD,KH,KW,IC,OC]` (or precompute `w_packed`) so the BLOCK_OC dim is the contiguous one. This requires a one-time `weight.permute().contiguous()` in init/eval-path.\n- Add `@triton.autotune` over `{(BLOCK_OC, TILE_D, TILE_H, TILE_W, num_warps, num_stages)} = {(16,1,1,1,4,2),(16,2,2,2,4,2),(16,2,2,2,8,3),(16,4,4,4,2,2)}` keyed on `(OC, POD*POH*POW)`.",
+    "large_guidance": "- Rewrite as a scatter-add ConvTranspose3d: one program per `(N, IC tile, ID\u00b7IH\u00b7IW tile)`; load `x[n,ic,id,ih,iw]` once, compute the outer product with `weight[ic, :, :, :, :]` over OC\u00d7KD\u00d7KH\u00d7KW, and `tl.atomic_add` into the output grid at `(od=id*SD - PD + kd, ...)`. This matches the natural data flow of transposed conv and avoids the awkward divisibility checks of the current gather formulation, while exposing far more parallelism (N\u00b7IC\u00b7ID\u00b7IH\u00b7IW = 64\u00b73\u00b732\u00b3 \u2248 6.3M work items).\n- Alternatively, fuse the two avg_pool3d(k=2) stages into a single 4\u00d74\u00d74 average *after* writing the full conv-transpose output into a scratch buffer via a fast scatter kernel \u2014 i.e. split into two kernels (scatter-add conv-transpose with BN-fused epilogue, then a small 4\u00d74\u00d74 pool kernel). The single-kernel fusion currently redoes the conv work for every overlapping output position, which is fine here (no overlap with stride=2, k=3) but the heavy static_range nesting (`4\u00b74\u00b74\u00b73\u00b73\u00b73\u00b73 = 5184` unrolled iters) bloats the compiled kernel and kills instruction cache.\n- Use channels-last (NDHWC) layout for both input and output so the IC and OC reductions/broadcasts are contiguous; pre-permute weight to `[KD,KH,KW,IC,OC]` in `__init__` (still a full conv, just reordered) so the GEMM-like inner loop has coalesced loads on the OC axis.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 13,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        0.36042383585251137
+    ]
+}

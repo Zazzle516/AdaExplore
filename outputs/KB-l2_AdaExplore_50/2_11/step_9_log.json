@@ -1,0 +1,29 @@
+{
+    "node_id": 9,
+    "parent_node_id": 7,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.47238764626069674,
+    "max_reward": 0.47238764626069674,
+    "avg_reward": 0.47238764626069674,
+    "score": [
+        1,
+        1,
+        0.6971980816507477
+    ],
+    "small_guidance": "- Switch the conv-transpose kernel to channels-last layout (N, OH, OW, OC) and tile over (OC, spatial) with `BLOCK_OC=64, BLOCK_S=128` plus an autotune sweep over {32/64/128} \u00d7 {64/128/256} with num_warps\u2208{4,8}, num_stages\u2208{2,3}; current 32\u00d764 underutilizes the 4090's SMs at N=512, OC=128, S\u2248784.\n- Hoist the IC loop inner-most and load weight tiles once per (kh,kw) across all OC via `tl.load` of a [BLOCK_OC] vector then reuse; precompute `ih*IW` outside the kw loop to cut index arithmetic.\n- For the fused maxpool+GN kernel, choose BLOCK as the next-pow2 of `pool_size` (so the per-channel reduction is a single pass, avoiding the two-trip loop), and use one program per (N, group) with `num_warps=8` since GROUP_SIZE = 16 * 196 = 3136.",
+    "large_guidance": "- Rewrite the transposed conv as an im2col-style GEMM: with stride=1 it's mathematically a regular conv of the input against the flipped kernel with padding `KH-1-PAD`. Treat it as a tiled GEMM where K = IC*KH*KW and M = OC, N = OH*OW per batch; use `BLOCK_M=64, BLOCK_N=128, BLOCK_K=32` with implicit im2col indexing in the K-loop. This replaces the current triple nested IC/KH/KW loop (no tl.dot, no tensor cores) with a real MMA pipeline.\n- Fuse the entire pipeline (conv-transpose \u2192 BN-fold \u2192 tanh \u2192 2\u00d72 maxpool \u2192 GroupNorm) into two kernels: (1) GEMM-style conv emitting directly into pooled+tanh'd output of shape [N, OC, OH/2, OW/2] by having each program own a 2\u00d72 output-spatial tile and reducing the 4 pre-pool activations to a max in-register before storing; (2) a GroupNorm-only kernel over the already-pooled tensor. This eliminates the full unpooled intermediate (4\u00d7 memory).\n- Use channels-last storage end-to-end so the GN reduction axis (C within group \u00d7 pooled spatial) is contiguous, and stage the conv accumulator in tensor-core fp16/bf16 with fp32 accumulate if precision allows.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 10,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.6994814814814816
+    ]
+}

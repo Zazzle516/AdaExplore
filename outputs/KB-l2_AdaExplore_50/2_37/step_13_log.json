@@ -1,0 +1,29 @@
+{
+    "node_id": 13,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing (avg diff ~9e-5, max ~1.6e-3) likely because GroupNorm uses biased variance with `1/CG`, but the GN affine is applied per-channel \u2014 verify weight/bias indexing: `weight_ptr + group*CG + offs` is correct only if affine is per-channel of size C. Also confirm `eps` is passed as fp32 (Python float into a non-constexpr arg can become fp64/scalar mismatch); make `eps` a `tl.constexpr` or cast `eps` inside kernel. The max diff at 1.6e-3 vs 5e-2 tol suggests it should pass \u2014 check that `gn_weight/gn_bias` were truly cloned from a freshly-constructed GroupNorm with same shape semantics.\n- Add a `tl.constexpr CG_CONST` (or pass CG as constexpr) so the divisor and bounds are compile-time; this also enables avoiding the runtime `CG.to(tl.float32)` cast.\n- Store output in original dtype (`y.to(X.dtype.element_ty)`) instead of forcing fp32 store; ensure `Y_ptr` dtype matches.",
+    "large_guidance": "- Fuse the GroupNorm directly into the GEMM epilogue is hard due to cross-tile reduction, but consider a two-stage persistent design: GEMM writes tiles in `channels_last`-friendly layout where each row's groups are contiguous, then a single persistent GN kernel per row uses one program with `BLOCK_C = out_features` (4096) processed in chunks, computing all group stats via segmented reduction \u2014 saves one full read of the activation by keeping it in L2.\n- Alternative: do GEMM tile-by-tile with `BLOCK_N = CG` (=64) aligned to group boundary, accumulate per-group sum and sum-of-squares into a small workspace via `atomic_add`, then a tiny second kernel normalizes. This avoids the separate full-row reload for stats.\n- For M=32768, N=4096, K=1024, tune toward `BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, num_warps=4, num_stages=4` and ensure weight is pre-transposed once in `__init__` to a contiguous (K,N) buffer rather than relying on strided B loads through `W.T`.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 14,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

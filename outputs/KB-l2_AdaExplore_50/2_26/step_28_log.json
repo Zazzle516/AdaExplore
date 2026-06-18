@@ -1,0 +1,29 @@
+{
+    "node_id": 28,
+    "parent_node_id": 26,
+    "context_node_ids": [
+        19
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4051692806550879,
+    "max_reward": 0.4051692806550879,
+    "avg_reward": 0.4051692806550879,
+    "score": [
+        1,
+        1,
+        0.14264656540447504
+    ],
+    "small_guidance": "- Add a `triton.autotune` over `BLOCK_OC \u2208 {32, 64}`, `BLOCK_SP \u2208 {32, 64, 128}`, `IC_BLOCK \u2208 {16, 32}` with `num_warps \u2208 {4, 8}` and `num_stages \u2208 {2, 3, 4}`; current fixed 32/64/32 with 4 warps is likely under-utilizing the SM for OC=64.\n- The inner `for ic_start in range(0, IC, IC_BLOCK)` is inside three `tl.static_range` kernel loops \u2014 collapse the IC reduction into a single tl.dot by setting `IC_BLOCK = IC = 32` (one-shot), eliminating the Python-range loop and its redundant masking; the IC dimension is tiny so no tiling is needed.\n- Precompute `pid_n * stride_xn` and `pid_n * stride_on` once outside the kernel loops (already partially done) and hoist `od/oh/ow * stride_o*` outside the `kd/kh/kw` static loops \u2014 currently the add/store address math is fine, but the per-(kd,kh,kw) `id_*stride_xd` recompute can be precomputed as `(od+PADDING)//STRIDE`-relative base + small kd offset.",
+    "large_guidance": "- Flip the strategy from gather to **scatter-add**: launch one program per `(N, IC tile, input-spatial tile)`, compute the `input \u00d7 weight` outer product (`[BLOCK_SP_IN, IC] @ [IC, OC*KD*KH*KW]` reshaped), and scatter-add into the 8 output voxels each input touches. With stride=2/pad=1/k=3, each input contributes to exactly `2*2*2=8` output voxels \u2014 far less arithmetic than the current gather which iterates all 27 kernel positions and masks 19/27 away. This alone should cut FLOPs ~3\u00d7.\n- Fuse the `add_input + hardswish*v` epilogue into a **separate** pointwise kernel run after a scatter-add accumulator pass, OR (preferred) materialize the conv output via atomic_add scatter and then run a tiny epilogue kernel \u2014 this decouples the tile shape of the GEMM from the spatial layout of the elementwise op.\n- Alternatively, implement as **im2col-implicit GEMM with channels-last layout** (`N, OD, OH, OW, OC`), one program per `(N, output-spatial tile, OC tile)`, K-dim = `IC * (#valid kernel taps per output)`. Since the valid-tap pattern depends only on `(od%2, oh%2, ow%2)`, generate 8 specialized kernel variants (or branch on parity) so the inner K loop is fixed-length 1\u00d7IC, 2\u00d7IC, 4\u00d7IC, or 8\u00d7IC with no masking \u2014 coalesced loads + dense tl.dot.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 29,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        0.7818646650943397
+    ]
+}

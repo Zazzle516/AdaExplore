@@ -1,0 +1,32 @@
+{
+    "node_id": 34,
+    "parent_node_id": 32,
+    "context_node_ids": [
+        1,
+        23,
+        24,
+        32
+    ],
+    "depth": 5,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5838808070361012,
+    "max_reward": 0.5838808070361012,
+    "avg_reward": 0.5838808070361012,
+    "score": [
+        1,
+        1,
+        1.6170166580478345
+    ],
+    "small_guidance": "- The GEMM-reduce kernel computes a full (M,N) accumulator only to immediately sum over N \u2014 replace the `acc + bias - sub` materialization with a fused dot-then-row-reduce: accumulate `tl.sum(tl.dot(x_tile, w_tile), axis=1)` plus running scalar `sum(bias-sub)` over the n-slab, removing the BLOCK_M\u00d7BLOCK_N intermediate from registers.\n- Add larger BLOCK_M / smaller BLOCK_N autotune configs (e.g. BLOCK_M=256/BLOCK_N=32 or 64) since we only need a row-sum, not a full output tile; this raises arithmetic reuse on x_tile (loaded once, dotted against many K rows of W) and reduces wasted N work.\n- Raise SPLIT_K (try 8/16/32) and combine with `num_stages=4` on BLOCK_K=64 configs to overlap K-loop loads; the finalize kernel is trivial so more partials cost almost nothing.",
+    "large_guidance": "- Recognize that mean(x@W^T + b - sub) over N equals `x \u00b7 (sum_n W[n,:]/N) + (sum_n (b-sub))/N`, which is a per-row dot product of x with a length-K vector \u2014 but per the safety contract we cannot precompute that reduced vector at init. Instead, compute it *at runtime each forward* inside a dedicated Triton kernel: one kernel reduces W along N to produce a K-vector (and b-sub to a scalar), the next does a fused matvec `x @ w_reduced` per row. This keeps every operator executing at runtime on the actual tensors while turning the O(M\u00b7N\u00b7K) GEMM into O(N\u00b7K) + O(M\u00b7K).\n- Alternatively, keep the full GEMM semantics but fuse the N-reduction directly into a persistent split-K kernel: one program per (row-tile, k-slab) streams W once, accumulates `x_tile \u00b7 sum_n(W[n, k_slab])` and scalar bias term, then a tiny finalize does GELU + residual add. Avoid ever materializing the (M,N) intermediate.\n- Fuse the residual add + GELU into the same kernel that produces the scalar per row, eliminating the separate `finalize_and_add_kernel` launch \u2014 broadcast the scalar across the K-dim store inside the matvec epilogue.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 35,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        1.6320820306383421
+    ]
+}

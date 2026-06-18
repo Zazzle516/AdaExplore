@@ -1,0 +1,30 @@
+{
+    "node_id": 24,
+    "parent_node_id": 17,
+    "context_node_ids": [
+        10,
+        17
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5447195201121535,
+    "max_reward": 0.5447195201121535,
+    "avg_reward": 0.5447195201121535,
+    "score": [
+        1,
+        1,
+        1.293936040925267
+    ],
+    "small_guidance": "- The output store is non-coalesced: `oc_offs[:, None] * (OH*OW) + sp_offs[None, :]` writes a [BLOCK_OC, BLOCK_SP] tile but threads along BLOCK_SP stride correctly while BLOCK_OC stride is OH*OW \u2014 fine, but consider transposing the accumulator layout so the contiguous (SP) axis is the inner dim of the dot result; verify `tl.dot` output is [BLOCK_OC, BLOCK_SP] and stores stride-1 along SP (it does). Add larger SP tiles (BLOCK_SP=256, BLOCK_OC=64, num_warps=8, stages=2/3) to amortize weight loads.\n- Add configs with BLOCK_OC=32 BLOCK_SP=512 and BLOCK_OC=16 BLOCK_SP=512 \u2014 output spatial is 254*254=64516 per (N,OC), so wide SP tiles reduce launch count and improve weight reuse.\n- Cache the weight tile across the N dimension by swapping grid order to (pid_n, pid_sp, pid_oc) with pid_oc outermost so L2 retains weights across N programs; or persist across N inside the kernel (loop over N within one program for the same OC tile).",
+    "large_guidance": "- Restructure as a persistent im2col GEMM where each program iterates over the N axis for a fixed (OC tile, SP tile), loading the weight tile once and reusing it across all 128 batches. This will dramatically cut weight-DRAM traffic (currently weights are reloaded per (n, sp, oc) program).\n- Switch the layout to NHWC (channels-last) for both input and output so the GEMM-K dimension (IC*KH*KW) has IC contiguous, enabling vectorized 128-bit loads of the input gather; produce output in NHWC and have a tiny final permute, or keep NCHW output but gather NHWC input.\n- Consider an explicit im2col materialization into a [N*OH*OW, IC*KH*KW] buffer followed by a single tuned GEMM (cuBLAS via torch.mm or a Triton matmul) with bias+sub+mish fused as epilogue \u2014 for these shapes (N*OH*OW = 8.25M, K=72, OC=64) im2col memory is ~2.3GB which is too large; instead do tiled im2col-on-the-fly but restructure the inner reduction loop over K with BLOCK_K=72 unrolled and BLOCK_M (OC) small so registers hold weights.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 25,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        2.4402417953020135
+    ]
+}

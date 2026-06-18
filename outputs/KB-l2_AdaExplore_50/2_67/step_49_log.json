@@ -1,0 +1,30 @@
+{
+    "node_id": 49,
+    "parent_node_id": 48,
+    "context_node_ids": [
+        7,
+        48
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness bug: atomic_add accumulates into `out` but each pixel-program independently masks tail pixels; the issue is more likely that with NUM_PIX_PROGS>1 and float32 atomics there are race-condition reordering issues only affecting numerical noise \u2014 but max diff 23 indicates a real bug. Likely cause: the kernel computes `bias + gelu + sum` once per tile, but when multiple programs cover the same OC, each adds bias contribution; bias is folded into `acc` before sum, so the same bias gets atomic-added once per pixel-tile. Fix: only add bias on one program (e.g. pid_p==0) by precomputing `sum(gelu(conv+bias))` correctly \u2014 actually bias is added per-pixel inside acc, which is correct. The real issue: `acc_sum` accumulates `gelu` per tile then `result = acc_sum * inv_npix` is atomic-added \u2014 different programs handle disjoint tile_idx so this should be correct. But each program does `result * inv_npix` independently \u2014 that's fine. The bug is likely `acc_sum * inv_npix` then atomic_add: works. Recheck \u2014 actually each program multiplies its partial sum by inv_npix then atomic-adds; total = (sum of partials)*inv_npix = correct. So bug must be elsewhere: switch NUM_PIX_PROGS=1 to verify, and start tuning from there.\n- Set NUM_PIX_PROGS=1 to eliminate atomics (N=128, OC_tiles=1 \u2192 128 programs is enough for 4090's 128 SMs). This both fixes potential ordering/atomic precision issues and removes the zero-init cost.\n- With K_CONST = 8*3*3 = 72, K_PAD=128 wastes 56/128 of the K dimension. Set K_PAD=72 padded only to next multiple of 16 (=80) or accept 128 but ensure mask_k is tight; better: use BLOCK_K=K_PAD as the dot reduction so wasted lanes are zero \u2014 already done via mask. Add configs with BLOCK_PIX=512 and BLOCK_OC=64 to use full OC in one tile.",
+    "large_guidance": "- Restructure as a two-pass design: (1) a conv+GELU+partial-sum kernel that writes per-(N,OC) sums directly without atomics \u2014 one program per (N, OC_tile), iterating all output pixels internally and accumulating `gelu(conv+bias)` into a `(BLOCK_OC,)` register. With N*ceil(OC/64)=128 programs this saturates the 4090's 128 SMs perfectly; finish by multiplying by `inv_npix` and storing. No atomics, no race conditions, no zero-init.\n- Use implicit im2col with the K dimension (IC*KH*KW=72) as the GEMM-K reduction inside `tl.dot`. Pad K to 128 with masked loads, and process output pixels in tiles of BLOCK_PIX=128 or 256. Bias is added once to the per-tile `acc` before GELU; the per-program scalar accumulator over pixels is then exact.\n- Consider channels-last input layout (`x.permute(0,2,3,1).contiguous()`) so the K-reduction (which strides over IC) becomes contiguous loads, materially improving the im2col gather. Pair with a small autotune grid on (BLOCK_OC \u2208 {32,64}, BLOCK_PIX \u2208 {128,256,512}, num_warps \u2208 {4,8}).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 50,
+    "global_best_node_id": 7,
+    "global_best_score": [
+        1,
+        1,
+        3.185307289749724
+    ]
+}

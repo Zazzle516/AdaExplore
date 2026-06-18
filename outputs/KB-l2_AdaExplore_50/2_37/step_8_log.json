@@ -1,0 +1,27 @@
+{
+    "node_id": 8,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing with small (~1e-3) diffs \u2014 the group norm reads from `out` while `out2` is written; but the real bug is likely the GEMM's W layout: weight is (N, K) with `stride_wn=K, stride_wk=1`, so `w_ptrs = w_ptr + offs_n*stride_wn + offs_k*stride_wk` puts K on the inner dim of the [BLOCK_K, BLOCK_N] tile, which makes `tl.dot` see a transposed B. Recompute w_ptrs so the loaded tile matches (K, N) ordering, or load (N, K) tile and use `tl.dot(x, w.trans())`. Verify with a tight tolerance.\n- Add `tl.max_contiguous`/`tl.multiple_of` hints on offs_m/offs_n and consider `GROUP_M=8` block swizzle for L2 reuse across the 32768\u00d74096 output.\n- Expand autotune with `BLOCK_K=64` configs and `num_stages=4` for large-K (K=1024) overlap; current best may be 128\u00d7128\u00d764 nw=8 ns=4.",
+    "large_guidance": "- Keep the two-kernel structure (fused GEMM+bias+Swish+bias, then GroupNorm) \u2014 it is the right fusion boundary since GEMM output (32768\u00d74096=128 MiB) must materialize before the cross-channel group reduction. Don't try to fuse GN into the GEMM epilogue.\n- For GroupNorm with GS=64 (4096/64), use one program per (row, group) with `BLOCK_GS=64`, `num_warps=2`, persistent in registers \u2014 and load gamma/beta once per group via `pid_g`. Consider processing multiple rows per program to amortize gamma/beta loads.\n- The GEMM (M=32768, N=4096, K=1024) is the dominant cost (~275 GFLOP). Target a well-tuned tiled GEMM with BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, GROUP_M=8, num_warps=8, num_stages=3-4, ensuring B is loaded with K on the outer (contiguous-N inner) for coalesced tl.dot inputs.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 9,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

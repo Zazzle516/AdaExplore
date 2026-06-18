@@ -1,0 +1,29 @@
+{
+    "node_id": 46,
+    "parent_node_id": 42,
+    "context_node_ids": [
+        45
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4485460795227182,
+    "max_reward": 0.4485460795227182,
+    "avg_reward": 0.4485460795227182,
+    "score": [
+        1,
+        1,
+        0.500505156062425
+    ],
+    "small_guidance": "- The GEMM kernel reduces over N inside the same kernel, but uses tile sizes that are too small for an 8192\u00d78192\u00d78192 problem. Add larger configs: BLOCK_M=128/BLOCK_N=256/BLOCK_K=32 num_warps=8 num_stages=3, and BLOCK_M=128/BLOCK_N=128/BLOCK_K=64 num_warps=8 num_stages=4. Drop the tiny BLOCK_M=16/32 configs \u2014 they leave SMs underutilized.\n- Add a GROUP_M block-swizzle (group size 8) over the M tiles to improve L2 reuse of the Wt columns across adjacent row groups; even though there's only one M-grid dimension here, splitting the grid to (cdiv(M,BLOCK_M), num_n_splits) with an atomic-add to RowSum can let multiple SMs cooperate per row tile and dramatically increase occupancy when M is small relative to N\u00d7K.\n- The inner K-loop's tail branch reloads with a stronger mask every iteration; hoist `k_remaining` check out by peeling the last K tile, and make BLOCK_K=64 the default (K=8192 is divisible, no masking needed at all).",
+    "large_guidance": "- The work is fundamentally `mean(X@W^T + b - sub)` per row, which equals `(X @ colsum(W^T)) / N + (sum(b)-sum(sub))/N` \u2014 but per the safety contract we must NOT precompute colsum(W). Instead, restructure as a split-K GEMM that writes partial row-sums: grid = (cdiv(M,BLOCK_M), SPLIT_N), each program computes its BLOCK_M\u00d7BLOCK_N tile fully (X@Wt + bias - sub), reduces along N within the tile, and atomically adds to RowSum[BLOCK_M]. This removes the serial N-loop bottleneck and uses all 128 SMs.\n- Alternatively, since logsumexp over a single element is identity, the entire pipeline collapses to: `out[m,k] = x[m,k] + gelu(mean_n(x@Wt + b - sub))`. A persistent split-K kernel that produces RowSum, followed by the existing fused epilogue, is the right structure \u2014 but the GEMM tiles must be much larger (128\u00d7128 or 128\u00d7256) to hit tensor-core throughput on the 4090.\n- Consider keeping Wt in the original (N,K) layout and using `tl.dot(x, w.T)` via a transposed-load pattern, or pre-transposing once at init (already done). Ensure Wt is allocated once and reused \u2014 the cache logic looks fine, just confirm it isn't re-running per forward.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 47,
+    "global_best_node_id": 36,
+    "global_best_score": [
+        1,
+        1,
+        1.66307092995426
+    ]
+}

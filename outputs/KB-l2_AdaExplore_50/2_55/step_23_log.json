@@ -1,0 +1,30 @@
+{
+    "node_id": 23,
+    "parent_node_id": 20,
+    "context_node_ids": [
+        17,
+        20
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The matmul is M=128, N=32768, K=32768 \u2014 very skinny in M. Add autotune configs with BLOCK_M=16/32 and BLOCK_N=256, BLOCK_K=64/128, num_warps=8, num_stages=4 to better saturate the K loop. Drop the BLOCK_M=128 configs (only 1 m-tile possible).\n- Use `tl.dot(a, b, out_dtype=tl.float32)` and ensure both operands are loaded as fp16/bf16 if acceptable; otherwise at minimum, drop the K-tail mask by padding/asserting IN_FEATURES % BLOCK_K == 0 (it is, 32768 divisible) \u2014 replace masked loads in the K loop with unmasked loads to cut load overhead.\n- For stage2, N_GROUPS=16384 is small \u2014 use a single-block persistent reduction (BLOCK=16384, num_warps=8, stages=2) with one program per batch row, no outer loop.",
+    "large_guidance": "- Fuse all three stages into a single kernel: one program per batch row (or small M-tile) that streams the K dimension and, for each BLOCK_N tile of output, computes matmul+bias, applies max-pool of size 2, sums into a per-row scalar accumulator, and finally scales and stores. This avoids materializing the [B, OUT_FEATURES] or even the [B, N_GROUPS] intermediate, turning a 4GB+ write/read into register-resident accumulation.\n- Since M=128 is tiny, consider a split-K / split-N strategy: grid = (B, num_n_splits), each program handles one row \u00d7 a chunk of N, computes partial pooled-sum, then a tiny final kernel sums the splits and scales. This exposes far more parallelism than 128\u00d7(N/BLOCK_N) tiles when BLOCK_N is large.\n- Load the weight in bf16/fp16 (cast once at init) to halve K-loop bandwidth; accumulate in fp32. With K=N=32768, this kernel is bandwidth-bound on weight reads, so reducing weight footprint is the highest-leverage change.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 24,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

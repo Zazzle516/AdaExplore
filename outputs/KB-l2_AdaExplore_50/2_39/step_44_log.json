@@ -1,0 +1,29 @@
+{
+    "node_id": 44,
+    "parent_node_id": 9,
+    "context_node_ids": [
+        13
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.480990819462228,
+    "max_reward": 0.480990819462228,
+    "avg_reward": 0.480990819462228,
+    "score": [
+        1,
+        1,
+        0.7681742605633803
+    ],
+    "small_guidance": "- The matmul (M=N=K=4096) dominates runtime; replace `torch.addmm` with a custom autotuned Triton GEMM that fuses the bias add and the per-column `scale * gamma * invstd` epilogue plus `beta - mean*invstd*gamma` shift directly into the store. This eliminates the separate apply kernel pass over a 16384\u00d74096 tensor.\n- For the stats kernel, switch to `BLOCK_M=128, BLOCK_N=128, num_warps=8, num_stages=3` and use `tl.dot`-friendly 2D loads, or better: do a two-pass reduction where pass 1 writes per-block partials to a `(num_blocks_m, N)` buffer and pass 2 reduces along M with high parallelism \u2014 current `BLOCK_N=64` only yields 64 programs leaving most SMs idle.\n- Add `triton.autotune` configs over `(BLOCK_M, BLOCK_N, num_warps, num_stages)` for both kernels keyed on `(M, N)` so the 4096\u00d74096 shape gets a tuned config rather than hard-coded values.",
+    "large_guidance": "- Rewrite as a tiled GEMM (one program per `(BM, BN)` output tile, looping over K with `BLOCK_K=32 or 64`, `BLOCK_M=128, BLOCK_N=128`, `GROUP_M=8`, `num_warps=8, num_stages=3-4`) using `tl.dot`. The Linear is the heavy op (~550 GFLOPs vs. ~270MB epilogue) and currently runs as cuBLAS addmm followed by two extra full-tensor passes \u2014 a fused GEMM + scale + BN-apply epilogue removes both extra passes.\n- Two-stage flow: (1) custom GEMM that writes `y = (x @ W.T + b) * scale` and accumulates per-column `sum` and `sumsq` via `tl.atomic_add` from each tile (or via a per-tile partial buffer reduced afterward) so stats are produced for free during the GEMM; (2) a single elementwise-apply kernel for normalization. This collapses three passes over the 64M-element activation into one.\n- At eval (`self.training==False`) the BN reduces to a pure affine \u2014 fold `scale * gamma * invstd` and `beta - mean*invstd*gamma` into the GEMM's bias/output-scale epilogue and skip the stats kernel entirely; only enter the reduction path when `training=True`.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 45,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.7791481785714286
+    ]
+}

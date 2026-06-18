@@ -1,0 +1,29 @@
+{
+    "node_id": 41,
+    "parent_node_id": 2,
+    "context_node_ids": [
+        2
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5483289145408952,
+    "max_reward": 0.5483289145408952,
+    "avg_reward": 0.5483289145408952,
+    "score": [
+        1,
+        1,
+        1.3237135449623851
+    ],
+    "small_guidance": "- The kernel allocates a `[OC, BLOCK_W]=[16, BLOCK_W]` accumulator and loops `IC*KD*KH*KW=81` times loading `[OC]` weights per step; try larger `BLOCK_W` (128, 256) with `num_warps=8` and `num_stages=2-4` to better amortize the weight broadcast and improve memory coalescing on the output writeback.\n- Add a tile over the OH axis as well (e.g. `BLOCK_H`=2 or 4) so each program reuses the same `id_val`/`ih_val` index math and the same loaded weights across multiple output rows \u2014 current grid `(N, OD, OH*ceil(OW/BLOCK_W))` launches `128*31*63*ceil(63/BW)` programs, far more than needed.\n- Expand the autotune grid with `(BLOCK_W \u2208 {64,128,256}) \u00d7 (num_warps \u2208 {4,8}) \u00d7 (num_stages \u2208 {2,3,4})` keyed on `(OD,OH,OW)`; current best is likely BW=64/128 but space is under-sampled.",
+    "large_guidance": "- Switch from the per-output-voxel gather to a scatter-add design: one program per `(N, ID, IH, IW-tile)` reads input once, computes the `input \u00d7 weight` outer product over `(OC, KD*KH*KW)`, and scatters/accumulates into the output. With stride=2 every input voxel contributes to a fixed `KD*KH*KW` pattern of outputs, eliminating the `% STRIDE == 0` masking waste (only ~1/8 of gather lanes are valid). Then run a second small kernel for LSE+HardSwish+sub+clamp over OC.\n- Alternatively, materialize the ConvTranspose3d output via a single GEMM: reshape input to `[N*ID*IH*IW, IC]`, weight to `[IC, OC*KD*KH*KW]`, do a cuBLAS/Triton matmul, then a custom scatter+epilogue kernel that does col2im plus the LSE/HardSwish/sub/clamp fusion in one pass. This trades extra memory for highly-tuned GEMM throughput and removes the inner `IC*OC` loop from the Triton kernel.\n- Fuse the conv-bias add and the LSE numerically-stable two-pass into the scatter epilogue so the `[N,OC,OD,OH,OW]` intermediate is never written to global memory \u2014 only `[N,1,OD,OH,OW]` is stored.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 42,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.3267919485553208
+    ]
+}

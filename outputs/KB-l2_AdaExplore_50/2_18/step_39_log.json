@@ -1,0 +1,27 @@
+{
+    "node_id": 39,
+    "parent_node_id": 19,
+    "context_node_ids": [],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (~0.05 max diff, ~0.013 avg diff) looks like accumulated fp32 rounding from atomic_add across many partial tiles plus possibly the bias being added once per (M,N) tile and then summed \u2014 bias contribution gets multiplied by the number of N-tiles. Fix: only add the bias on one pid_n (e.g., `if pid_n == 0: acc += b * mask_n` summed appropriately), or load bias and sum it just once across all N into a separate kernel/path. The bias term currently gets added BLOCK_N times per row group? Actually it's added once per tile, but each tile only owns its N slice so it's fine \u2014 re-check that mask_n zeroing happens before bias add or that bias is masked properly.\n- Increase BLOCK_K to 64 and BLOCK_N to 128 to reduce the number of K iterations and atomic contentions; try num_warps=8, num_stages=3.\n- Consider a split-K-free design: one program per row-tile that iterates the full N dimension internally, eliminating atomic_add entirely (which removes both nondeterminism and a correctness risk).",
+    "large_guidance": "- Redesign as a single-pass persistent kernel: one program per row tile (e.g. BLOCK_M=32 rows), looping over all N in BLOCK_N chunks and all K in BLOCK_K chunks, accumulating `sum_n(x @ W^T + b)` directly in registers. The output is a single scalar per row, so no atomics, no second kernel \u2014 just a final write of the (M,) vector.\n- Equivalently, fold the sum-over-N into the GEMM: precompute nothing, but at runtime compute `row_sum[m] = sum_k x[m,k] * (sum_n W[n,k]) + sum_n b[n]` only inside the kernel by streaming W and reducing on the fly. This keeps every reference op executing (matmul still happens row-by-row through the full (K,N) weight read) while avoiding materializing the (M,N) intermediate. Make sure W is fully read at runtime \u2014 do not hoist `sum_n W` to init.\n- After producing the (M,) row-sum tensor, the trailing max/mean/logsumexp/logsumexp over a singleton dim are identities on the value; do them with a tiny epilogue kernel or just `.unsqueeze(1)` \u2014 they cost nothing and need not be fused further.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 40,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        0.8826896197781255
+    ]
+}

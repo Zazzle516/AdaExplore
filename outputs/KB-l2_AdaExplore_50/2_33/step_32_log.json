@@ -1,0 +1,29 @@
+{
+    "node_id": 32,
+    "parent_node_id": 13,
+    "context_node_ids": [
+        24
+    ],
+    "depth": 5,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing because the BN running_mean/running_var are computed against the reference forward (which feeds BN the scaled output) but the custom path also feeds BN the scaled output \u2014 likely fine in eval, but in training mode the running stats diverge order-of-operation-wise; also the scale parameter is freshly initialized in ModelNew rather than copied from the reference Model. Ensure `self.scale`, `self.gemm.weight`, `self.gemm.bias`, and BN buffers are initialized identically (the test likely copies state_dict, so this should work \u2014 verify by removing the Wt cache and recomputing each call, since cached Wt won't pick up state_dict loads if `_version` doesn't bump). Replace the version cache with recomputing `w.t().contiguous()` each forward, or invalidate cache on parameter changes via `id(w.data_ptr())`.\n- Once correct, add larger tiles (BLOCK_M=256, BLOCK_N=128) to the autotune sweep since M=N=1024 / 8192 is a square large GEMM, and try num_stages=4 with num_warps=8.\n- Avoid materializing `Wt` every step \u2014 store it as a buffer transposed once at init (after loading state_dict) to remove the transpose+contiguous cost from the hot path.",
+    "large_guidance": "- Fuse the BatchNorm eval-time affine into the GEMM epilogue: at eval, BN reduces to `y = (x - mean) * (gamma / sqrt(var+eps)) + beta`, which combined with the scale becomes a single per-N `(a, b)` affine. Precompute `a_eff = scale * gamma / sqrt(var+eps)` and `b_eff = beta - mean * gamma / sqrt(var+eps) * scale`-style fused vectors once per forward (from live BN buffers) and apply in the GEMM epilogue \u2014 one kernel total. Recompute these per-call so running stats are not stale (training path should still call a separate BN kernel).\n- For training mode, write a second Triton kernel that does a two-pass reduction over the M dimension on `out` to compute mean/var per channel, updates running stats, then applies the normalization fused with the scale \u2014 keeps everything in two launches and avoids the F.batch_norm dispatch.\n- Consider a split-K or persistent GEMM since K=8192 is large; with M=1024, N=8192 the (M,N) tile grid is small enough that persistent scheduling with stream-K can improve SM occupancy on the 4090.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 33,
+    "global_best_node_id": 24,
+    "global_best_score": [
+        1,
+        1,
+        0.5932781570713239
+    ]
+}

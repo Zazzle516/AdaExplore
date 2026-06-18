@@ -1,0 +1,27 @@
+{
+    "node_id": 11,
+    "parent_node_id": 2,
+    "context_node_ids": [],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The GN reduction uses `tl.sum(x2, axis=1) / CPG_C` where CPG_C=16; this is fine, but correctness fails (max diff ~0.005). Likely cause: `tl.reshape` of a 1D tensor of size BLOCK_N=8192 into (512,16) may not preserve the intended (group, channel-in-group) layout, or the affine `w`/`b` is applied per element correctly but the reduction grouping is off. Verify by computing mean/var via a 2D load: load x as `tl.load(row_ptr + g_idx[:,None]*CPG + c_idx[None,:])` instead of reshape.\n- Also ensure output dtype matches reference (float32 is fine) and that `gn.weight`/`gn.bias` are initialized to default values (ones/zeros) \u2014 they are, so the affine path is correct only if normed is right.\n- Once correct, try `num_warps=16` for the GN row kernel since BLOCK_N=8192 is large, and consider splitting into two passes if a single program's register pressure is too high.",
+    "large_guidance": "- Replace the `tl.reshape`-based group reduction with an explicit 2D index scheme: launch grid `(M, num_groups)`, each program handles one (row, group) of CPG=16 elements, computes mean/invstd, then applies affine + leaky_relu + double in the same kernel writing back to that group's slice. This avoids the fragile reshape and reduces per-program work.\n- Alternatively, fuse GN+LeakyReLU+double into the GEMM epilogue is hard because GN needs a reduction over the output row first. Instead, write the GEMM output to a scratch buffer and have a dedicated `(M, G)`-grid GN kernel; CPG=16 fits easily in one warp's lane group.\n- For the GEMM, add `GROUP_M=8` block swizzle and try `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4` since M=N=K=8192 is large and L2 reuse matters.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 12,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

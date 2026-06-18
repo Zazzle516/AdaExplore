@@ -1,0 +1,29 @@
+{
+    "node_id": 32,
+    "parent_node_id": 22,
+    "context_node_ids": [
+        22
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4263470142989201,
+    "max_reward": 0.4263470142989201,
+    "avg_reward": 0.4263470142989201,
+    "score": [
+        1,
+        1,
+        0.31736286796609037
+    ],
+    "small_guidance": "- The kernel is severely underutilized: BLOCK_S=4 with num_warps=2 launches ~1M tiny programs, and the inner `tl.static_range(BLOCK_S)` with an `if idx < total` serializes spatial work per program. Increase BLOCK_S to 64-128 and process each spatial element as a vectorized program (one pid per output element, or vectorize over multiple outputs with 2D tiles), and bump num_warps to 4 or 8.\n- Replace the `x.contiguous()` after conv with a channels-last-aware kernel: index input as NDHWC so the C-dimension load (BLOCK_C=64) is contiguous and fully coalesces; this removes a full tensor copy (large fraction of the 21ms).\n- Add `triton.autotune` over `{BLOCK_S: 32/64/128, num_warps: 2/4/8, num_stages: 2/3}` keyed on (N, Do, Ho, Wo).",
+    "large_guidance": "- The conv now dominates: at N=4, C_out=64, 32\u00d7128\u00d7128 with k=3, cuDNN on a 4090 is ~3-4ms; the remaining ~17ms is the channels_last\u2192contiguous copy plus the pool/LSE/ReLU kernel. Replace the `nn.Conv3d` with a custom Triton implicit-GEMM conv3d kernel (one program per (N, OC_tile, output-spatial-tile), GEMM-K over IC*kD*kH*kW), then fuse the 2\u00d72\u00d72 maxpool + LSE-over-C + ReLU directly into the conv epilogue so the post-conv tensor is never written to DRAM.\n- If a fully fused conv+pool+LSE is too ambitious, at minimum keep activations in channels-last throughout and write the pool/LSE/ReLU kernel to consume NDHWC directly (no contiguous copy). One program per output (n, do, ho, wo) loading the 8 spatial positions \u00d7 C channels with BLOCK_C covering all 64 channels in one vector.\n- Persist the LSE reduction in registers: since C=64 fits in a single BLOCK_C=64 vector, do the 8 window loads \u2192 elementwise max into a [BLOCK_C] register tile \u2192 single tl.max + tl.exp + tl.sum + tl.log + ReLU, with no inner static_range over BLOCK_S \u2014 use one pid per output element and let the grid be (N*Do*Ho*Wo,) with num_warps=4.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 33,
+    "global_best_node_id": 27,
+    "global_best_score": [
+        1,
+        1,
+        1.1936464374482187
+    ]
+}

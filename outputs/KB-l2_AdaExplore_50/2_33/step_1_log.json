@@ -1,0 +1,27 @@
+{
+    "node_id": 1,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure is likely from BN running stats: during training, BN normalizes with batch stats but the reference's `bn.running_mean/var` update uses the same `momentum` semantics \u2014 verify EMA formula matches `running = (1-momentum)*running + momentum*batch_stat` (looks correct, but `unbiased_var` is used for running_var which matches PyTorch). However, the avg diff ~3.5e-4 across all trials suggests a small systematic numerical error \u2014 likely the BN apply uses biased var (correct) but the scale parameter is applied before BN whose stats should reflect post-scale values; double-check that `bn_stats_kernel` reads `y` (post-scale) \u2014 it does. The most likely bug: `bn_stats_kernel` uses `tl.zeros((), dtype=tl.float32)` scalar accumulators, which may not accumulate correctly across iterations on some Triton versions. Use `tl.zeros([1], dtype=tl.float32)` then index, or accumulate in a vector and final-reduce.\n- Tighten autotune: at M=N=K=8192, prefer `BLOCK_M=128, BLOCK_N=256, BLOCK_K=32, num_warps=8, num_stages=4` and add `GROUP_M=8` swizzle for L2 reuse.\n- Fuse BN apply into the GEMM epilogue at eval time (eval path can fold scale\u00b7gamma/sqrt(var+eps) into a single per-N vector and shift, eliminating a second pass over the MxN tensor).",
+    "large_guidance": "- Redesign as two kernels only: (1) tiled GEMM with `tl.dot` (BLOCK_M=128, BLOCK_N=256, BLOCK_K=32, GROUP_M=8) that writes `y = (x@W^T + b) * scale` to a scratch buffer AND simultaneously accumulates per-column partial sums and sum-of-squares via `tl.atomic_add` into N-sized buffers (one atomic per tile column, cheap at this size); (2) a fused BN-apply kernel that finalizes mean/var from the partials, updates running stats, and writes the normalized output. This collapses the current three-pass design (GEMM, stats reduction, apply) into effectively two passes over the MxN tensor.\n- Alternatively, do a column-major reduction kernel for stats: launch one program per N column with the M dimension tiled in chunks of 1024-4096 and `num_warps=4`; load contiguously along M by storing `y` in column-major (or transposing the tile), so the stats reduction is a coalesced contiguous load instead of strided gather.\n- For eval mode, fuse the entire BN affine into the GEMM epilogue (precompute `combined_scale = scale*gamma/sqrt(var+eps)` and `combined_shift = beta - running_mean*gamma/sqrt(var+eps)` per forward) so the eval path is a single kernel launch.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 2,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

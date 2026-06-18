@@ -1,0 +1,27 @@
+{
+    "node_id": 40,
+    "parent_node_id": 39,
+    "context_node_ids": [],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing with avg diff ~3e-4: this looks like the kernel is loading out-of-bounds input addresses (ih/iw not bounds-checked, x_offsets computed with masked-out garbage indices on tail rows). Even though mask=False, the address arithmetic itself uses `n_idx`/`oh_idx`/`ow_idx` from masked `offs_m`, which can produce huge ih/iw. Use `tl.where(m_mask, n_idx, 0)` etc. before computing offsets, and also clamp ih,iw to valid range \u2014 the tail `offs_m` entries can index past `IH*IW` and corrupt loads. Also verify the bias layout: `self.bias` has shape `(out_channels,1,1)` so `view(-1)` is fine, but ensure broadcasting along OC axis matches reference (it does).\n- After fixing correctness, add larger autotune configs `(128,64,32)` and `(64,128,32)` with num_warps=8, and try `BLOCK_K=16` for narrower K to reduce SMEM and allow num_stages=3.\n- Hoist `n_idx*stride_xn + oh_idx*stride_xh + ow_idx*stride_xw` out of the k-loop as a per-row base offset; only `kh*stride_xh + kw*stride_xw + ic*stride_xc` varies with k.",
+    "large_guidance": "- Keep the NHWC im2col-GEMM strategy but restructure the K loop: iterate over `(kh, kw)` as the outer loop and `ic` tiles as the inner `BLOCK_K`. This makes input loads strictly contiguous along the channel axis (perfect coalescing) and removes the integer divmod on K inside the loop. For 3x3 it's just 9 iterations of an IC-tiled GEMM accumulator.\n- Use a 2D output-spatial tile (e.g. `BLOCK_OH\u00d7BLOCK_OW`) rather than flattening M, so that neighboring threads in a tile share input rows and the implicit im2col gather has high reuse across (kh,kw) shifts. This dramatically reduces global load volume vs. the current flattened-M scheme.\n- Write directly into NCHW output (skip the final `permute().contiguous()`), since that copy is non-trivial at 128\u00d7128\u00d7128 spatial. Compute NCHW output offsets inside the kernel epilogue.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 41,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.686288845766129
+    ]
+}

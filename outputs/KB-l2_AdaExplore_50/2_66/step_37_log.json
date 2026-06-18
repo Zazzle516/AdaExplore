@@ -1,0 +1,31 @@
+{
+    "node_id": 37,
+    "parent_node_id": 36,
+    "context_node_ids": [
+        3,
+        34,
+        36
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM is M=128, N=16384, K=16384 \u2014 M is tiny so BLOCK_M=32 or 64 with very wide BLOCK_N (256) and deep BLOCK_K (64-128) is the regime; add configs like {BLOCK_M:64, BLOCK_N:256, BLOCK_K:128, num_warps:8, num_stages:4} and {BLOCK_M:32, BLOCK_N:256, BLOCK_K:128, num_warps:8, num_stages:4} to the autotune list, and drop the BLOCK_M=128 configs (M=128 only has 1-4 row tiles).\n- Softmax row width is 16384 with M=128 rows \u2014 bump BLOCK_SIZE to 8192 or 16384 (single-pass persistent: load whole row into registers/SMEM once, compute max+sum+normalize without re-reading from HBM) and try num_warps=8/16; this removes 2 of the 3 HBM passes over the activation.\n- Cache `w_t` and `bias` on `.cuda()` once in `__init__` (or lazily but only on first call) and avoid the per-forward `.contiguous().cuda()` calls on bias/x; also set `GROUP_M=8` for better L2 reuse across the wide N tiles.",
+    "large_guidance": "- Fuse the softmax into the GEMM epilogue: since N=16384 fits in a single row-resident tile pattern, use a split-K-free, **persistent per-row** kernel where one program handles a full output row \u2014 it streams K in BLOCK_K chunks to compute the full N=16384 row into registers/SMEM (or recomputes in two passes), then does max/sum/normalize and stores. Eliminates the intermediate write+read of the 128\u00d716384 logits tensor.\n- Alternatively, a two-kernel design where kernel-1 is a standard GEMM tile producing partial N tiles, and a second kernel does an online/streaming softmax that overlaps with GEMM via CUDA streams \u2014 but the fused single-pass row-persistent kernel is simpler and removes a full HBM round-trip of 8MB per row.\n- Since dropout is inference-disabled (model.eval at benchmark), the epilogue is just bias+softmax \u2014 design the rewrite assuming `training=False` fast path and keep a fallback for training; this lets the fused kernel skip the dropout mask entirely.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 38,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 37,
+    "parent_node_id": 33,
+    "context_node_ids": [
+        9
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.47806540759709776,
+    "max_reward": 0.47806540759709776,
+    "avg_reward": 0.47806540759709776,
+    "score": [
+        1,
+        1,
+        0.7440396126760563
+    ],
+    "small_guidance": "- The fused pool/LSE/ReLU kernel is fast; the bottleneck is now the Conv3d + the contiguous() conversion. Drop the `x = x.contiguous()` after conv (it's a full NCDHW copy of a 64\u00d732\u00d7128\u00d7128 tensor) and instead make the fused kernel consume channels_last_3d directly by passing `x.stride()` (already general) \u2014 the kernel already uses strided indexing so this should work without code changes beyond removing the copy.\n- Try `BLOCK_W=128, num_warps=8, num_stages=2` and also `BLOCK_W=32, num_warps=2`; with `BLOCK_C=64` the per-program tile is 64\u00d7128 which may exceed register budget \u2014 sweep an autotune config grid.\n- Consider folding the MaxPool 2\u00d72\u00d72 into the conv epilogue is hard, but at least keep output in channels_last and skip the final `.contiguous()` on the conv output.",
+    "large_guidance": "- The Conv3d dominates at this point (fused tail is already efficient). Replace `nn.Conv3d` with a custom Triton im2col-style GEMM kernel: one program per (N, OC tile, output-spatial tile), with the input gather done implicitly via index math. Use channels_last_3d layout so the IC*kD*kH*kW reduction axis is contiguous.\n- Better: fuse the conv with the subsequent 2\u00d72\u00d72 maxpool by having each conv-program produce a 2\u00d72\u00d72 output block per spatial position and reduce-max in registers before storing \u2014 this halves the conv output writes by 8\u00d7, then the LSE/ReLU stage operates on the already-pooled tensor.\n- Even more aggressive: a single mega-kernel that, per output spatial position (Dp,Hp,Wp), computes all OC channels' conv outputs over the 2\u00d72\u00d72 window, max-pools across the window, then reduces LSE across OC and applies ReLU \u2014 eliminating both the conv-output and pool-output tensors entirely. Requires OC=64 to fit in registers (feasible).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 38,
+    "global_best_node_id": 27,
+    "global_best_score": [
+        1,
+        1,
+        1.1936464374482187
+    ]
+}

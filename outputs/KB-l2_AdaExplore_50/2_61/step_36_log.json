@@ -1,0 +1,29 @@
+{
+    "node_id": 36,
+    "parent_node_id": 22,
+    "context_node_ids": [
+        22
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5416056989424078,
+    "max_reward": 0.5416056989424078,
+    "avg_reward": 0.5416056989424078,
+    "score": [
+        1,
+        1,
+        1.2682470162748642
+    ],
+    "small_guidance": "- The two-pass kernel re-reads/writes the output between passes; try a single-pass design where pass-1 keeps the ReLU'd values in registers (one accumulator tile per c) by using a smaller `BLOCK_S` that holds the entire group slice, or split the channel loop so values are recomputed from x (cheap ReLU) in pass-2 instead of round-tripping through DRAM.\n- Sweep `BLOCK_S` \u2208 {1024, 4096, 8192} with `num_warps` \u2208 {4, 8, 16} and `num_stages` \u2208 {2, 3}; with S=39304 (34\u00b3) and C_PER_GROUP=16, the inner workload is large enough that 8 warps + BLOCK_S=4096 likely beats the current 2048/4 config.\n- The conv_transpose almost certainly dominates runtime (fast_p\u22481.27 with the norm already fused); enable channels_last_3d on the conv input/weight and set `torch.backends.cuda.matmul.allow_tf32 = True` to reduce conv time before further norm tuning.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)` computing the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and scattering into the output grid with `tl.atomic_add` over the `(d+kd, h+kh, w+kw)` indices. With kernel_size=3 and no stride/padding, each input voxel contributes to 27 output positions for each oc \u2014 perfectly regular index math.\n- Alternative: implement transposed conv as a gather/GEMM \u2014 for each output voxel `(od, oh, ow)`, iterate `(kd, kh, kw)` and gather `input[n, :, od-kd, oh-kh, ow-kw]`, doing a `[OC, IC]` \u00d7 `[IC]` matmul per voxel. This avoids atomics; tile output spatial and OC to amortize the weight reload.\n- Fuse the ReLU + GroupNorm into the conv-transpose epilogue: after the conv kernel writes its output, launch the existing groupnorm kernel directly (already fused with ReLU). Avoid materializing a separate post-conv tensor \u2014 write the conv result into the same buffer the groupnorm consumes, and consider folding ReLU into the conv kernel's store (max with 0 before the atomic_add or before the store).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 37,
+    "global_best_node_id": 22,
+    "global_best_score": [
+        1,
+        1,
+        1.3618264077669902
+    ]
+}

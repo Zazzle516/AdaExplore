@@ -1,0 +1,31 @@
+{
+    "node_id": 40,
+    "parent_node_id": 35,
+    "context_node_ids": [
+        21,
+        22,
+        35
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure is from the GEMM: `weight` has shape `(N, K)` with strides `(K, 1)`, but the launcher passes `stride_bk=weight.stride(1)=1` and `stride_bn=weight.stride(0)=K`. The kernel then loads `b_ptrs = b + offs_k[:,None]*1 + offs_n[None,:]*K`, which is correct mathematically but means the inner (BLOCK_N) axis is strided by K \u2014 kill the strided B loads by transposing weight once at init (`self.weight_t = weight.t().contiguous()` of shape `(K, N)`) and pass its natural strides `(N, 1)`.\n- The ~1e-3 max diff suggests TF32 accumulation drift; try `allow_tf32=False` (or cast inputs to fp32 explicitly) to confirm correctness, then re-enable TF32 only if the eval harness tolerates it.\n- For the norm kernel at N=8192, `BLOCK_N=8192` with `num_warps=16` over-subscribes; try `num_warps=8, num_stages=2` and consider a two-tile reduction (BLOCK_N=2048 looped 4x) to cut register pressure.",
+    "large_guidance": "- Persistent-row design for the norm+add+mul: one program per row that streams the row in tiles to compute sum/sum_sq, then a second pass over the same tiles to write `(normed+y)*y`. This avoids the giant `BLOCK_N=8192` single-tile load and lets you use 8 warps efficiently.\n- Consider a split-K GEMM or `torch.addmm` fallback for the linear: M=1024, N=8192, K=8192 is large enough that cuBLAS will likely beat hand-rolled Triton on a 4090; only the norm-fusion kernel is the clear Triton win. Keep Triton for the fused epilogue and use `torch.addmm` for the matmul if tuning the GEMM doesn't catch up.\n- Pre-transpose `weight` once in `__init__` (store `weight_t` of shape `(K, N)` contiguous) so the GEMM's B operand has stride-1 on the N axis \u2014 this is the biggest structural fix.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 41,
+    "global_best_node_id": 28,
+    "global_best_score": [
+        1,
+        1,
+        0.8257900886245404
+    ]
+}

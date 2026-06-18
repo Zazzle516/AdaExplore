@@ -1,0 +1,29 @@
+{
+    "node_id": 15,
+    "parent_node_id": 14,
+    "context_node_ids": [
+        8
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The reference inputs are fp32; casting x and W to fp16 changes numerics but more importantly costs a full fp32\u2192fp16 copy of the 128\u00d732768 input on every forward. Drop the fp16 cast and keep x and W in fp32 (or pre-cast W once but keep x fp32 with `tl.dot(..., allow_tf32=True)`); the cast alone is a large fraction of the 2.38 ms.\n- Add larger-tile autotune configs for this M=128, N=K=32768 GEMM: `BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, num_warps=8, num_stages=4` and `BLOCK_M=128, BLOCK_N=256, BLOCK_K=32`. With M=128 only one or two M-tiles exist, so favor large N tiles to maximize K-loop reuse of the X tile.\n- Skip the bounds masks in the K-loop (K=32768 is divisible by all candidate BLOCK_K) and the M/N masks when M and N are divisible by the tile \u2014 guard with a `EVEN_K: tl.constexpr` flag \u2014 to remove per-iteration mask ops in the hot loop.",
+    "large_guidance": "- A split-K / streaming design fits this shape better: M=128 is tiny so each output row needs ~32768 FMAs across K, and there are only 128\u00d732768 outputs to produce before they collapse into 128 scalars. Use a 2D grid over (M-tile, K-split), each program computing its partial GEMM over a K-slice for all N (or an N-tile), applying sigmoid, summing over N inside the program, and atomic-adding into a `(M,)` output. This eliminates the materialized `partial` tensor and the second reduce kernel entirely.\n- Alternatively, since the output is just `sum_n sigmoid(x @ W^T + b)`, write a persistent kernel where each program owns one row of x (M=128 programs), streams K in chunks while iterating over N tiles, and keeps a single fp32 scalar accumulator for the summed sigmoid. The X row (32768 fp32 = 128 KB) is too big for registers but can be streamed once per N-tile; better, swap the loop order so X is loaded once per program and W tiles stream through \u2014 this is a tall-skinny GEMV-like pattern, not a square GEMM.\n- Keep weights fp32 and rely on TF32 `tl.dot` (Ada supports it) rather than fp16 to avoid the per-call activation downcast; the kernel is bandwidth-bound on W (4 GB of weight reads dominate), so reducing the K traversal count (via larger BLOCK_N to amortize X loads) matters more than fp16.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 16,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

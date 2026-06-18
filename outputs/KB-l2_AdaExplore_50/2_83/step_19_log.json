@@ -1,0 +1,31 @@
+{
+    "node_id": 19,
+    "parent_node_id": 12,
+    "context_node_ids": [
+        10,
+        11,
+        12
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The groupnorm kernel reads `x_ptr` for normalization but the channel-wise apply loop also reads `x_ptr` (the original input), which is fine \u2014 but check that `vals * scale + shift` uses the same `mean`/`rstd` as the reduction; the bug is likely that `tl.sum` over masked-zero values is correct, but the output's `view(x.shape)` is on `out` which was allocated as `empty_like(x_flat)` \u2014 that's OK. The real correctness issue is more likely the conv bias path: GroupNorm in PyTorch normalizes the post-conv tensor including conv bias, which we do. Double-check `eps=1e-5` matches `nn.GroupNorm` default (it does). Investigate whether `out` needs to be allocated contiguous in original shape \u2014 `out.view(x.shape)` after `view(N,C,S)` should be fine if x was contiguous. Verify by adding `x = x.contiguous()` before the view.\n- Add autotune over `BLOCK_S` only with values \u2265 max(group_size, S) reachable in one tile; for this shape S=14*62*62=53816 and group_size=2*S=107632, smaller `BLOCK_S` like 1024/2048 with multiple iterations may be more register-friendly than 16384.\n- Make `MIN_VAL`/`MAX_VAL`/`EPS` proper `tl.constexpr` kwargs (already done) but ensure the autotune `key=['CPG']` doesn't skip recompilation when shapes change \u2014 add `N`, `S` to the key or drop autotune since CPG is fixed at 2.",
+    "large_guidance": "- The dominant cost here is `nn.Conv3d` (3D conv over 128\u00d73\u00d716\u00d764\u00d764 \u2192 128\u00d716\u00d714\u00d762\u00d762). The GroupNorm+min+clamp fusion is the cheap tail. Replace the conv with a custom Triton im2col-style GEMM kernel: one program per `(N, OC_tile, output-spatial_tile)`, with the K dimension being `IC * kD * kH * kW = 3*3*3*3 = 81`. Fuse the GroupNorm in a second kernel (or fold conv bias into the GN reduction pass) and absorb the min/clamp into its epilogue.\n- For the GroupNorm rewrite, use a two-pass persistent kernel: pass 1 reduces sum/sum_sq per (N, group) with one program per group; pass 2 applies normalization + min(x,min_value) + clamp fused. Since min(x,min_value) then clamp(min_value,max_value) collapses to `min(normalized, min_value)` only when min_value\u2264max_value \u2014 the current code does this; verify it matches the reference exactly (the reference also produces `min(normalized, min_value)` clamped to [min_value,max_value], which equals `min(normalized, min_value)` since result \u2264 min_value \u2264 max_value). The correctness failure is likely elsewhere \u2014 likely the conv output isn't `.contiguous()` before view, causing a stride mismatch in `view(N,C,S)`.\n- Consider channels_last_3d layout for the conv output so the GroupNorm's per-channel scale/shift load coalesces along the contiguous channel axis.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 20,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        0.7689609574468086
+    ]
+}

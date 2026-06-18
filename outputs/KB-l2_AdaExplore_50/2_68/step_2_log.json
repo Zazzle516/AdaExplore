@@ -1,0 +1,29 @@
+{
+    "node_id": 2,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The SPLIT_K path is incorrect: `atomic_add` accumulates partial sums but then the epilogue kernel adds bias and applies `min/sub` on the already-summed result \u2014 that's fine in principle, but the `k_iters` logic uses `pid_k * BLOCK_K + i * k_step` which double-offsets (offs_k already includes `pid_k * BLOCK_K`). Fix by initializing `offs_k = tl.arange(0, BLOCK_K)` and stepping `pid_k*BLOCK_K + i*k_step`, or drop SPLIT_K entirely since K=16384 is fine for a single-pass GEMM.\n- Drop SPLIT_K (set SPLIT_K=1 in all configs) \u2014 M=128, N=16384, K=16384 is a standard GEMM where split-K hurts due to atomic overhead and zero-init cost. Use BLOCK_M=64/128, BLOCK_N=128/256, BLOCK_K=32/64, num_warps=4/8, num_stages=3-4, with a GROUP_M=8 swizzle on the N dimension for L2 reuse.\n- Fuse bias + min + sub directly in the single-pass kernel epilogue (already done for SPLIT_K==1 branch); eliminate the separate epilogue kernel and the `torch.zeros` allocation (use `torch.empty`).",
+    "large_guidance": "- Rewrite as a single-pass tiled GEMM (no split-K): grid `(cdiv(M,BLOCK_M)*cdiv(N,BLOCK_N),)` with GROUP_M swizzle for L2 reuse, accumulate over K in BLOCK_K chunks with `tl.dot`, then fuse `+bias`, `tl.minimum(., c)`, `- c` in the epilogue before a single store to an `empty` output. M=128 is small so prefer BLOCK_M=128 (one row tile) and sweep BLOCK_N \u2208 {128,256}, BLOCK_K \u2208 {32,64}.\n- Pre-transpose weight to (K,N) contiguous at init (already done) so the inner load axis is N \u2014 good. Consider also caching `c` as a Python float baked as constexpr if the constant never changes, avoiding the `tl.load(c_ptr)` per program.\n- If still bandwidth-bound, try a persistent kernel with one program per SM iterating over assigned (M,N) tiles to amortize launch + improve scheduling on the 4090's 128 SMs.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 3,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

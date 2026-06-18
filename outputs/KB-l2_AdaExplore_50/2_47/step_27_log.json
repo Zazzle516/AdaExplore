@@ -1,0 +1,29 @@
+{
+    "node_id": 27,
+    "parent_node_id": 11,
+    "context_node_ids": [
+        11
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4296527468805704,
+    "max_reward": 0.4296527468805704,
+    "avg_reward": 0.4296527468805704,
+    "score": [
+        1,
+        1,
+        0.3446351617647059
+    ],
+    "small_guidance": "- The current K-loop is `KD*KH*KW=27` iterations each doing a tiny BLOCK_K=32 (=IC) GEMM-K of 32; merge IC and the kernel window into a single GEMM-K axis of length `IC*KD*KH*KW=864` so `tl.dot` accumulates over a much longer reduction and amortizes the issue overhead. Sweep `BLOCK_K \u2208 {64, 128}` once merged.\n- Add autotune configs biased toward larger BLOCK_N (e.g. 128/256) with BLOCK_M=32 since OC=64 \u2014 current configs with BLOCK_M\u226564 leave half the warps idle for the OC tile. Include `(BLOCK_M=32, BLOCK_N=128, BLOCK_K=64, num_warps=4)` and `(32,256,64,8)`.\n- Replace the unstable `exp(2*mish)` tanh with `tl.libdevice.tanh` (or `2*sigmoid(2x)-1`) and use `softplus = tl.where(a>20, a, log1p(exp(a)))` via `tl.log(1+tl.exp(a))` \u2014 fewer exps in the epilogue and avoids overflow at large mish values.",
+    "large_guidance": "- Rewrite as an explicit im2col-style GEMM where the reduction axis is `K = IC*KD*KH*KW` (length 864) collapsed into one loop, with one program per `(N, OC-tile, OutSpatial-tile)`. Precompute per-k offsets `(ic, kd, kh, kw)` via integer decomposition inside the kernel so the inner loop is a clean `tl.dot(W[BM,BK], X[BK,BN])` accumulation \u2014 this is the textbook layout for conv-as-GEMM and is what the autotune skill targets.\n- Switch input/output to channels-last (NDHWC) so the channel axis is the contiguous GEMM-K stride; loads across `offs_k` become unit-stride and coalesce. Permute once on entry, run kernel, permute back (or store directly into NCDHW with strided writes since output writes are smaller than reads).\n- Fuse bias + Mish + Tanh in the epilogue on the accumulator (already done) but use a single fused closed form: `m = a*tanh(softplus(a))`, `out = tanh(m)` with `libdevice.tanh` \u2014 keep the activation entirely in registers before the single store. Persistent-CTA over the batch axis can further amortize weight loads since the weight tensor (64\u00b732\u00b727 = 55K floats) fits easily in L2 and can be reused across N.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 28,
+    "global_best_node_id": 19,
+    "global_best_score": [
+        1,
+        1,
+        1.2681380411255412
+    ]
+}

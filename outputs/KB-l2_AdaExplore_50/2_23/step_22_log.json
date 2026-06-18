@@ -1,0 +1,27 @@
+{
+    "node_id": 22,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4580009867316924,
+    "max_reward": 0.4580009867316924,
+    "avg_reward": 0.4580009867316924,
+    "score": [
+        1,
+        1,
+        0.5785081405364624
+    ],
+    "small_guidance": "- Fuse the GroupNorm and final mean into a single kernel: one program per (N, G) computes mean/var, then accumulates the normalized values' sum directly (sum of `(v-mean)*rstd*w + b` over the group), and atomically adds to `out[n] * inv_total`. This eliminates the write+reread of the normalized tensor and the second kernel launch.\n- Increase BLOCK to 2048 with num_warps=8 for the group_norm kernel \u2014 group_size here is CPG*S = 3*22*30*30 = 59400, so a wider block reduces loop iterations; try num_stages=3.\n- Avoid passing `eps` and `inv_total` as raw Python floats (fragile per the safety contract) \u2014 pass them as `tl.constexpr` or 0-d tensors.",
+    "large_guidance": "- The Conv3d dominates runtime (fast_p\u22480.58 with norm+mean already fused-ish). Replace `nn.Conv3d` with a custom Triton im2col-style GEMM kernel: one program per (N, OC tile, output-spatial tile), implicit im2col gather computing input offsets in-kernel. Output shape after 3\u00d73\u00d73 conv is (128, 24, 22, 30, 30); GEMM-K = 3*3*3*3 = 81, GEMM-M = OC = 24, GEMM-N = 22*30*30 = 19800 \u2014 small K, large N, so use BLOCK_M=32, BLOCK_N=128, BLOCK_K=32 with num_warps=4.\n- Fuse the conv epilogue with GroupNorm: since GN needs per-group stats over the full spatial volume, have the conv kernel write to a channels-last buffer, then a single (N,G) program reads, normalizes, and reduces to the per-batch mean in one pass \u2014 skipping the intermediate normalized tensor entirely.\n- Use channels_last3d layout for the conv output so that GN's per-channel weight/bias loads and the reduction across (C,D,H,W) are coalesced; this also helps the GN kernel hold per-channel scale/shift in registers.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 23,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        1.1431320857000498
+    ]
+}

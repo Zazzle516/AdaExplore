@@ -1,0 +1,29 @@
+{
+    "node_id": 23,
+    "parent_node_id": 22,
+    "context_node_ids": [
+        22
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.49535301160960254,
+    "max_reward": 0.49535301160960254,
+    "avg_reward": 0.49535301160960254,
+    "score": [
+        1,
+        1,
+        0.8866623457792207
+    ],
+    "small_guidance": "- The conv kernel uses BLOCK_N=32 which equals OC exactly \u2014 good \u2014 but BLOCK_M tiles spatial dim (OS=30\u00b762\u00b762=115320). Try larger BLOCK_M tiles like 128/256 with BLOCK_K=64/128 since K_TOT=8\u00b727=216 is small; add configs `(BLOCK_M=128, BLOCK_N=32, BLOCK_K=128, num_warps=8, stages=2)` and `(BLOCK_M=256, BLOCK_N=32, BLOCK_K=64, num_warps=8, stages=3)` to allow full-K single-iteration loops.\n- The output store is non-coalesced because `out_offset` lays out OC as outer and OS contiguous along BLOCK_M (column dim). Swap to write `(BLOCK_M rows along OS contiguous, BLOCK_N along OC stride OS)` \u2014 already the case but the `[None,:]*OS + [:,None]` pattern has stride-1 on M which is fine; verify by transposing to `out_offset = pid_b*OC*OS + offs_m[:,None]*OC + offs_n[None,:]` only if you also write in NDHWC layout (otherwise keep current).\n- Hoist `pid_b * IC * ID * IH * IW` into a scalar base pointer once, and precompute `IH*IW`, `ID*IH*IW` outside the K-loop to reduce integer mul pressure.",
+    "large_guidance": "- Switch the input layout to NDHWC (channels-last) so along the GEMM-K dimension `ic` is the fastest axis; then a contiguous `BLOCK_K` slice corresponds to a contiguous chunk of memory rather than the current strided gather across `ic*(ID*IH*IW)`. This usually doubles effective bandwidth on conv3d-as-GEMM.\n- Use an implicit-GEMM with one program per `(N, output-spatial tile, OC tile)` but iterate K as `(kd, kh, kw, ic_tile)` with `ic_tile` as the innermost vectorizable dim of size 8 (full IC). This avoids the modulo decoding of `ic/kd/kh/kw` from a single offs_k inside the inner loop, which currently costs several integer ops per element loaded.\n- Since OC=32 is tiny, consider making OC a fully-unrolled compile-time constant (`BLOCK_N=32` fixed, no mask) and persist over batch in a single program to amortize weight loads \u2014 load the entire 32\u00b7216 weight tile once into registers/SMEM and stream input tiles through it.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 24,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        1.9646906654676257
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 9,
+    "parent_node_id": 8,
+    "context_node_ids": [
+        8
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness bug: GroupNorm gamma/beta are per-channel of length C, but the kernel indexes them via `grp * CPG + offs`. That's actually equivalent if loaded contiguously \u2014 however, the real issue is that `tl.where(mask, x - mean, 0.0)` works but `(x - mean) * rstd * g + b` is applied with `mask` controlling stores; verify CPG=16 (8192/512) and BLOCK=16. The numerical drift (~5e-3) suggests the affine is being applied to masked-zero lanes at the boundary \u2014 pre-mask `x` to 0 before mean computation is fine, but ensure final `y = tl.where(mask, y, 0.0)` so out-of-range lanes don't pollute neighboring stores. Actually the real bug: `inv_cpg = 1.0 / float(CPG)` \u2014 `float()` on a constexpr is fine, but the variance uses biased estimator which matches PyTorch GN (correct). The 0.0002 avg diff at 5e-2 tol should pass; check that `gn.weight`/`gn.bias` are loaded in fp32 and cast properly, and that input `x` is moved to cuda before `self.fc.weight` is read (weight may still be on CPU).\n- Move the model to CUDA in `__init__` (or ensure `self.fc.weight` is on the same device as `x`); the mismatch likely stems from `self.fc.weight` being on CPU while `x.cuda()` is on GPU, or from running the reference vs. custom on different RNG-seeded inputs.\n- Once correct, tighten autotune: for M=1024, N=8192, K=8192 the sweet spot on 4090 is BLOCK_M=128, BLOCK_N=256, BLOCK_K=32-64, num_warps=8, num_stages=3-4; prune smaller tiles from the config list to cut autotune time.",
+    "large_guidance": "- The GEMM dominates (1024\u00d78192\u00d78192 \u2248 137 GFLOPs). Consider using `tl.dot` with `out_dtype=tl.float32` and pre-transposing the weight once at init (store `W^T` contiguous) so the K-loop loads B with stride 1 along K being inner \u2014 current `stride_bk=W.stride(1)=1, stride_bn=W.stride(0)=K` means B is loaded as (K,N) with N-contiguous rows of W \u2014 that's correct but N-stride is K=8192, large. Pre-transpose to a contiguous (K,N) buffer for faster B loads.\n- Fuse bias-add into the GEMM epilogue (already done) and consider also fusing the GroupNorm reduction by writing the GEMM output in a layout grouped by (row, group) \u2014 but with CPG=16 this is too small to fuse productively; keep GN as a separate kernel but make it persistent per row, processing all G groups in one program with shared loads.\n- For the GN kernel, with CPG=16 and 512 groups per row, launch one program per row (1024 programs) and loop over groups internally with vectorized BLOCK=16 lanes; this drops launch count from 524288 to 1024 and lets gamma/beta be loaded once per row.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 10,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

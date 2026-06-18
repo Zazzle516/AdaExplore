@@ -1,0 +1,31 @@
+{
+    "node_id": 13,
+    "parent_node_id": 12,
+    "context_node_ids": [
+        3,
+        6,
+        12
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure is likely from the GEMM masking: `offs_am = (... ) % M` and `offs_bn = (...) % N` wrap out-of-bounds rows/cols and load garbage that contributes to `acc`; switch to proper masked loads with `mask=(offs_am[:,None]<M)&(offs_k[None,:]<K)` (and similarly for B), using `other=0.0`, and also mask the K-loop tail with `offs_k+k*BLOCK_K < K`.\n- Verify the weight stride mapping: `nn.Linear.weight` is `(N,K)` row-major so `stride(0)=K, stride(1)=1`; passing `stride_bk=weight.stride(1)=1, stride_bn=weight.stride(0)=K` is correct, but make sure the K-loop pointer advance uses `BLOCK_K * stride_bk` (=BLOCK_K) \u2014 confirm and add a contig assert.\n- For GN block, since CH_PER_G = 8192/256 = 32, BLOCK=32 with num_warps=1 (or 2) is sufficient and reduces over-subscription; current code forces num_warps=4 which wastes warps on a 32-wide reduction.",
+    "large_guidance": "- Fuse the bias-add and a per-group partial reduction (sum and sum-of-squares of post-bias activations) directly into the GEMM epilogue: each (BLOCK_M, BLOCK_N) tile that aligns with group boundaries can atomically/locally accumulate group statistics, eliminating the separate GN read pass. Choose BLOCK_N as a multiple of CH_PER_G (32) so groups don't straddle tiles.\n- Alternatively, since M=1024, N=K=8192 is a large square GEMM, consider a split-K or persistent-tile GEMM variant and keep GN+Swish+Mul+Swish as a separate but vectorized kernel that loads a full row (8192 elements) per program and computes all 256 group stats in one pass using 2D tiling over channels \u2014 this avoids launching N*G=262144 tiny programs.\n- Launch one program per row for the post-GEMM fused kernel: load the row into SRAM (8192 fp32 = 32KB, fits), compute 256 group means/rstds via a reshape to (256,32) and segmented reduction, then apply affine + swish + multiply + swish and store \u2014 collapses the current (N, num_groups) grid into N programs and reuses the loaded row.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 14,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

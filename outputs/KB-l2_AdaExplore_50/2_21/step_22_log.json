@@ -1,0 +1,29 @@
+{
+    "node_id": 22,
+    "parent_node_id": 21,
+    "context_node_ids": [
+        20
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4746007496322448,
+    "max_reward": 0.4746007496322448,
+    "avg_reward": 0.4746007496322448,
+    "score": [
+        1,
+        1,
+        0.7154561844660193
+    ],
+    "small_guidance": "- The conv kernel currently has BLOCK_HW=256 with num_warps=4 and one program per (oc, hw-tile, n). Try tiling multiple OC together (BLOCK_OC=4 or 8) so each program computes 4-8 output channels at once \u2014 this reuses the same input loads across OCs, cutting global memory bandwidth ~4-8x for the conv (the dominant cost). Pair with BLOCK_HW=128 and num_warps=4/8 in a small autotune grid.\n- Cache weights in registers/SMEM: with KH=KW=3, IC=8, OC tile=8 weights are tiny (8*8*9=576 floats) \u2014 load once per program outside the hw loop. Currently weights are reloaded per hw-tile implicitly per program but the reuse is poor because each program only does one OC.\n- For GN, BLOCK_HW=1024 with the two-pass loop over CPG=4 channels means 64K element reduction per program with sequential channel loops; try CPG-parallel reduction by loading all CPG channels' BLOCK_HW chunk together (BLOCK_HW=512, vectorize across CPG) and increase num_warps=16 since HW*CPG=262144 per group.",
+    "large_guidance": "- Rewrite the conv as an implicit-GEMM where one program tile produces a (BLOCK_OC \u00d7 BLOCK_HW) output block, accumulating over the K=IC*KH*KW dimension with a `tl.dot`. Current kernel does scalar FMAs over BLOCK_HW lanes with no OC-axis reuse \u2014 this leaves ~8x of FLOPs on the table. With OC=32, IC=8, KH=KW=3, K=72 fits easily; use BLOCK_OC=32 (all OCs at once) \u00d7 BLOCK_HW=64 or 128, and load the entire 32\u00d772 weight matrix once per program.\n- Fuse the GroupNorm reduction into the conv epilogue when possible: each program already covers a full OC stripe for one (n, hw-tile); if BLOCK_OC=CPG=4 aligns with a group, the in-program partial sums for sum_x and sum_x2 can be atomically added to per-(n,group) accumulators, eliminating one full read of post_sig. Alternatively keep them separate but switch GN to a single-pass Welford or use online (sum, sum_sq) atomics from the conv kernel.\n- Switch tensor layout to NHWC for the conv output so that GN's per-group reduction reads CPG contiguous channels per spatial location \u2014 that lets GN load (BLOCK_HW \u00d7 CPG) contiguous floats per iteration and use much larger effective vector loads.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 23,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        1.0321006582633052
+    ]
+}

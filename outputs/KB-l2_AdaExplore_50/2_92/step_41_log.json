@@ -1,0 +1,30 @@
+{
+    "node_id": 41,
+    "parent_node_id": 31,
+    "context_node_ids": [
+        30,
+        31
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5045262014861769,
+    "max_reward": 0.5045262014861769,
+    "avg_reward": 0.5045262014861769,
+    "score": [
+        1,
+        1,
+        0.9623411622609592
+    ],
+    "small_guidance": "- The conv now likely dominates runtime (fast_p=0.96, baseline=3.19ms). Further tuning of the LSE/groupnorm tail won't help much; but you can still try larger BLOCK_S (8192/16384) with num_warps=8/16 in `fused_lse_kernel` since the per-program work is `C * BLOCK_S` and C=64 is small \u2014 fewer programs may reduce launch overhead.\n- Merge `affine_params_kernel` into the start of `fused_lse_kernel` (load mean/invstd/gamma/beta once per program at the top, compute a/b in registers) to eliminate one launch and the N\u00d7C scratch buffers.\n- In `groupnorm_stats_kernel`, swap loop order (outer over s_start, inner static over channels) and use a single contiguous load over the group's CPG*S elements when CPG*S is small enough; current double loop with BLOCK_S vector accumulators wastes registers.",
+    "large_guidance": "- Replace `nn.Conv2d` with a custom Triton im2col-style GEMM kernel: in_channels=8, kernel=3 \u2192 K=72, OC=64, output spatial=126\u00d7126. K is tiny so a direct conv (one program per (N, OC_tile, OH_tile, OW_tile), accumulating over IC\u00d7kh\u00d7kw inline) will be much faster than cuDNN for this shape and will expose fusion with the downstream pipeline.\n- Fuse the entire pipeline end-to-end into two kernels: (1) custom conv producing `x_conv` in channels_last layout, (2) a single persistent kernel per (N, spatial-tile) that streams channels twice \u2014 first pass computes group mean/var (Welford or two-pass), second pass computes normalized\u2192tanh\u2192hardswish\u2192add residual\u2192online-LSE \u2014 without ever materializing N\u00d7C scratch buffers. With C=64 and S=126\u00b2, a row of 64 channels fits easily in registers/SMEM, so a persistent per-(N, spatial-tile) design avoids the current 3-launch sequence.\n- Alternatively keep conv as torch but write one mega-kernel that takes `x_conv` plus gn weight/bias and produces LSE directly: per (N, spatial-block) program, load all C values for the block into SMEM, compute per-group stats by reduction across the channel-group axis within the program, then do the epilogue+LSE in-place. This eliminates the stats\u2192affine\u2192lse round-trip through global memory.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 42,
+    "global_best_node_id": 31,
+    "global_best_score": [
+        1,
+        1,
+        0.977100996037968
+    ]
+}

@@ -1,0 +1,31 @@
+{
+    "node_id": 39,
+    "parent_node_id": 36,
+    "context_node_ids": [
+        27,
+        33,
+        36
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.47574503595706896,
+    "max_reward": 0.47574503595706896,
+    "avg_reward": 0.47574503595706896,
+    "score": [
+        1,
+        1,
+        0.7248965466458187
+    ],
+    "small_guidance": "- The eval-path GEMM kernel is the bottleneck (M=1024, N=8192, K=8192). Add larger-K configs and bias toward `BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, num_warps=4, num_stages=3-4` plus `BLOCK_M=64, BLOCK_N=256, BLOCK_K=32/64`; current configs lean too heavy on `BLOCK_N=256` which underutilizes M=1024.\n- In the training path, fuse the per-column mean/var reduction into a single Triton reduction kernel over the (M,N) GEMM output instead of two separate `mean`/`var` PyTorch calls \u2014 and skip the `Wt.t().contiguous()` cache in eval by loading B with swapped strides directly (saves the one-time transpose and lets you keep weight in its native layout).\n- Lower `num_stages` to 2 on the largest tiles to reduce register/SMEM pressure on the 4090 (Ada, not Ampere as the prompt says) \u2014 high stages with BLOCK_N=256 can spill; sweep `num_stages\u2208{2,3}` alongside `num_warps\u2208{4,8}`.",
+    "large_guidance": "- Make the eval-path kernel a split-K or persistent GEMM: with K=8192 a single program per (M,N) tile does a long serial K loop; a persistent kernel with grid = #SMs and a swizzled tile queue, or a split-K of 2-4 with atomic/post-reduce, can overlap K-loads better and improve L2 reuse.\n- For the training path, the heavy GEMM is currently delegated to cuBLAS (`F.linear`) which is already near-peak; rather than rewriting the GEMM, fuse the BN statistics computation (mean, var) directly into a custom epilogue that consumes the GEMM output tile-by-tile \u2014 or write a single Triton kernel that does GEMM + per-column running-sum + running-sum-of-squares in one pass, then a tiny second kernel for normalize+swish.\n- Consider TF32 / tensor-core path: cast A,B to tf32 inside the kernel (`tl.dot(..., allow_tf32=True)` is default, but ensure inputs are fp32 contiguous and tiles align to 16) \u2014 current arithmetic intensity suggests we should be hitting >70% of cuBLAS; if not, the layout (load Wt vs W with transpose flag in `tl.dot`) is the likely culprit.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 40,
+    "global_best_node_id": 16,
+    "global_best_score": [
+        1,
+        1,
+        1.306364364810914
+    ]
+}

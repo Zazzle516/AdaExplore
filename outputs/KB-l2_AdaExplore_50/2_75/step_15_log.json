@@ -1,0 +1,30 @@
+{
+    "node_id": 15,
+    "parent_node_id": 10,
+    "context_node_ids": [
+        2,
+        10
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM is the dominant cost (M=1024, N=8192, K=8192). Add larger tile configs tuned for square big-K GEMMs: `BLOCK_M=128, BLOCK_N=256, BLOCK_K=32/64, num_warps=8, num_stages=3-4` and `BLOCK_M=256, BLOCK_N=128`. Also include `GROUP_M=4` and `GROUP_M=16` variants since N is large. Drop the K-tail masking by using a non-masked inner loop with K-tail handled in a peeled iteration \u2014 K=8192 is divisible by 64.\n- In `gn_min_kernel`, BLOCK_N=8192 with num_warps=8 is heavy. Try `num_warps=16, num_stages=1` and load x/w/b as a single contiguous vector (they already are). Skip the explicit `diff = x - mean` materialization \u2014 use `E[x^2] - mean^2` for variance to halve register pressure, allowing more ILP.\n- Fuse the final bias-add into the `gn_min_kernel` epilogue OR reorganize output layout to `[M, N, 1, 1]` so the bias-add becomes a simple per-row broadcast over contiguous N (current `[N, M]` layout forces a strided store/load). The reshape `view(1, N, M, 1)` from `[N, M]` is fine but writing `[N, M]` strided is cache-unfriendly.",
+    "large_guidance": "- Restructure the pipeline as two kernels only: (1) a tuned GEMM writing `[M, N]`, (2) a fused `GN + min + bias_broadcast` kernel that takes the GEMM output and directly writes the final `[1, N, M, 1]` output. One program per row reads the row once, computes group stats, normalizes, reduces to a scalar min, then broadcasts `min + bias[n]` into the output tensor with N elements written contiguously per row.\n- Alternatively, since the min over N collapses to one scalar per row and bias broadcasts over N, output layout `[1, N, M, 1]` has stride `(N*M, M, 1, 1)`. Choosing output as `[M, N]`-contiguous (logically `[1, N, M, 1]` is achievable by transposing afterward via `.permute`) lets the fused kernel write min+bias coalesced. Consider returning `min_vals[None, None, :, None] + bias` and rely on broadcasting in a final cheap elementwise kernel that writes `[N, M]` with N as the outer loop (program_id(0)=n_block, program_id(1)=m_block) so bias is loaded once per N-block and m_vals are streamed.\n- For the GEMM, consider a split-K or persistent-CTA design given K=8192 is large; a persistent kernel with `num_stages=4` and `BLOCK_K=64` typically wins over autotune defaults on Ada. Also enable `tf32`/cast inputs to fp16 for `tl.dot` is not applicable (fp32 required), so focus on overlap via `num_stages=4`.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 16,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

@@ -1,0 +1,27 @@
+{
+    "node_id": 1,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.40230923682476943,
+    "max_reward": 0.40230923682476943,
+    "avg_reward": 0.40230923682476943,
+    "score": [
+        1,
+        1,
+        0.11905120380434783
+    ],
+    "small_guidance": "- The current kernel computes `tl.dot(w_vals, x_vals)` with shapes `(BLOCK_M, BLOCK_K) \u00d7 (BLOCK_K, BLOCK_N)` but `x_vals` is loaded as `(BLOCK_K, BLOCK_N)` with the K-axis stride being IC*IH*IW (non-contiguous strided gathers per K). Each gather is recomputed every iteration; hoist the `pid_n * stride_xn` and per-output `oh*stride_xh + ow*stride_xw` base outside the K loop, and precompute `ic*stride_xc + kh*stride_xh + kw*stride_xw` as a 1D vector indexed only by k \u2014 this dramatically reduces address arithmetic.\n- Add larger autotune configs now that small ones are known to compile: `(BLOCK_M=64,BLOCK_N=128,BLOCK_K=32, num_warps=8, stages=2)`, `(128,64,32, warps=8, stages=2)`, `(64,64,32, warps=8, stages=3)`. With OC=64 and OH*OW=15876, BLOCK_N should be \u226564 to reduce program count; current best is likely BLOCK_M=64,BLOCK_N=64 leaving ~3969 programs per N just on the spatial axis.\n- K = IC*KH*KW = 72 here \u2014 make BLOCK_K a multiple that covers K in 2-3 iterations (BLOCK_K=32 \u2192 3 iters, BLOCK_K=72 padded to 128 in one iter via mask). A single-iteration K loop with BLOCK_K=128 and proper masking removes loop overhead entirely.",
+    "large_guidance": "- Switch to a channels-last (NHWC) layout for both input and output so the GEMM-K axis (IC contiguous within each (kh,kw)) coalesces. Permute input once at forward entry; emit output as NHWC then permute back (or fuse the permute). With IC=8 the K axis is tiny and contiguous loads matter more than transpose cost.\n- Reorganize the program grid as `(N*OC_tile, spatial_tile)` or even fully 2D `(N*num_oc_tiles, num_spatial_tiles)` to improve SM occupancy \u2014 current grid has only `N=128 \u00d7 cdiv(64,BM) \u00d7 cdiv(15876,BN)` programs, which is fine in count but the per-N split limits L2 reuse of weights across N. A persistent kernel that loops over N inside one program (reusing the weight tile) would amortize weight loads `N`-fold.\n- Alternative: implicit-GEMM with the M axis = `N * OH * OW` (batched over output pixels) and N axis = OC. This makes the GEMM 64\u00d7(N\u00b7OH\u00b7OW)=64\u00d72.6M which is huge and contiguous, lets BLOCK_N=128 tiles cover the spatial+batch dimension uniformly, and removes the per-N grid dimension that currently fragments work.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 2,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.11905120380434783
+    ]
+}

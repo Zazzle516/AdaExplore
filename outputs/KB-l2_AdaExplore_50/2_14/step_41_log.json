@@ -1,0 +1,29 @@
+{
+    "node_id": 41,
+    "parent_node_id": 35,
+    "context_node_ids": [
+        35
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness bug is in the masked write of `acc` followed by `tl.sum`: after `tl.dot`, the K-loop tail mask uses `offs_k[None,:] < k_remaining` but `offs_k` is reused across N-blocks without being reset; more importantly the row accumulation is correct but the result still mismatches \u2014 double-check that `mask_n` masking is applied (it is) and verify `stride_wn`/`stride_wk` are passed correctly. Actually the real issue is likely numerical: with K=8192 the row-sum of GEMM produces values around `sum(x) * sum(w_col)/2 * 1.5` \u2248 thousands; an avg_difference of ~1.1 suggests an off-by-something in the scale or a missing contribution. Try removing the `tl.where(mask_n,...)` and instead pre-mask the W load with `mask_n` (already done) \u2014 verify the output is being written as (M,1) but kernel writes M scalars; ensure `out.view(M)` is contiguous (it is).\n- Add `triton.Config` entries with smaller BLOCK_N (e.g. 64) since we only need the row-sum, not the per-N output; this lets BLOCK_M grow to 128/256 and improves L2 reuse on x.\n- Sweep `num_stages=4,5` for BLOCK_K=64 to better overlap the long K=8192 loop.",
+    "large_guidance": "- Replace the GEMM-then-sum strategy with a direct fused dot: since the final output is `sum_n sum_k x[m,k] * w[n,k] * 0.75 = 0.75 * sum_k x[m,k] * (sum_n w[n,k])`, but **per the safety contract this algebraic collapse is forbidden**. Instead, keep the full GEMM but skip materializing the per-N accumulator: for each (BLOCK_M, BLOCK_K) tile of x, load it once, then loop over BLOCK_N tiles of W, do `tl.dot`, and immediately reduce along N into a `(BLOCK_M,)` partial \u2014 accumulating into a register row vector. This avoids the BLOCK_M\u00d7BLOCK_N accumulator that currently dominates register pressure and makes BLOCK_N=512 feasible.\n- Use a 2D grid `(M_tiles, K_split)` with atomic-add or a second reduction kernel, so multiple SMs cooperate on the long K=8192 dimension; right now a single program walks all of K\u00d7N serially per M-tile, leaving SMs idle (M=1024, BLOCK_M=128 \u2192 only 8 programs).\n- Persistent kernel: load each x row tile once into registers/SRAM, then stream through W with a tight K-major inner loop on the contiguous axis (W is (N,K) row-major, so K is contiguous \u2014 good). Ensure x is also K-contiguous (it is) and use `tl.dot` with `BLOCK_K=32` against `BLOCK_N=128` blocks of W.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 42,
+    "global_best_node_id": 27,
+    "global_best_score": [
+        1,
+        1,
+        0.8119585150360703
+    ]
+}

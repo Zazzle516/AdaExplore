@@ -1,0 +1,29 @@
+{
+    "node_id": 5,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        4
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.45021944426723376,
+    "max_reward": 0.45021944426723376,
+    "avg_reward": 0.45021944426723376,
+    "score": [
+        1,
+        1,
+        0.5143104152046784
+    ],
+    "small_guidance": "- The current kernel re-loads the same weight `w_v` four times per (kh,kw) but uses it across 4 spatial offsets \u2014 that's fine, but the inner `for ic in range(0, IC)` is not unrolled and reloads weights one OC-vector at a time. Tile the IC loop with `BLOCK_IC` (e.g. 8 or 16) and use `tl.dot` on `[BLOCK_OC, BLOCK_IC] @ [BLOCK_IC, BLOCK_HW]` per (kh,kw) \u2014 this turns the kernel into a real GEMM and uses tensor cores effectively.\n- Add larger autotune configs once IC is tiled, e.g. `(BLOCK_OC=64, BLOCK_HW=64, BLOCK_IC=16, num_warps=4)` and `(BLOCK_OC=128, BLOCK_HW=64, BLOCK_IC=8, num_warps=8)`; verify SMEM `(BM\u00b7BK + BK\u00b7BN)\u00b74\u00b7stages \u2272 132KB`.\n- Switch input layout to NHWC (`channels_last`) so the IC dimension is contiguous \u2014 this lets a single `tl.load` fetch `BLOCK_IC` channels coalesced and is the precondition for the GEMM tiling above.",
+    "large_guidance": "- Rewrite as an im2col-style GEMM: one program per `(N, OC tile, pooled-spatial tile)`, with the K dimension being `IC*KH*KW` (or `IC` inside a static `KH*KW` loop). Use `tl.dot` to accumulate `[BLOCK_OC, BLOCK_IC] x [BLOCK_IC, BLOCK_HW]` for each of the 4 pre-pool positions; the current scalar `w_v[:,None] * x_v[None,:]` outer-product path leaves tensor cores idle and is the main reason fast_p\u22480.51.\n- Fuse the 2x2 maxpool by computing only the 4 conv outputs needed per pooled location (already done) but make the pooled-spatial tile the GEMM-N tile and keep the 4 accumulators `acc00/01/10/11` across the K-loop with `tl.dot` \u2014 then reduce + hardswish + mish in the epilogue exactly once.\n- Convert input/weight to NHWC / `(OC, KH, KW, IC)` layout at init (cache on the module) so the K-axis is contiguous; this enables vectorized 128-bit loads along IC and removes the per-(kh,kw) gather scalar pattern.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 6,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        0.5143104152046784
+    ]
+}

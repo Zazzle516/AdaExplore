@@ -1,0 +1,29 @@
+{
+    "node_id": 16,
+    "parent_node_id": 13,
+    "context_node_ids": [
+        13
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.47542871766064354,
+    "max_reward": 0.47542871766064354,
+    "avg_reward": 0.47542871766064354,
+    "score": [
+        1,
+        1,
+        0.7222869207003089
+    ],
+    "small_guidance": "- The fused ReLU+GroupNorm kernel is already fast; the dominant cost is `nn.ConvTranspose3d`. Tuning BLOCK_S/num_warps further on the norm kernel will not move fast_p materially. If you must tune, try BLOCK_S=2048 with num_warps=4, num_stages=2 \u2014 the per-group reduction is small (CPG*S/BLOCK_S iters) and reducing register pressure may help, but expected gain is <5%.\n- Consider a single-pass Welford reduction over the group instead of the current two-pass (stats then re-load+store) \u2014 saves one full read of the conv output tensor (which is ~32MB per sample).\n- Cache the ReLU'd values in shared memory or a register buffer when CPG*S is small enough to avoid the second `tl.load` + `tl.maximum` in the apply phase.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: for each input voxel and each (kd,kh,kw) tap, scatter `input * weight` into the output grid. With kernel_size=3, stride=1, padding=0, output is (N,128,34,34,34). Tile over (N, OC_tile, output spatial tile) and accumulate contributions from all IC and kernel positions. This is the heavy op (>90% of runtime) and the only path to fast_p > 1.\n- Fuse ReLU + GroupNorm stats accumulation into the conv epilogue: after the conv kernel writes the output, run a single GroupNorm kernel that does Welford in one pass and applies affine+ReLU in a second pass over the same tensor. Alternatively, since GN needs a global reduction per (N, group), keep conv and norm separate but ensure conv writes in channels-last-ish layout so the GN read is contiguous along C within a group.\n- Use `channels_last_3d` memory layout for the conv output so that the GroupNorm reduction's CPG channels are contiguous, enabling a single vectorized load per spatial position rather than CPG strided rows.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 17,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.3333471482889734
+    ]
+}

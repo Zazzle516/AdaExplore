@@ -1,0 +1,29 @@
+{
+    "node_id": 14,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness bug is that multiple `pid_n` programs atomic-add into the same `out[m]`, but the kernel's accumulator is computed per-tile \u2014 that's fine \u2014 however the per-row sum should NOT be scaled inside each tile and added; scaling is linear so this is actually OK. The real bug: `tl.where(mask_even[None,:], acc_even, -inf)` then `tl.sum(pooled, axis=1)` will produce `-inf` contributions for masked lanes when both even and odd are masked. With N=32768 and BLOCK_N_POOLED dividing evenly, masks should all be true, so this is likely not the issue. The actual issue is probably the BLOCK_K loads: when K is not a multiple of BLOCK_K (K=32768 is, so fine). Investigate whether `tl.dot(x, tl.trans(w_e))` accumulates in fp32 correctly \u2014 try `allow_tf32=False` or pass `out_dtype=tl.float32` explicitly.\n- Increase atomic contention awareness: try a 2D output buffer `(num_n_tiles, M)` with a final torch.sum, avoiding atomics entirely \u2014 atomics on fp32 are non-deterministic in order but should be correct; nonetheless removing them isolates the bug.\n- Add configs with `BLOCK_K=128` and `num_stages=4` for the K=32768 dimension; current configs cap at 64.",
+    "large_guidance": "- Rewrite as two kernels with no atomics: (1) a tiled GEMM that writes the full `(M, N)` linear output (or directly the pooled `(M, N/2)` via even/odd column pair max in the epilogue), then (2) a row-reduction kernel that sums across the pooled dim and multiplies by scale_factor. This removes atomic_add nondeterminism and makes correctness debuggable. With M=128, N=32768, K=32768 the GEMM is the bottleneck \u2014 focus tuning there.\n- Alternatively, since M=128 is tiny, use a persistent split-K GEMM: one program per (m_tile=128, n_tile), looping K internally with large BLOCK_K=128, then fuse pair-max + row-sum + scale in the epilogue and write a single scalar per m via a tree-reduce across program_id(1) using a small auxiliary buffer reduced by a second kernel.\n- Ensure `tl.dot` uses `out_dtype=tl.float32` and consider disabling TF32 (`allow_tf32=False`) since K=32768 accumulation in TF32 can lose precision well beyond 5e-2 tolerance for sums of 16384 pooled values \u2014 this is the most likely root cause of the 175k-magnitude error.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 15,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

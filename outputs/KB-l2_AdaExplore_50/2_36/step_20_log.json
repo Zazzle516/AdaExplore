@@ -1,0 +1,30 @@
+{
+    "node_id": 20,
+    "parent_node_id": 19,
+    "context_node_ids": [
+        8,
+        18
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4951736953121253,
+    "max_reward": 0.4951736953121253,
+    "avg_reward": 0.4951736953121253,
+    "score": [
+        1,
+        1,
+        0.8851829863250333
+    ],
+    "small_guidance": "- The atomic_add accumulator over (N, OW) is fine but the inner BLOCK_OH loop serializes oh rows; try smaller BLOCK_OH (4 or 8) with more programs in the OH grid dimension to expose parallelism, and add configs with BLOCK_W=256 to better amortize the weight loads. Also include num_stages=3 variants since the dot is the hot path.\n- The weight tile (BLOCK_OC=128, BLOCK_IC=64) is reloaded for every (kh, kw) and every oh inside the program. Hoist the kh/kw weight loads outside the oh_local loop by reordering loops to (kh, kw, oh_local) so each weight tile is loaded once per program, and reuse across BLOCK_OH rows.\n- Replace the `acc` fp32 scratch + separate gelu_bias_kernel with a fused epilogue: have one program own a full (n, ow) column (persistent over OH), so the partial sum lives in registers and GELU+bias is applied before the single store \u2014 eliminates the atomic_add traffic entirely.",
+    "large_guidance": "- Restructure as one program per (n, ow_tile) that is persistent along OH: iterate oh inside the kernel, compute the min over OC per (oh, ow) on the fly, accumulate the sum into a register vector of length BLOCK_W, then apply GELU+bias and store once. This removes the atomic_add, removes the second kernel launch, and keeps the BLOCK_OC\u00d7BLOCK_IC weight tiles resident across many oh values.\n- Reorder the accumulation as (kh, kw) outer, (oh, ow) inner so each weight slice w[:, :, kh, kw] is loaded once and reused across all valid oh in the column; the stride-2/pad-1 index math means only \u2308OH/SH\u2309\u224864 input rows contribute per output column, so per-(kh,kw) you do a tight loop of ~64 dots into a (BLOCK_OC, BLOCK_W) tile, then min-reduce along OC and sum into the column accumulator.\n- Consider channels_last input layout (N, IH, IW, IC) so the GEMM-K (IC) load is contiguous; combined with packing weight as (KH, KW, IC, OC) this turns the inner tl.dot into a clean contiguous matmul and should remove the remaining bandwidth bottleneck on the 4090.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 21,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        0.8851829863250333
+    ]
+}

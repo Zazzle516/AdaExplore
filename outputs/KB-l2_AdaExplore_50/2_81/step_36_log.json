@@ -1,0 +1,29 @@
+{
+    "node_id": 36,
+    "parent_node_id": 33,
+    "context_node_ids": [
+        33
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5857289446144447,
+    "max_reward": 0.5857289446144447,
+    "avg_reward": 0.5857289446144447,
+    "score": [
+        1,
+        1,
+        1.6322637930691688
+    ],
+    "small_guidance": "- Add larger-K autotune configs since K=8192 is huge: try BLOCK_K=128 with BLOCK_M=128/BLOCK_N=128 num_warps=8 num_stages=3-4, and BLOCK_M=256/BLOCK_N=128/BLOCK_K=64 num_warps=8 num_stages=4. Deeper pipelining (num_stages=4) on this big-K shape often hides the load latency better than stages=3.\n- Drop the redundant final `tl.minimum/maximum` clamp after tanh (output already in (-1,1)) and replace the manual `(e2x-1)/(e2x+1)` with a numerically stabler form via `tl.tanh` \u2014 but since the input is already clamped to [-1,1], tanh is monotone so the post-clamp is provably a no-op; removing it shaves a couple of ops in the epilogue.\n- Pre-transpose-store the weight as row-major (K,N) once in `__init__` (already done) but also ensure it's allocated with `.contiguous()` after `.t()` so inner-N loads coalesce; consider storing weight in fp16/bf16 and accumulating in fp32 with `tl.dot(..., allow_tf32=True)` \u2014 this halves weight bandwidth on a bandwidth-bound 1024\u00d78192\u00d78192 GEMM.",
+    "large_guidance": "- The workload is a 1024\u00d78192\u00d78192 GEMM dominated by weight bandwidth (256MB of weights vs ~1.6ms \u2248 160GB/s effective). A redesign should target tensor-core throughput by casting weights (and optionally activations) to fp16/bf16 with fp32 accumulation; cuBLAS-equivalent fp16 GEMM on a 4090 hits ~5-10x of fp32 here. Keep the fused swish/div/clamp/tanh epilogue on the fp32 accumulator before storing fp32 output.\n- Alternatively, use a split-K or stream-K persistent kernel: with M=1024 only, tile counts are modest (e.g. 8\u00d764 = 512 tiles at 128\u00d7128) so a persistent grid sized to SM count with stream-K K-splitting can improve SM occupancy and L2 reuse of the activation tile across N-tiles.\n- Consider calling `torch._C._cuda` cuBLAS via `torch.addmm` for the GEMM and only using a Triton epilogue kernel for swish\u2192div\u2192clamp\u2192tanh fused over the output \u2014 for very large K the vendor GEMM is hard to beat, and the activation chain is trivially memory-bound on the 1024\u00d78192 output (32MB).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 37,
+    "global_best_node_id": 6,
+    "global_best_score": [
+        1,
+        1,
+        1.6743867296645023
+    ]
+}

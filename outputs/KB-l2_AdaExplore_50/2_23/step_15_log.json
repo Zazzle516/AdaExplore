@@ -1,0 +1,29 @@
+{
+    "node_id": 15,
+    "parent_node_id": 9,
+    "context_node_ids": [
+        14
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.48742007015848576,
+    "max_reward": 0.48742007015848576,
+    "avg_reward": 0.48742007015848576,
+    "score": [
+        1,
+        1,
+        0.8212155788075071
+    ],
+    "small_guidance": "- The kernel reads `y` twice from HBM for the same group; eliminate the second pass by accumulating per-channel sums `S_c` in pass 1 using `tl.static_range(CHANS_PER_GROUP)` with scalar accumulators (e.g. unroll into 3 scalars since CHANS_PER_GROUP=3), then compute `out_sum` from cached `S_c` without re-reading `y`.\n- SPATIAL = 22*30*30 = 19800; try `BLOCK_S=4096` or `8192` with `num_warps=8, num_stages=2` to better cover the reduction and reduce loop trip count; also try `num_warps=4` since each program is one (n,g) and there are 1024 programs already.\n- Replace `tl.atomic_add(out_ptr+n, result)` with a plain store into a `(N, num_groups)` partials tensor then sum along groups in a tiny follow-up kernel (or just `.sum(1)`), to avoid atomic serialization across the 8 groups of the same n.",
+    "large_guidance": "- The conv3d (via `F.conv3d`) dominates the 1.74 ms; with baseline 1.43 ms, tuning the GN+mean tail cannot reach fast_p>1. Replace the conv3d with a custom Triton im2col-style GEMM: grid over `(N, OC_tile, D_out*H_out*W_out tile)`, K-loop over `IC*kD*kH*kW=81`, fused bias add in the epilogue, channels-last layout for input so the GEMM-K loads coalesce.\n- Fuse the conv epilogue directly into a GN statistics pass: have the conv kernel write outputs into a `(N, OC, SPATIAL)` buffer in channels-last-by-group order, and in the same program (or a directly chained one) accumulate per-(n,g) sum and sumsq so GroupNorm's first pass is free.\n- Final design: kernel1 = fused conv3d+bias producing `y` and per-(n,g) (sum,sumsq) partials; kernel2 = per-(n,g) program that loads y, applies affine GN with the computed (mean,invstd), and accumulates a per-(n,g) post-affine sum; kernel3 (or torch) = sum over groups / (OC*SPATIAL) to give the scalar per batch. This removes the double-read of y entirely.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 16,
+    "global_best_node_id": 10,
+    "global_best_score": [
+        1,
+        1,
+        0.898688746619536
+    ]
+}

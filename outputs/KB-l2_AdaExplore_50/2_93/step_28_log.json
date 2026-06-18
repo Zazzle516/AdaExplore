@@ -1,0 +1,30 @@
+{
+    "node_id": 28,
+    "parent_node_id": 19,
+    "context_node_ids": [
+        10,
+        19
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.40536211844799347,
+    "max_reward": 0.40536211844799347,
+    "avg_reward": 0.40536211844799347,
+    "score": [
+        1,
+        1,
+        0.14423747719594593
+    ],
+    "small_guidance": "- Swap the gather loop nest: outer-loop over IC tiles, inner static_range over (kh,kw) so x_vals is loaded once per IC tile and reused across kernel positions; also bump BLOCK_OC to 128 with BLOCK_SP=64, BLOCK_IC=16 and num_warps=8 to feed tl.dot a proper 64x16 @ 16x128 tile.\n- Wrap the launch in `triton.autotune` over (BLOCK_OC, BLOCK_SP, BLOCK_IC, num_warps, num_stages) \u2208 {(128,64,16,8,3),(64,128,32,8,3),(128,128,16,8,2),(64,64,32,4,2)} keyed on (OC, OH*OW, IC).\n- Collapse pid_n into pid_sp (grid=(cdiv(N*OH*OW,BLOCK_SP), cdiv(OC,BLOCK_OC))) and reorder via a swizzle for better L2 reuse of weights across batch.",
+    "large_guidance": "- Reformulate as scatter-add input\u00d7weight outer product: one program per (N tile, IC tile, input-spatial tile) computes `x[n,ic,ih,iw] * w[ic,:,:,:]` and atomically scatters into the OH\u00d7OW output. With stride=2, kernel=4 each input pixel touches a 4\u00d74 output patch with no overlap inside a single (ih,iw); contention is only across IC, so use `tl.atomic_add` on the OC tile. This avoids the gather's `(oh-kh)%STRIDE` divergence and the wasted lanes when STRIDE>1 (only 1/STRIDE\u00b2 of (kh,kw) combos are valid per output).\n- Alternatively, do im2col-style GEMM where K = IC*KH*KW and M = N*OH*OW in channels-last layout (NHWC). Pre-pack weights to [OC, IC*KH*KW] once in __init__; the kernel becomes a standard GEMM with an index-mapped A-load and the bias+min+GELU+mul fused in the epilogue \u2014 this maps cleanly onto tl.dot with full BLOCK_M=128, BLOCK_N=128, BLOCK_K=32 utilization.\n- Fold conv_transpose bias add with `add_value` at init (`bias_eff = bias + add_value`) so the epilogue is a single fma + minimum + erf-GELU + mul, eliminating one broadcast add per output element.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 29,
+    "global_best_node_id": 8,
+    "global_best_score": [
+        1,
+        1,
+        0.932189808951965
+    ]
+}

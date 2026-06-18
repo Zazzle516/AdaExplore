@@ -1,0 +1,29 @@
+{
+    "node_id": 20,
+    "parent_node_id": 19,
+    "context_node_ids": [
+        19
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness failed with avg diff ~3.5e-4 \u2014 likely the BN stats path. Note that PyTorch's BatchNorm1d in training mode normalizes with the *biased* variance (divide by M) but updates `running_var` with the *unbiased* variance (divide by M-1). The current code does that correctly, but `bn_apply_kernel` reads `use_var = var` (biased) which is also correct. Double-check that `self.bn.weight`/`bias` are passed as fp32 contiguous and that `mean`/`var` dtype matches `gamma`/`beta` dtype in the apply kernel \u2014 mixing fp32 stats with fp32 params should be fine, but verify scale/shift are computed in fp32 before the multiply.\n- The more likely culprit: the GEMM uses `weight.stride(1), weight.stride(0)` to treat W as [K,N] without transposing, but then loads `b_ptrs = B + offs_k*stride_bk + offs_n*stride_bn` where `stride_bk = weight.stride(1) = 1` and `stride_bn = weight.stride(0) = K`. That is correct for nn.Linear's [N,K] layout. Verify by materializing `weight.t().contiguous()` once in `__init__` and passing it as a true [K,N] contiguous tensor \u2014 this also speeds up loads.\n- Add `tl.multiple_of`/`tl.max_contiguous` hints on the inner K loads and bump `num_stages` to 4 for the 128x256 BLOCK_K=64 config; M=1024, N=K=8192 favors larger N tiles.",
+    "large_guidance": "- Since this runs in eval most of the time but training-mode BN is being exercised here, write a single persistent fused epilogue: compute per-column sum and sum-of-squares inside the GEMM kernel (one program per N-tile accumulates partial stats across its M tile, atomically adds into global `sum`/`sumsq` buffers), then a small second kernel finalizes mean/invstd and a third applies normalization. This avoids re-reading the full MxN matrix three times.\n- Alternative: split the GEMM output into a staging buffer in fp32, then fuse `bn_mean` + `bn_var` into a single two-pass kernel per column (one program per N column, BLOCK_M=1024 strides over M once computing both sum and sumsq via Welford or naive). Currently mean and var each re-read the entire matrix \u2014 halving traffic on the stats pass is a big win at M=1024, N=8192.\n- Consider channels-last (transpose output to [N, M]) so the BN reduction axis becomes contiguous; the GEMM can directly write transposed by swapping the store indexing, making the BN stats kernel a contiguous row-reduction.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 21,
+    "global_best_node_id": 12,
+    "global_best_score": [
+        1,
+        1,
+        0.5658960882834168
+    ]
+}

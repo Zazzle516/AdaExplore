@@ -1,0 +1,30 @@
+{
+    "node_id": 21,
+    "parent_node_id": 11,
+    "context_node_ids": [
+        10,
+        11
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4848895765824205,
+    "max_reward": 0.4848895765824205,
+    "avg_reward": 0.4848895765824205,
+    "score": [
+        1,
+        1,
+        0.8003390068049686
+    ],
+    "small_guidance": "- Increase BLOCK_S2 to 256 or 512 with num_warps=8 to amortize the per-tile loop overhead and better saturate memory bandwidth; the conv output is 128\u00d7128=16384 elements per (N) so larger spatial tiles reduce launch/grid overhead.\n- Wrap `fused_post_kernel` in `triton.autotune` over `(BLOCK_S2 \u2208 {128,256,512}, num_warps \u2208 {4,8}, num_stages \u2208 {2,3})` keyed on (C, S) \u2014 current fixed BLOCK_S=128, BLOCK_C=64 leaves perf on the table.\n- Fuse the GN stats pass into the post kernel by using a single program per (N, group) for stats, storing into shared mean/rstd in global mem in one launch with a barrier-free split: alternatively, since C=64 and S=16384 fits, make stats kernel use BLOCK_S=1024 and num_warps=8 to cut its time roughly in half.",
+    "large_guidance": "- The torch `nn.Conv2d` (Conv2d with 8\u219264, 3\u00d73, 128\u00d7128, batch 128) dominates runtime; replace it with a custom Triton im2col-style GEMM kernel that fuses the conv, bias add, GN (using precomputed per-(N,group) mean/rstd from a small prior reduction), tanh, hardswish, residual add, and online-logsumexp across channels \u2014 emitting only the [N,1,H,W] result. This eliminates the conv output materialization and the second read in the post kernel.\n- Since the reduction over channels (C=64) is small and fits, design one program per (N, output-spatial tile): inside, compute conv outputs for all 64 OC into registers via a K-loop over IC*kh*kw=72, apply per-channel GN/tanh/hardswish/residual, and reduce across the channel register axis to logsumexp in-place \u2014 no intermediate [N,C,H,W] tensor ever stored.\n- Use channels-last layout for the input image and weight reshaped to [OC, IC*kh*kw]; precompute (in a tiny preceding kernel) per-(N, group) mean/rstd by streaming the conv result, OR compute stats in the same kernel via a two-pass (first pass: conv\u2192stats accumulator per group; second pass: conv\u2192fused tail). Two passes still beat the current 3-kernel pipeline because the conv is by far the heaviest op.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 22,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.9741129195974848
+    ]
+}

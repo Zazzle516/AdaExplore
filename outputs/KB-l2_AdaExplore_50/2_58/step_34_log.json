@@ -1,0 +1,31 @@
+{
+    "node_id": 34,
+    "parent_node_id": 33,
+    "context_node_ids": [
+        27,
+        28,
+        33
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.41974699275960276,
+    "max_reward": 0.41974699275960276,
+    "avg_reward": 0.41974699275960276,
+    "score": [
+        1,
+        1,
+        0.2629126902667226
+    ],
+    "small_guidance": "- The current fused post kernel is fine; the bottleneck is the torch ConvTranspose3d which dominates the 21.7ms runtime. Tuning ROWS/BLOCK_C/num_warps on the post kernel will not move the needle. If anything, bump ROWS to 128 and num_warps to 4 to reduce launch overhead, but expect <1% gain.\n- Verify channels_last_3d is actually being used by cuDNN for ConvTranspose3d on this shape \u2014 if cuDNN falls back to NCDHW, the contiguous() calls add copy overhead without payoff. Try benchmarking with and without the channels_last conversion.\n- Consider folding the scalar `self.bias` subtract and clamp into a smaller epilogue and skip the LSE recomputation path entirely \u2014 minor since LSE is already fused.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per (N, input-spatial tile), computing the outer product of input[n,:,d,h,w] with weight[:,:,kd,kh,kw] and scattering into output positions `(d*stride - pad + kd, ...)`. With in_channels=3, out_channels=16, kernel=3\u00b3=27, this is a tiny GEMM-K=3 per scatter \u2014 register-blocking over OC=16 fits easily.\n- Alternative: implement as a gather-style direct kernel where each program owns an output tile [N, OC_tile, D_out, H_tile, W_tile] and loops over (kd,kh,kw,ic) gathering only the input positions that map to it (the inverse stride mapping). Output is 128\u00d716\u00d731\u00d763\u00d763 \u2248 250M elements \u2014 large but bandwidth-bound, should fit in a few ms.\n- Fuse the LSE-over-channels + HardSwish + bias-sub + clamp directly into the convtranspose epilogue: since OC=16 fits in registers, a single program producing all 16 output channels for an output spatial tile can immediately reduce across C to produce LSE, apply the activation chain, and store one fp32 per spatial position. This eliminates the full conv-output write/read (16\u00d7 memory traffic reduction on the largest tensor in the graph).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 35,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.3267919485553208
+    ]
+}

@@ -1,0 +1,31 @@
+{
+    "node_id": 49,
+    "parent_node_id": 42,
+    "context_node_ids": [
+        33,
+        41,
+        42
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The output shape is wrong: reference produces `[N, 1, 1, 1]` after sum over dim=1 of a `[N, OC, 1, 1, 1]` tensor \u2014 that's correct shape but the value should be sum over OC of (avg + bias[oc]). Current kernel atomically adds per-(N,OC), which is correct in principle, but the bug is likely `pd * 2` indexing assuming pool_size=2 hardcoded; verify PD/PH/PW use actual pool_size and the conv output dims (OD=14 not divisible by 2 cleanly \u2014 OD=14, PD=7 OK, but OH=62, PH=31, OW=62, PW=31). Pass pool stride/size as kernel args rather than hardcoded `*2`.\n- Initialize `out` to zero on the correct device and ensure `bias_flat` length equals OC; also ensure atomic_add target dtype matches. Use `tl.atomic_add` with masking-safe addresses.\n- After fixing correctness, sweep `BLOCK` as constexpr power-of-two \u2265 PH*PW (=961 \u2192 1024), and add num_warps\u2208{4,8}, num_stages\u2208{2,3} to autotune keyed on (OC, PD, PH, PW).",
+    "large_guidance": "- The conv dominates runtime; replacing the pool+avg+bias+sum tail with a tiny atomic kernel cannot beat torch unless the conv itself is also custom. Write an im2col-style 3D conv kernel (one program per (N, OC tile, output-spatial tile)) with the divisor folded into the weight, and fuse the entire tail (maxpool3d \u2192 global avg \u2192 +bias \u2192 sum over OC) into the conv epilogue by accumulating per-(N) partial sums via atomics.\n- Alternatively, keep torch's conv but redesign the tail kernel as a single-pass reduction: one program per N, persistent over OC, reading the conv output once and producing the scalar sum directly. Avoid atomics by doing a full intra-program reduction across (OC, PD, PH, PW).\n- Hardcoding `*2` for pool stride is fragile \u2014 pass `POOL_D, POOL_H, POOL_W` as constexpr and compute window bounds at init.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 50,
+    "global_best_node_id": 15,
+    "global_best_score": [
+        1,
+        1,
+        0.8067704998582633
+    ]
+}

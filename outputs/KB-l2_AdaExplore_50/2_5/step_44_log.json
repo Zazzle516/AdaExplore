@@ -1,0 +1,30 @@
+{
+    "node_id": 44,
+    "parent_node_id": 27,
+    "context_node_ids": [
+        26,
+        27
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.48437288582022764,
+    "max_reward": 0.48437288582022764,
+    "avg_reward": 0.48437288582022764,
+    "score": [
+        1,
+        1,
+        0.7960763080168777
+    ],
+    "small_guidance": "- The current path uses cuDNN ConvTranspose2d + a fused bias-tanh epilogue; the conv dominates. Tune the epilogue only marginally (try BLOCK=8192, num_warps=8, num_stages=2) \u2014 but this will not close the gap since fast_p\u22480.8 is bottlenecked by the conv, not the tail.\n- Ensure `torch.backends.cudnn.benchmark=True` runs a warmup so cuDNN selects the best algo before timing; also try `x.contiguous(memory_format=torch.channels_last)` and `weight` in channels_last to hit faster cuDNN kernels on Ampere.\n- If keeping the epilogue, fold the bias broadcast using `(offs // HW) % C` with `tl.load(b_ptr + pid_c)` without a mask on pid_c (pid_c is always in-range) to drop a masked load.",
+    "large_guidance": "- Replace the cuDNN ConvTranspose2d with a custom Triton scatter-add (or equivalent gather) kernel: for stride=2, pad=1, k=4, OH=2*IH, OW=2*IW, each output pixel reads exactly 2\u00d72=4 input contributions per IC. Implement as a gather-style GEMM: program tile over (N, OC tile, output spatial tile); for each of the 4 (kh,kw) pairs determined by output parity, do a [BLOCK_SP, BLOCK_IC] \u00d7 [BLOCK_IC, BLOCK_OC] `tl.dot` against the weight slice w[:, :, kh, kw]. This removes the per-sp 3D weight gather currently used and enables tensor-core dot.\n- Use channels_last input layout (N, H, W, C contiguous) so the IC reduction dim is contiguous and loads coalesce; store output as channels_last too, then a final permute (or keep channels_last end-to-end if the consumer allows). Fuse bias-subtract + tanh in the epilogue on the accumulator before store.\n- Autotune over BLOCK_OC\u2208{32,64,128}, BLOCK_SP\u2208{32,64,128}, BLOCK_IC\u2208{16,32,64}, num_warps\u2208{4,8}, num_stages\u2208{2,3}. Split the spatial tile along OH and OW separately (2D spatial tile) so parity classes are uniform within a tile \u2014 then kh,kw become tile-uniform constants, allowing a clean `tl.dot` instead of per-element weight indexing.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 45,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        1.1098240294117647
+    ]
+}

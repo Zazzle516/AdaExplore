@@ -1,0 +1,29 @@
+{
+    "node_id": 2,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.43983604435261714,
+    "max_reward": 0.43983604435261714,
+    "avg_reward": 0.43983604435261714,
+    "score": [
+        1,
+        1,
+        0.4286473659090909
+    ],
+    "small_guidance": "- The softmax kernel itself is tiny relative to the ConvTranspose3d cost (output ~32\u00d764\u00d732\u00d764\u00d764 \u2248 268M elements). Tuning BLOCK/num_warps on softmax won't move fast_p much; focus on fusing clamp into a kernel that also writes the conv output, and try BLOCK=4096 with num_warps=16 for the S=65536 case to reduce loop iterations.\n- Fold the bias add of conv_transpose plus clamp into the softmax kernel's first pass by reading raw conv output (no bias) and adding bias inside \u2014 but bigger win is eliminating the conv_transpose torch call entirely.\n- Try `channels_last_3d` memory format for the conv_transpose output so the softmax row (over D*H*W) reads coalesce; currently the view forces a `.contiguous()` copy that adds latency.",
+    "large_guidance": "- The dominant cost is `nn.ConvTranspose3d` (in_channels=32, out_channels=64, k=3, stride=2, output ~32\u00d764\u00d732\u00d764\u00d764). Replace it with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile) computing the input\u00d7kernel outer product and atomically scattering into the strided output grid with stride=2/pad=1/output_padding=1 index math. Fuse bias add + clamp into the epilogue of that scatter so no separate clamp pass is needed.\n- Alternative: implement conv_transpose as a \"gather\" GEMM \u2014 one program per (N, OC tile, output-spatial tile), where each output voxel sums contributions from input voxels (i+pad-kk) divisible by stride. This avoids atomics and maps cleanly to a tiled GEMM over IC*kD*kH*kW. Pair with channels-last layout so IC is the contiguous GEMM-K axis.\n- Keep softmax as a separate kernel after the fused conv-transpose+clamp; it's already ~optimal in structure. The whole pipeline should be 3 kernels: (1) avg_pool3d (or fuse into conv-transpose input gather), (2) fused conv_transpose+bias+clamp, (3) softmax\u00d7scale.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 3,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.4286473659090909
+    ]
+}

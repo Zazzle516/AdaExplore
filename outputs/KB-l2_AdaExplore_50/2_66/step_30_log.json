@@ -1,0 +1,29 @@
+{
+    "node_id": 30,
+    "parent_node_id": 29,
+    "context_node_ids": [
+        26
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM is M=128, N=16384, K=16384 \u2014 M is tiny so BLOCK_M=32 or 64 is right, but add larger BLOCK_N (256) and BLOCK_K (64-128) configs with num_stages=4 and num_warps=8 to better hide the long K-loop latency; consider configs like {BLOCK_M:64, BLOCK_N:256, BLOCK_K:128, num_warps=8, num_stages=4} and {BLOCK_M:32, BLOCK_N:256, BLOCK_K:128, num_warps=8, num_stages=4}.\n- Add a GROUP_M block-swizzle (group along N since M is small \u2014 i.e. swizzle pid_n in row-groups of 4-8) for better L2 reuse of x across N tiles, since x (128\u00d716384=8MB) fits cache but weight (1GB) does not.\n- Fuse the bias add and the softmax max-reduction's per-tile partial max into the GEMM epilogue (write per-row tile max alongside output), so the softmax pass only needs to reduce M\u00d7(N/BLOCK_N) partials instead of streaming N=16384 values three times.",
+    "large_guidance": "- The dominant cost is the 128\u00d716384\u00d716384 GEMM (~70 GFLOPs) plus three full passes over the 128\u00d716384 output in softmax. Redesign as a single fused \"linear + softmax\" persistent kernel: one program per output row, keep the entire 16384-wide row in registers/SMEM by tiling N, compute partial GEMM tiles, and run an online softmax (Welford-style running max + renormalized sum) so the activation matrix is never materialized to HBM.\n- Alternatively, since M=128 is very small, treat this as a \"skinny GEMM\": one program per row (or row-pair), iterate N tiles in the outer loop and K tiles in the inner loop, accumulate softmax statistics online, then do a second pass over N tiles re-computing the dot-products (or caching them in HBM) to write normalized outputs \u2014 this trades recompute for one fewer HBM round-trip of the activation.\n- Store weight in a layout that matches the access pattern of the fused kernel (e.g. [N_tile, K] tiles contiguous) precomputed once in __init__, so each N-tile's K-loop is a fully coalesced stream of contiguous memory.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 31,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

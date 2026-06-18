@@ -1,0 +1,29 @@
+{
+    "node_id": 33,
+    "parent_node_id": 20,
+    "context_node_ids": [
+        23
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.514132971151028,
+    "max_reward": 0.514132971151028,
+    "avg_reward": 0.514132971151028,
+    "score": [
+        1,
+        1,
+        1.0415970119959803
+    ],
+    "small_guidance": "- The conv_transpose3d (torch) is now the dominant cost since the post-fusion kernel is already cheap; further tuning of `fused_post_kernel` (block sizes, warps) will not move the needle. If tuning, try larger `num_warps=8` only if W grows; otherwise keep current configs.\n- Consider fusing across the `Ho` dimension (process 2 ho rows per program so the pool's H reduction happens in registers without reloading), reducing launches by 2\u00d7.\n- Switch `x_c` to `channels_last_3d` memory format before the kernel so loads along W stay contiguous while channel-parallel work scales \u2014 but only meaningful if a custom conv-transpose is added.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)` computing the outer product of `input \u00d7 weight[ic, :, :, :, :]` and scatter-adding into the output grid with stride=2, padding=1, output_padding=1. This is where the headroom lives \u2014 the torch conv_transpose3d is ~90%+ of runtime.\n- Better: fuse the conv-transpose epilogue (sum_weight add + LayerNorm over C + 2\u00d72\u00d72 avg-pool + GELU) directly into the conv-transpose output store, so the full upsampled tensor (N,64,32,64,64) is never materialized \u2014 only the pooled (N,64,16,32,32) output is written. Note LayerNorm is over C only (norm_shape=(out_channels,)), so each output element's normalization is independent across spatial dims, making fusion natural: accumulate conv-transpose result for one (n, d, h, w) across all OC, then normalize across OC, pool, GELU.\n- Alternative GEMM formulation: gather-style conv-transpose where each output position computes `sum over (ic, kd, kh, kw) of input[n, ic, (od+pad-kd)/stride, ...] * weight[ic, oc, kd, kh, kw]` with validity masks; this maps cleanly to a tiled GEMM with K=IC*KD*KH*KW=864 and works well with autotuned BLOCK_M/N/K=(64,64,32) at num_warps=4, num_stages=2.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 34,
+    "global_best_node_id": 26,
+    "global_best_score": [
+        1,
+        1,
+        1.0415970119959803
+    ]
+}

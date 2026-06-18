@@ -1,0 +1,29 @@
+{
+    "node_id": 4,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The activation in the conv epilogue is Mish (`x * tanh(softplus(x))`), but the reference uses `tanh(softplus(x)) * x` which is also Mish \u2014 that's fine. However, the BN running stats used in `mish_bn_apply` are applied to the post-activation tensor, but the model's forward is `bn(mish(conv(x)))` \u2014 so BN folds with mish output, not conv output. Verify mish is applied before BN folding: the current kernel does mish in the conv epilogue, then BN scale/shift in `mish_bn_apply`. That order matches the reference, so the math is right. The numerical error (~0.0004 avg) suggests the BN running stats are being read in eval mode but the model is likely in training mode during the test \u2014 `self.training` is True, so it falls into `self.bn(y)` path. Check whether the test sets eval mode; if not, the path being measured uses `self.bn(y)` (PyTorch's BN), which should be exact. The 0.0004 mismatch likely comes from conv kernel numerical differences \u2014 increase `BLOCK_K` or use higher-precision accumulation.\n- Mask `x_vals` load: `ih`/`iw` aren't bounds-checked. With `kernel_size=3` and no padding, `OH=IH-2`, `OW=IW-2`, so `ih = oh + kh \u2208 [0, IH-1]` always \u2014 but when `offs_m >= OUT_HW`, `oh, ow` derive from out-of-range linear indices and may produce out-of-bounds `ih, iw`. Add explicit `(ih < IH) & (iw < IW)` to `x_mask`, otherwise OOB loads return garbage that the mask-other zeroing doesn't cover (since `mask=x_mask` covers it via `m_mask`, but the *pointer* is still computed with OOB strides \u2014 undefined when `offs_m` is huge). This is the likely correctness bug.\n- Once correctness is fixed, autotune across `BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, num_warps=8, num_stages=3` (fits ~98 KB SMEM) for the 16384-spatial \u00d7 128-OC \u00d7 576-K shape.",
+    "large_guidance": "- Switch to `channels_last` (NHWC) layout end-to-end: store input/weight/output with channel as the contiguous innermost axis so the GEMM-K reduction (`IC * KH * KW`) loads coalesce. Currently the `ic * stride_xc` stride dominates and forces strided reads inside the inner loop.\n- Restructure the conv kernel grid as `(pid_m over N*OH*OW tiles, pid_n over OC tiles)` collapsing the batch into the M dimension \u2014 this gives the autotuner a single big GEMM (M = 64\u00b7126\u00b7126 \u2248 1M) instead of 64 separate per-batch launches, which currently underutilizes large tiles.\n- Fuse the BN-eval scale/shift directly into the conv epilogue when `self.training=False`, eliminating the second kernel pass entirely; in training, accept the PyTorch BN call but ensure the conv-mish kernel writes to a contiguous NCHW buffer that BN can consume without a layout transpose.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 5,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.34309302
+    ]
+}

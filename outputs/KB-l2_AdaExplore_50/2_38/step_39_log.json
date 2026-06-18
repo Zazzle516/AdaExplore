@@ -1,0 +1,30 @@
+{
+    "node_id": 39,
+    "parent_node_id": 37,
+    "context_node_ids": [
+        33,
+        37
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.440073292099073,
+    "max_reward": 0.440073292099073,
+    "avg_reward": 0.440073292099073,
+    "score": [
+        1,
+        1,
+        0.43060465981735163
+    ],
+    "small_guidance": "- The fused tail kernel is fine; the bottleneck is the torch ConvTranspose3d. If keeping the current structure, autotune `_convt_pool_fused_kernel` over `BLOCK_OC \u2208 {16,32,64}`, `BLOCK_SP \u2208 {32,64,128}`, `num_warps \u2208 {4,8}`, `num_stages \u2208 {2,3}` and actually invoke it from `forward` (it is currently dead code).\n- For the tail kernel, reduce `BLOCK` to 1024-2048 with `num_warps=4` (S = OD*OH*OW after stride-2 transpose conv with pool is moderate per row) and try `num_stages=2`; the current BLOCK=4096/num_warps=16 likely under-utilizes given only B*C=2048 programs.\n- Precompute `1/S` and pass `clamp_min/clamp_max` as constexpr (already done) \u2014 additionally, fuse the second pass to avoid re-clamping by storing `exp(v-max)` in shared/registers during pass 1 if S fits in one block (S after this conv may not, so keep two-pass).",
+    "large_guidance": "- Replace torch's ConvTranspose3d with a custom scatter-add Triton kernel: one program per `(N, IC tile, input-spatial tile)`, compute `input * weight[ic,:,kd,kh,kw]` outer product and `atomic_add` into the output grid at `(od=id*stride-pad+kd, oh=..., ow=...)`. Fuse the AvgPool3d as an inline load (average the 2\u00d72\u00d72 raw block) so no intermediate pooled tensor is materialized. This is where the runtime sits (~12ms of the 21.9ms total vs 9.4ms baseline).\n- Alternatively use the gather formulation already sketched in `_convt_pool_fused_kernel` but actually wire it into `forward`; switch to channels-last output layout so the OC tile axis is contiguous for stores, and hoist the `(id_num - id_div*STRIDE)==0` divisibility check by iterating only over `kd` values matching `od % stride`.\n- Fuse bias + clamp into the conv epilogue so the tail kernel only does softmax + scale; this removes one full read/write pass over the (32,64,64,128,128) output tensor.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 40,
+    "global_best_node_id": 29,
+    "global_best_score": [
+        1,
+        1,
+        0.8572947318181818
+    ]
+}

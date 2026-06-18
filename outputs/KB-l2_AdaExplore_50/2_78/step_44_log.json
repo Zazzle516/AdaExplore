@@ -1,0 +1,29 @@
+{
+    "node_id": 44,
+    "parent_node_id": 18,
+    "context_node_ids": [
+        18
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4031315546826806,
+    "max_reward": 0.4031315546826806,
+    "avg_reward": 0.4031315546826806,
+    "score": [
+        1,
+        1,
+        0.12583532613211465
+    ],
+    "small_guidance": "- The fused pool+sum kernel is already cheap; the conv_transpose3d dominates 83ms runtime. Tuning BLOCK_W further won't move the needle \u2014 focus must shift to the conv. If staying small, try adding `BLOCK_W=2` and removing channels_last_3d (ConvTranspose3d in PyTorch may not have an optimized channels_last_3d path and could be slower).\n- Benchmark plain contiguous vs channels_last_3d for `nn.ConvTranspose3d` on this shape \u2014 channels_last_3d often falls back to a slow path for 3D transposed conv on Ampere/Ada.\n- Consider precomputing output spatial strides as constexpr if OW/OH/OD are fixed at 5/5/5 to let Triton bake bounds.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)`, computing the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and scatter-adding into the output grid at `(d*stride - pad + kd, ...)`. With stride=2, padding=2, kernel=5, output is 63\u00b3; the work is `16*32*64*32\u00b3*5\u00b3 \u2248 6.6e10` FMAs which can be done in <10ms on a 4090.\n- Alternatively, fuse the conv_transpose with the 6\u00d76\u00d76 max-pool by computing only the 5\u00b3=125 output elements that survive (since pool stride 6 picks ~1/216 of outputs), but max-pool needs all values within the window, so this is non-trivial \u2014 instead, produce conv output tile-by-tile into shared memory and reduce immediately, avoiding the 16\u00d764\u00d763\u00b3\u00d74B \u2248 64MB intermediate write.\n- The biggest win is fusing everything: kernel produces, for each `(n, od, oh, ow)`, the 6\u00b3 block of conv-transpose outputs across all 64 channels, max-reduces to one value per channel, then sums across channels \u2014 single kernel, zero intermediate global memory.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 45,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.9494847335423198
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 35,
+    "parent_node_id": 7,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4750695384615385,
+    "max_reward": 0.4750695384615385,
+    "avg_reward": 0.4750695384615385,
+    "score": [
+        1,
+        1,
+        0.7193236923076923
+    ],
+    "small_guidance": "- Combine the two-pass GroupNorm into a single persistent kernel per (N, group): one program loads the entire group's (C_PER_GROUP * S) elements once, computes ReLU + sum + sumsq, then re-streams from registers/SRAM to apply normalization \u2014 avoids the second full read of the conv output.\n- Tune BLOCK_S (try 2048, 4096) and num_warps (8) for the stats kernel since each group reduces 16 * 32768 = 524288 elements; larger blocks reduce loop overhead. Keep num_stages=2.\n- Pre-load `weight` and `bias` for all C_PER_GROUP channels once per program (vector of 16 floats) instead of one scalar load per (n,c) program.",
+    "large_guidance": "- The ConvTranspose3d dominates runtime (fast_p \u2248 0.72 with the norm already fused). Replace it with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile) computes the input \u00d7 kernel outer product and atomic-adds into the (D+2, H+2, W+2) output grid, handling kernel_size=3 with no stride/padding. Fuse the ReLU + GroupNorm stats accumulation into the same kernel epilogue is hard due to cross-program reduction, but at minimum fuse ReLU into a follow-up GN kernel that reads the conv output once.\n- Alternatively, since kernel_size=3 and stride=1, implement transposed conv as a *gather* GEMM: each output voxel reads from a 3\u00d73\u00d73 neighborhood of the input with the flipped kernel \u2014 this is equivalent to a regular conv with reversed weights and padding=2, and maps cleanly to an im2col-style tiled GEMM with BLOCK_M (OC) \u00d7 BLOCK_N (spatial) \u00d7 BLOCK_K (IC*27). Use channels-last layout so IC is contiguous along K.\n- Fold the GroupNorm affine into the conv epilogue only after stats are known \u2014 i.e. keep a two-kernel pipeline: (1) custom convT writing fp32 output, (2) single-pass GN that reads-once, computes mean/var via Welford across the group, applies ReLU+normalize+affine, writes once.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 36,
+    "global_best_node_id": 22,
+    "global_best_score": [
+        1,
+        1,
+        1.3618264077669902
+    ]
+}

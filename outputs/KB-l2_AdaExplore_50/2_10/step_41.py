@@ -1,0 +1,106 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import triton
+import triton.language as tl
+
+
+@triton.jit
+def fused_pool_htanh_mean_kernel(
+    x_ptr,
+    out_ptr,
+    H_IN: tl.constexpr,
+    W_IN: tl.constexpr,
+    H_OUT: tl.constexpr,
+    W_OUT: tl.constexpr,
+    HTANH_MIN: tl.constexpr,
+    HTANH_MAX: tl.constexpr,
+    BLOCK: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    base = pid * H_IN * W_IN
+    TOTAL: tl.constexpr = H_OUT * W_OUT
+    INV_COUNT: tl.constexpr = 1.0 / (H_OUT * W_OUT)
+
+    offs = tl.arange(0, BLOCK)
+    acc = tl.zeros([BLOCK], dtype=tl.float32)
+
+    for start in tl.static_range(0, TOTAL, BLOCK):
+        idx = start + offs
+        mask = idx < TOTAL
+        oh = idx // W_OUT
+        ow = idx % W_OUT
+
+        ih0 = oh * 2
+        iw0 = ow * 2
+
+        row0 = base + ih0 * W_IN + iw0
+        row1 = row0 + W_IN
+
+        v00 = tl.load(x_ptr + row0, mask=mask, other=0.0)
+        v01 = tl.load(x_ptr + row0 + 1, mask=mask, other=0.0)
+        v10 = tl.load(x_ptr + row1, mask=mask, other=0.0)
+        v11 = tl.load(x_ptr + row1 + 1, mask=mask, other=0.0)
+
+        m = tl.maximum(tl.maximum(v00, v01), tl.maximum(v10, v11))
+        m = tl.minimum(tl.maximum(m, HTANH_MIN), HTANH_MAX)
+        acc += tl.where(mask, m, 0.0)
+
+    s = tl.sum(acc, axis=0)
+    mean = s * INV_COUNT
+    e2 = tl.exp(2.0 * mean)
+    out_val = (e2 - 1.0) / (e2 + 1.0)
+    tl.store(out_ptr + pid, out_val)
+
+
+class ModelNew(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride, padding,
+                 maxpool_kernel_size, maxpool_stride, hardtanh_min, hardtanh_max):
+        super(ModelNew, self).__init__()
+        self.conv_transpose = nn.ConvTranspose2d(in_channels, out_channels, kernel_size,
+                                                  stride=stride, padding=padding)
+        self.maxpool_kernel_size = maxpool_kernel_size
+        self.maxpool_stride = maxpool_stride
+        self.hardtanh_min = float(hardtanh_min)
+        self.hardtanh_max = float(hardtanh_max)
+
+    def forward(self, x):
+        x = self.conv_transpose(x)
+        x = x.contiguous()
+        N, C, H, W = x.shape
+
+        if self.maxpool_kernel_size == 2 and self.maxpool_stride == 2 and H % 2 == 0 and W % 2 == 0:
+            H_out = H // 2
+            W_out = W // 2
+            out = torch.empty((N, C, 1, 1), device=x.device, dtype=x.dtype)
+            total = H_out * W_out
+            # pick BLOCK
+            if total <= 1024:
+                BLOCK = 1024
+                num_warps = 4
+            elif total <= 4096:
+                BLOCK = 2048
+                num_warps = 8
+            elif total <= 16384:
+                BLOCK = 4096
+                num_warps = 8
+            else:
+                BLOCK = 8192
+                num_warps = 8
+            grid = (N * C,)
+            fused_pool_htanh_mean_kernel[grid](
+                x, out,
+                H, W,
+                H_out, W_out,
+                self.hardtanh_min, self.hardtanh_max,
+                BLOCK=BLOCK,
+                num_warps=num_warps,
+                num_stages=2,
+            )
+            return out
+        else:
+            x = F.max_pool2d(x, kernel_size=self.maxpool_kernel_size, stride=self.maxpool_stride)
+            x = F.hardtanh(x, min_val=self.hardtanh_min, max_val=self.hardtanh_max)
+            x = torch.mean(x, dim=(2, 3), keepdim=True)
+            x = torch.tanh(x)
+            return x

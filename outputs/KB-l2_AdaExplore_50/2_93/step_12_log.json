@@ -1,0 +1,29 @@
+{
+    "node_id": 12,
+    "parent_node_id": 11,
+    "context_node_ids": [
+        11
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.46569932695374805,
+    "max_reward": 0.46569932695374805,
+    "avg_reward": 0.46569932695374805,
+    "score": [
+        1,
+        1,
+        0.642019447368421
+    ],
+    "small_guidance": "- The inner GEMM-K loop iterates only IC/BLOCK_IC = 1-2 times; raise BLOCK_IC to 64 across all configs (IC=64 fits exactly) and add larger tile configs like `BLOCK_N=128, BLOCK_OC=128, BLOCK_IC=64, num_warps=8, num_stages=2/4` to maximize tensor-core utilization per program.\n- Skip the explicit `x.permute().contiguous()` and `out.permute().contiguous()` round-trips \u2014 these layout conversions are pure overhead. Either cache an NHWC input copy via a fused transpose kernel or rewrite the main kernel to gather directly from NCHW (compute `n*C*H*W + ic*H*W + h*W + w` offsets) so the only memory traffic is the conv itself.\n- Drop `num_stages=4` configs (Ada has limited shared mem with large tiles) and add a `num_stages=2` variant for the largest tiles to avoid spills; key the autotune on `N, IC, OC, H_OUT, W_OUT` so it re-tunes if shape changes.",
+    "large_guidance": "- Switch from a gather-style transposed conv (current: for each output, find contributing inputs by checking `(out-k) % stride == 0`) to a **scatter-add formulation**: one program per `(N, IC tile, input-spatial tile)` computes the `input \u00d7 weight` outer product and scatter-adds into the `KH*KW` output positions. With stride=2, kernel=4 every input contributes to exactly 16 output cells and there is no divisibility branching \u2014 this removes the wasted lanes (currently ~75% of `(kh,kw)` iterations fail the stride-divisibility test).\n- Eliminate the NCHW\u2194NHWC permute round-trips entirely: have the kernel consume NCHW input and produce NCHW output directly. The OC dimension can still be the GEMM-N axis since the pre-permuted weight buffer `[IC, KH, KW, OC]` is independent of activation layout.\n- Fuse bias-add, `min(\u00b7,0)`, GELU (closed-form `0.5*x*(1+erf(x/\u221a2))`), and `*multiply_value` into the scatter-add kernel's epilogue, but be careful: with scatter-add the activation must be applied at the final accumulation point, so prefer a two-kernel split (scatter-add accumulate \u2192 fused epilogue over the output) OR pre-accumulate per-output-tile contributions in registers before the epilogue store. The latter is cleaner if you tile by output instead, using an im2col-direct gather but with BLOCK_KHW unrolled to skip invalid (kh,kw) pairs at compile time for the known stride=2 case.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 13,
+    "global_best_node_id": 8,
+    "global_best_score": [
+        1,
+        1,
+        0.932189808951965
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 45,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        20
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The kernel uses fp16 weights but the reference is fp32 Linear; switch to fp32 weights and use `tl.dot` with proper 2D tiling (BLOCK_M for batch dim) instead of computing one batch row per program via outer-product `sum(w*x)`. This will use tensor cores via `tl.dot`.\n- Increase parallelism over the K dimension: with K=32768 and a single program per (batch, split), each program serializes a huge K-loop. Add a split-K reduction or larger N_SPLITS (e.g. 32-64) to improve SM occupancy on the 4090.\n- Add autotune configs with smaller BLOCK_N (32) but more splits, and try num_stages=4 to better pipeline the large K-loop loads.",
+    "large_guidance": "- Restructure as a tiled GEMM using `tl.dot` with BLOCK_M tiling over the batch dimension (e.g. BLOCK_M=64, BLOCK_N=128, BLOCK_K=32). Grid = (M_tiles, N_splits). Each program computes a (BLOCK_M, BLOCK_N) tile, applies bias + maxpool-2 reduction + sum along N within the tile, and writes a partial [BLOCK_M] vector to a (B, N_splits) scratch buffer. This is far more efficient than the current outer-product accumulation.\n- Keep weights in fp32 (matches reference) and rely on tensor cores via `tl.dot(x_tile, w_tile.T)`; the current fp16 cast of weights is both incorrect-precision-prone and doesn't actually enable tensor cores since `tl.dot` is not used.\n- Consider a single-stage persistent kernel: since OUT_FEATURES is divisible by kernel_size=2, the maxpool+sum collapses to `sum_i max(y[2i], y[2i+1])`, which can be fused directly inside the GEMM epilogue per N-tile, eliminating the separate reduce kernel entirely (write final scaled scalar per batch using atomic adds across N-splits, or do a tiny final reduce).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 46,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 22,
+    "parent_node_id": 19,
+    "context_node_ids": [
+        1,
+        20
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.46206011475703784,
+    "max_reward": 0.46206011475703784,
+    "avg_reward": 0.46206011475703784,
+    "score": [
+        1,
+        1,
+        0.6119959467455621
+    ],
+    "small_guidance": "- Increase `BLOCK_HW` (try 128/256) and sweep `num_warps` in {4,8} via `triton.autotune` \u2014 the kernel is bandwidth-bound on the D=32 reduction loop and larger HW tiles reduce launch/index overhead.\n- Bump `num_stages` to 3-4 so the D-loop loads can be software-pipelined; the inner loop is purely load+add and benefits from prefetch.\n- Cast the conv_transpose output to channels_last_3d (or transpose to (B, D, HW, C) once) so the D-loop's contiguous axis aligns with HW; currently each `d` step jumps by HW elements per channel row, which is fine, but coalescing across `offs_hw` is the hot path \u2014 verify the conv output is `.contiguous()` only once (it already is) and avoid re-contiguous calls.",
+    "large_guidance": "- The torch ConvTranspose3d dominates: input (16,16,32,128,128) \u2192 output (16,64,32,128,128) with k=3,s=1,p=1 is essentially a regular 3D conv in disguise. Replace it with a custom Triton conv kernel (implicit-GEMM, one program per (N, OC-tile, output-spatial-tile), gather from input with the transposed-conv index math) and fuse the mean-over-D + bias + softmax-over-C + tanh + scale into the same kernel by having each program accumulate over D as well as the kh/kw/kd/ic reduction, then doing the channel softmax across an OC tile that spans all 64 channels.\n- Since OC=64 fits in a single tile, structure the kernel as: one program per (N, HW-tile), iterate (d_out, kd, kh, kw, ic) accumulating a [64, BLOCK_HW] tile of post-conv values summed over D in registers; then do bias+softmax+tanh+scale in the epilogue and store [N, 64, HW]. This collapses the entire forward into one kernel and removes the giant (16,64,32,128,128)=128M-elem intermediate write/read that currently dominates.\n- Fold the conv_transpose bias into the same accumulator; keep num_warps=8, BLOCK_HW=64-128, and use `tl.dot` for the (OC, IC*kd*kh*kw) \u00d7 (IC*kd*kh*kw, BLOCK_HW) matmul if you flatten the gather, otherwise an explicit reduction loop is fine given small k=3.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 23,
+    "global_best_node_id": 10,
+    "global_best_score": [
+        1,
+        1,
+        2.7991154262516913
+    ]
+}

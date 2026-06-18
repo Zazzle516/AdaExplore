@@ -1,0 +1,29 @@
+{
+    "node_id": 41,
+    "parent_node_id": 38,
+    "context_node_ids": [
+        38
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.48843854459986424,
+    "max_reward": 0.48843854459986424,
+    "avg_reward": 0.48843854459986424,
+    "score": [
+        1,
+        1,
+        0.8296179929488795
+    ],
+    "small_guidance": "- The current kernel still calls `torch.nn.Conv3d` (PyTorch) before launching the fused post-conv kernel \u2014 the conv is the heavy op and dominates runtime. Tuning `BLOCK_S`/`num_warps` on the elementwise+GN+mean tail will yield marginal gains; try `BLOCK_S=1024`, `num_warps=8`, `num_stages=2` only as a stopgap.\n- The two-pass design recomputes hardswish; for the tail kernel, consider a single-pass Welford reduction fused with the affine+mean to halve memory reads of `x_flat`.\n- Ensure `x_flat` skips the `.contiguous()` copy when conv output already is contiguous (it is, after reshape on a contiguous tensor) \u2014 avoid the reshape allocation by passing the 5D tensor directly with computed strides.",
+    "large_guidance": "- Replace `nn.Conv3d` with a custom Triton conv3d kernel: implement as an implicit-im2col GEMM with one program per `(B, OC_tile, output-spatial tile)`. With OC=16, KD=KH=KW=4, IC=3 \u2192 K = 3\u00b764 = 192, and output spatial = 13\u00b729\u00b729 = 10933 per batch; tile (BLOCK_M=16 over OC, BLOCK_N=64 or 128 over spatial, BLOCK_K=32 or full 192). Fuse the conv bias add, HardSwish, and even the GroupNorm pass-1 (sum/sumsq) into the epilogue so the conv output is never written to HBM just to be reread.\n- Better: persistently keep the conv output for one `(B, group)` in registers/SMEM \u2014 emit per-program the partial sum/sumsq across the spatial tile, then a second small kernel (or atomics) finalizes mean/rstd and the affine+mean reduction. This removes the entire `x_flat` materialization (B\u00b7C\u00b7S = 1024\u00b716\u00b710933 fp32 \u2248 700 MB of traffic).\n- Use channels_last3d (NDHWC) layout for the conv so the IC-axis loads coalesce across the GEMM-K dimension; weight should be pre-permuted to (OC, KD, KH, KW, IC) at init.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 42,
+    "global_best_node_id": 30,
+    "global_best_score": [
+        1,
+        1,
+        0.8530881206706803
+    ]
+}

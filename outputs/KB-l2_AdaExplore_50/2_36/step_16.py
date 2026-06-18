@@ -1,0 +1,215 @@
+import math
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import triton
+import triton.language as tl
+
+
+@triton.autotune(
+    configs=[
+        triton.Config({'BLOCK_M': 64, 'BLOCK_N': 64, 'BLOCK_K': 32}, num_warps=4, num_stages=2),
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 64, 'BLOCK_K': 32}, num_warps=4, num_stages=2),
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 64, 'BLOCK_K': 32}, num_warps=8, num_stages=2),
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 128, 'BLOCK_K': 32}, num_warps=8, num_stages=2),
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 128, 'BLOCK_K': 32}, num_warps=8, num_stages=3),
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 128, 'BLOCK_K': 64}, num_warps=8, num_stages=3),
+        triton.Config({'BLOCK_M': 64, 'BLOCK_N': 128, 'BLOCK_K': 32}, num_warps=4, num_stages=2),
+        triton.Config({'BLOCK_M': 64, 'BLOCK_N': 128, 'BLOCK_K': 64}, num_warps=8, num_stages=2),
+        triton.Config({'BLOCK_M': 256, 'BLOCK_N': 64, 'BLOCK_K': 32}, num_warps=8, num_stages=2),
+        triton.Config({'BLOCK_M': 256, 'BLOCK_N': 128, 'BLOCK_K': 32}, num_warps=8, num_stages=2),
+        triton.Config({'BLOCK_M': 256, 'BLOCK_N': 128, 'BLOCK_K': 32}, num_warps=8, num_stages=3),
+    ],
+    key=['IC', 'OC', 'IH', 'IW', 'KH', 'KW', 'OH', 'OW'],
+)
+@triton.jit
+def conv_transpose_gemm_kernel(
+    x_ptr, w_ptr, b_ptr, out_ptr,
+    N, IC, IH, IW,
+    OC, OH, OW,
+    KH: tl.constexpr, KW: tl.constexpr,
+    SH: tl.constexpr, SW: tl.constexpr,
+    PH: tl.constexpr, PW: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+):
+    """
+    Weight layout: (IC, KH, KW, OC) contiguous - so OC is the contiguous axis.
+    """
+    pid_n = tl.program_id(0)
+    pid_oc = tl.program_id(1)
+    pid_sp = tl.program_id(2)
+
+    sp_offs = pid_sp * BLOCK_M + tl.arange(0, BLOCK_M)  # [BLOCK_M]
+    oc_offs = pid_oc * BLOCK_N + tl.arange(0, BLOCK_N)  # [BLOCK_N]
+
+    oh = sp_offs // OW
+    ow = sp_offs % OW
+    sp_mask = sp_offs < (OH * OW)
+    oc_mask = oc_offs < OC
+
+    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+
+    K_total = IC * KH * KW
+
+    # iterate over K in blocks
+    for k_start in range(0, K_total, BLOCK_K):
+        k_offs = k_start + tl.arange(0, BLOCK_K)  # [BLOCK_K]
+        k_mask = k_offs < K_total
+
+        ic = k_offs // (KH * KW)
+        rem = k_offs % (KH * KW)
+        kh = rem // KW
+        kw = rem % KW
+
+        # gather x: shape [BLOCK_M, BLOCK_K]
+        ih_num = oh[:, None] + PH - kh[None, :]
+        iw_num = ow[:, None] + PW - kw[None, :]
+        ih = ih_num // SH
+        iw = iw_num // SW
+        valid = ((ih_num % SH) == 0) & ((iw_num % SW) == 0) & \
+                (ih >= 0) & (ih < IH) & (iw >= 0) & (iw < IW)
+        x_off = pid_n * (IC * IH * IW) + ic[None, :] * (IH * IW) + ih * IW + iw
+        x_mask = valid & sp_mask[:, None] & k_mask[None, :]
+        x_tile = tl.load(x_ptr + x_off, mask=x_mask, other=0.0)  # [BLOCK_M, BLOCK_K]
+
+        # gather w: shape [BLOCK_K, BLOCK_N]
+        # W is (IC, KH, KW, OC) contiguous; index [ic, kh, kw, oc]
+        # w_off = (ic*KH*KW + kh*KW + kw)*OC + oc
+        k_idx = ic * (KH * KW) + kh * KW + kw  # [BLOCK_K]
+        w_off = k_idx[:, None] * OC + oc_offs[None, :]
+        w_mask = k_mask[:, None] & oc_mask[None, :]
+        w_tile = tl.load(w_ptr + w_off, mask=w_mask, other=0.0)  # [BLOCK_K, BLOCK_N]
+
+        acc += tl.dot(x_tile, w_tile, allow_tf32=True)
+
+    # bias
+    b_vals = tl.load(b_ptr + oc_offs, mask=oc_mask, other=0.0)
+    acc += b_vals[None, :]
+
+    # store: out is (N, OC, OH*OW) contiguous. Transpose acc to [BLOCK_N, BLOCK_M]
+    # so the inner (contiguous) axis is spatial -> coalesced stores.
+    acc_t = tl.trans(acc)  # [BLOCK_N, BLOCK_M]
+    out_off = (pid_n * (OC * OH * OW)
+               + oc_offs[:, None] * (OH * OW)
+               + sp_offs[None, :])
+    mask = oc_mask[:, None] & sp_mask[None, :]
+    tl.store(out_ptr + out_off, acc_t, mask=mask)
+
+
+@triton.jit
+def min_sum_gelu_bias_kernel(
+    inp_ptr,   # (N, OC, OH, OW)
+    bias_ptr,  # (1,)
+    out_ptr,   # (N, OW)
+    N, OC, OH, OW,
+    BLOCK_H: tl.constexpr,
+    BLOCK_OC: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    pid_n = pid // OW
+    pid_w = pid % OW
+
+    oc_range = tl.arange(0, BLOCK_OC)
+    oh_range = tl.arange(0, BLOCK_H)
+    c_mask = oc_range < OC
+
+    sum_acc = 0.0
+
+    for h_start in range(0, OH, BLOCK_H):
+        oh_offs = h_start + oh_range
+        h_mask = oh_offs < OH
+
+        offs = (pid_n * OC * OH * OW
+                + oc_range[:, None] * (OH * OW)
+                + oh_offs[None, :] * OW
+                + pid_w)
+        mask = c_mask[:, None] & h_mask[None, :]
+        vals = tl.load(inp_ptr + offs, mask=mask, other=float('inf'))
+        min_vals = tl.min(vals, axis=0)
+        min_vals = tl.where(h_mask, min_vals, 0.0)
+        sum_acc += tl.sum(min_vals, axis=0)
+
+    x = sum_acc
+    gelu = 0.5 * x * (1.0 + tl.erf(x / 1.4142135623730951))
+    b = tl.load(bias_ptr)
+    res = gelu + b
+
+    out_off = pid_n * OW + pid_w
+    tl.store(out_ptr + out_off, res)
+
+
+def conv_transpose2d_triton(x, weight, bias_param, stride, padding, output_padding):
+    N, IC, IH, IW = x.shape
+    # weight permuted to (IC, KH, KW, OC)
+    IC_w, KH, KW, OC = weight.shape
+    assert IC == IC_w
+    SH, SW = stride, stride
+    PH, PW = padding, padding
+    OH = (IH - 1) * SH - 2 * PH + KH + output_padding
+    OW = (IW - 1) * SW - 2 * PW + KW + output_padding
+
+    out = torch.empty((N, OC, OH, OW), device=x.device, dtype=torch.float32)
+
+    grid = lambda META: (N, triton.cdiv(OC, META['BLOCK_N']), triton.cdiv(OH * OW, META['BLOCK_M']))
+    conv_transpose_gemm_kernel[grid](
+        x, weight, bias_param, out,
+        N, IC, IH, IW,
+        OC, OH, OW,
+        KH, KW, SH, SW, PH, PW,
+    )
+    return out
+
+
+def min_sum_gelu_bias_triton(inp, bias):
+    N, OC, OH, OW = inp.shape
+    out = torch.empty((N, 1, 1, OW), device=inp.device, dtype=torch.float32)
+    # pick BLOCK_OC as smallest pow2 >= OC
+    BLOCK_OC = 1
+    while BLOCK_OC < OC:
+        BLOCK_OC *= 2
+    BLOCK_H = 64
+    grid = (N * OW,)
+    min_sum_gelu_bias_kernel[grid](
+        inp, bias, out,
+        N, OC, OH, OW,
+        BLOCK_H=BLOCK_H, BLOCK_OC=BLOCK_OC,
+        num_warps=2, num_stages=2,
+    )
+    return out
+
+
+class ModelNew(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride, padding, output_padding, bias_shape):
+        super().__init__()
+        self.conv_transpose = nn.ConvTranspose2d(in_channels, out_channels, kernel_size, stride, padding, output_padding)
+        self.bias = nn.Parameter(torch.randn(bias_shape))
+        self.stride = stride
+        self.padding = padding
+        self.output_padding = output_padding
+        self.kernel_size = kernel_size
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self._weight_perm_cache = None
+
+    def _get_perm_weight(self):
+        # original weight: (IC, OC, KH, KW) -> permute to (IC, KH, KW, OC)
+        w = self.conv_transpose.weight
+        if (self._weight_perm_cache is None
+            or self._weight_perm_cache.device != w.device
+            or self._weight_perm_cache.dtype != w.dtype
+            or self._weight_perm_cache._version != w._version):
+            w_p = w.detach().permute(0, 2, 3, 1).contiguous().cuda()
+            w_p._version = w._version
+            self._weight_perm_cache = w_p
+        return self._weight_perm_cache
+
+    def forward(self, x):
+        x = x.contiguous().cuda()
+        w = self._get_perm_weight()
+        b = self.conv_transpose.bias.contiguous().cuda()
+        conv_out = conv_transpose2d_triton(x, w, b, self.stride, self.padding, self.output_padding)
+        bias_scalar = self.bias.contiguous().view(-1)[0:1].cuda()
+        out = min_sum_gelu_bias_triton(conv_out, bias_scalar)
+        return out

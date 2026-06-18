@@ -1,0 +1,29 @@
+{
+    "node_id": 28,
+    "parent_node_id": 7,
+    "context_node_ids": [
+        7
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.45285835051546397,
+    "max_reward": 0.45285835051546397,
+    "avg_reward": 0.45285835051546397,
+    "score": [
+        1,
+        1,
+        0.5360813917525773
+    ],
+    "small_guidance": "- The ConvTranspose3d dominates runtime here (~15ms baseline, current 29ms means conv is the bottleneck and the epilogue work is overhead). Tuning the mean/epilogue kernels further won't help \u2014 focus tuning effort on a custom convtranspose kernel.\n- If keeping current structure, fuse `fast_mean_nc` and `_epilogue_kernel` into a single kernel: one program per (N, C), reduce over D*H*W, then directly compute `m * a + b` and store \u2014 eliminates the intermediate (N,C) tensor and an extra launch.\n- Bump `BLOCK` in the mean kernel to 2048 with `num_warps=8, num_stages=4` since M = D'*H'*W' is large after transpose conv (\u224820*36*36 \u2248 25k elements per (N,C)).",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: program per (N, IC tile, input-spatial tile), compute the `input \u00d7 weight` outer product and scatter-add into the output grid with stride/padding/output_padding index math. This is the highest-headroom move since the conv consumes essentially all runtime.\n- Since the entire output is reduced to (N, C, 1, 1, 1) via global average pooling, the conv output never needs to be materialized. Design a fused kernel: each program accumulates partial sums of the convtranspose output over the spatial dim directly into an (N, C) accumulator using atomic adds (or a two-stage reduction). Then apply `scale * gamma * inv` and bias in a tiny epilogue. This collapses conv + scale + BN + GAP into one pass over the input.\n- Fold scale_factor and BN affine into a single (a, b) per channel computed once per forward (eval path) \u2014 but keep the BN stats update path correct for training. At eval, the whole pipeline reduces to: `out[n,c] = a[c] * sum_{d,h,w}(convT(x)[n,c,d,h,w]) / (D'H'W') + b[c]`.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 29,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        1.599996769230769
+    ]
+}

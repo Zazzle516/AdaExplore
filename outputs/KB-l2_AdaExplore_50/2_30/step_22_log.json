@@ -1,0 +1,29 @@
+{
+    "node_id": 22,
+    "parent_node_id": 21,
+    "context_node_ids": [
+        21
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (max_diff ~1.6e-3, avg ~2.3e-4) suggests a numerical precision issue in the GroupNorm reduction. With CPG=512 and large GEMM outputs, single-pass variance via `sum(xc*xc)` after subtracting mean is fine, but consider casting accumulator explicitly and using `tl.sum` over float32. The issue may actually be the GEMM: verify weight stride mapping \u2014 `weight` is (N=out, K=in) row-major, so `weight.stride(0)=K, weight.stride(1)=1`. Passing `stride_bk=weight.stride(1)=1, stride_bn=weight.stride(0)=K` is correct for B=W^T. Double-check by switching to `tl.dot(a, tl.trans(b_tile))` loading weight directly.\n- Tighten autotune: at M=1024, N=8192, K=8192, prefer `BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, num_warps=8, num_stages=4` and `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64`. Drop the small 64x64 configs.\n- For GroupNorm with CPG=512, BLOCK=512 is exact \u2014 use `num_warps=4`, and skip the `tl.where(mask, ...)` since mask is fully true when CPG is a power of two.",
+    "large_guidance": "- Redesign GEMM to load `weight` in its native (N, K) layout directly using `tl.dot(a, tl.trans(b))` where b is loaded as a (BLOCK_N, BLOCK_K) tile \u2014 this avoids strided-K loads of B and is the standard cuBLAS-matching pattern. This may also resolve the correctness issue if the current stride swap is subtly wrong.\n- Consider a split-K or persistent GEMM for M=1024, N=8192, K=8192 \u2014 work is 137 GFLOPs, and a persistent kernel with `BLOCK_M=128, BLOCK_N=256` reduces launch overhead and improves L2 reuse.\n- GroupNorm reduction: with CPG=512 channels per group across 16 groups \u00d7 1024 rows = 16384 programs, each doing a 512-wide reduction. This is fine, but fusing the hardtanh into the GEMM epilogue is impossible (needs cross-channel stats). Keep the two-kernel split but ensure the GEMM output is written in a layout that makes the GroupNorm reads contiguous along CPG \u2014 current row-major (M, C) layout already does this.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 23,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

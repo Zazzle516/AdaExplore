@@ -1,0 +1,31 @@
+{
+    "node_id": 8,
+    "parent_node_id": 6,
+    "context_node_ids": [
+        3,
+        4,
+        6
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing: the BN apply kernel uses `offs_m[:, None] * N + offs_n[None, :]` assuming `out` is contiguous, which it is, but verify `y` and `out` strides match `(N, 1)`. Also, in training mode the reference `nn.BatchNorm1d` normalizes using the **biased** batch variance (population variance) for the forward output, which matches `var = sum_d2 / M` \u2014 that's correct. The likely correctness bug is using `torch.rand` inputs (positive only) combined with fp32 accumulation diff exceeding 5e-2 due to TF32 in `tl.dot`. Try `allow_tf32=False` or cast accumulator carefully; max diff 0.0024 is small but trial check may use stricter tol \u2014 re-check the tolerance.\n- Actually 0.0024 < 5e-2, so correctness should pass. The \"Output mismatch\" with avg_diff 0.000353 suggests the comparison harness re-runs forward and BN running stats get updated twice, shifting outputs across trials. Fix: in training, do not mutate `self.bn.running_mean/var` (or guard so the reference and custom both update identically). Simpler: call `F.batch_norm` semantics exactly \u2014 apply with batch stats but also use unbiased for running. Double-check the alpha/momentum convention matches PyTorch's `x_new = (1-mom)*x_old + mom*x_batch`.\n- Add `num_warps`/`num_stages` autotune to `bn_apply_kernel` and increase `BLOCK_M` to 128 for better memory coalescing on the 1024\u00d78192 output.",
+    "large_guidance": "- Fuse the BN apply step into the GEMM epilogue's *second* pass: keep the GEMM kernel as-is to materialize `out`, then run a single fused kernel that computes per-column mean/var with a persistent column-tiled reduction AND writes the normalized output in one pass (one program per N-tile, looping over M twice: once to reduce, once to apply). This eliminates the intermediate `out` round-trip in the BN apply.\n- Alternatively, since M=1024 and N=8192 are both large, use a column-major output layout for the GEMM (`out` stored as (N, M)) so the BN reduction along M is the contiguous axis \u2014 this makes the two-pass BN reduction a single coalesced stream per program and removes strided loads in `bn_stats_kernel`.\n- For the GEMM itself with M=1024, K=8192, N=8192, prefer `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3` and pre-transpose W once at init into a contiguous (K, N) buffer to avoid the stride-K loads of B in the inner loop.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 9,
+    "global_best_node_id": 6,
+    "global_best_score": [
+        1,
+        1,
+        0.5597450438455535
+    ]
+}

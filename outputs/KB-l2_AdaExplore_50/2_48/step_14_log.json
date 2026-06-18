@@ -1,0 +1,29 @@
+{
+    "node_id": 14,
+    "parent_node_id": 11,
+    "context_node_ids": [
+        11
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.46158911829134724,
+    "max_reward": 0.46158911829134724,
+    "avg_reward": 0.46158911829134724,
+    "score": [
+        1,
+        1,
+        0.6081102259036144
+    ],
+    "small_guidance": "- Swap the GEMM tile orientation: make BLOCK_OC the full OC (16) and reduce BLOCK_N to 128-256 so the inner reduction reuses x_vals across all 16 output channels via a true `tl.dot` (load x as [BLOCK_N] and w as [BLOCK_OC, 1] per tap, accumulate in registers). Try BLOCK_N \u2208 {128, 256}, num_warps \u2208 {4, 8}, num_stages=2 in a `triton.autotune`.\n- Fuse the kd/kh/kw loops into a single `tl.static_range(0, KD*KH*KW)` (27 iters) with precomputed offset tables to cut address-math overhead, and precompute `od*OHW + oh*OW + ow` once per program to reuse across all taps.\n- The output tensor write uses a strided `oc_offs[:,None]*ODHW + spatial_offs[None,:]` pattern \u2014 keep BLOCK_OC small but ensure spatial_offs is contiguous (already true); also consider loading x as a 1D vector with a single base + tap-offset add (the inner tap is just `+kw`, so vectorized loads coalesce already \u2014 verify with BLOCK_N=256).",
+    "large_guidance": "- Restructure as an implicit-GEMM where each program computes a tile of (BLOCK_M output spatial pixels) \u00d7 (BLOCK_N=OC=16) outputs, looping over a K-dim of size IC*KD*KH*KW=81 with BLOCK_K=16 or 27. Use `tl.dot` on [BLOCK_M, BLOCK_K] \u00d7 [BLOCK_K, BLOCK_N] tiles \u2014 this gives tensor-core-like throughput vs. the current outer-product accumulation. Pack weight as [OC, IC*KD*KH*KW] once at init.\n- Switch input layout to NDHWC (channels-last) so the IC axis is contiguous and the K-loop loads coalesce; do the layout transform once per forward (cheap relative to conv) or persist it. Output can be written back as NCDHW or kept NDHWC depending on consumer.\n- Consider a persistent-kernel design: one program per SM iterating over (batch, output-spatial-tile) work-items via an atomic counter, keeping the 16\u00d781 weight tile resident in shared memory for the entire program lifetime. Fuse scale\u00b7tanh\u00b7bias\u00b7sigmoid in the epilogue (already done) \u2014 keep that boundary.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 15,
+    "global_best_node_id": 6,
+    "global_best_score": [
+        1,
+        1,
+        0.7477503518518518
+    ]
+}

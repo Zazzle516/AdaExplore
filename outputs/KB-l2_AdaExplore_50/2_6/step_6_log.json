@@ -1,0 +1,30 @@
+{
+    "node_id": 6,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        3,
+        4
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.47262793432736727,
+    "max_reward": 0.47262793432736727,
+    "avg_reward": 0.47262793432736727,
+    "score": [
+        1,
+        1,
+        0.6991804582007799
+    ],
+    "small_guidance": "- The conv stage writes a full (N, OC, OD, OH, OW) tensor that is only partially read; shrink the conv output to the cropped (OD_c, OH_c, OW_c) region and have stage 2 index that, removing wasted compute on the last 1-2 spatial rows.\n- Tune `TW` upward (e.g. 30 to exactly cover OW=30 in one tile with mask) and try `num_warps=8, num_stages=3` for the conv kernel \u2014 current (OC=16, TW=16) tile is tiny and underutilizes the SM.\n- In `softmax_maxpool_kernel` set `BLOCK_C=16` (exact OC), drop the mask/`tl.where`, and use `num_warps=1`; also collapse the 64-iter static loop by loading a 4\u00d74\u00d74 block per channel as a single contiguous group of 16 vector loads.",
+    "large_guidance": "- Fuse conv + softmax + 4\u00d74\u00d74 maxpool into a single kernel: one program per (N, pooled_d, pooled_h, pooled_w). Compute conv outputs for the 4\u00d74\u00d74 = 64 positions across all 16 OC channels into registers ([OC=16, 64] tile), softmax along OC, then max-reduce along the 64 axis \u2192 16 outputs. This eliminates the intermediate (N, OC, OD, OH, OW) write/read which dominates memory traffic.\n- Use an im2col-style GEMM formulation for the conv portion of the fused kernel: K = IC*KD*KH*KW = 81, M = OC = 16, N = 64 (pooled tile). That's a small persistent tile that fits entirely in registers; load weight (16\u00d781) once per program and reuse across the 64 spatial positions with shared input halos (input tile is 6\u00d76\u00d76 per program).\n- Lay weights out as (OC, IC*KD*KH*KW) contiguous and load once with `tl.load` of shape (OC, K_BLOCK); have one program persistently iterate over a batch-row of pooled outputs so the weight load is amortized across many output tiles.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 7,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.7539510204098986
+    ]
+}

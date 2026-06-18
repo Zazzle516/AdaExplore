@@ -1,0 +1,31 @@
+{
+    "node_id": 19,
+    "parent_node_id": 6,
+    "context_node_ids": [
+        3,
+        4,
+        6
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.472435977030768,
+    "max_reward": 0.472435977030768,
+    "avg_reward": 0.472435977030768,
+    "score": [
+        1,
+        1,
+        0.6975968105038359
+    ],
+    "small_guidance": "- The fused conv kernel uses `[OC, TW]` accumulator with TW=16 and OC=16 \u2014 try larger TW (32 or 64) to amortize weight loads, sweep `num_warps` \u2208 {4, 8} and `num_stages` \u2208 {2, 3, 4} via `triton.autotune`.\n- In `softmax_maxpool_kernel`, BLOCK_C=16 with `num_warps=2` is tiny; try one program per `(n, do, ho)` row processing all `Wo` outputs to amortize the 64 strided loads, or bump `num_warps=4` and tile multiple pool windows per program.\n- Consider laying out `conv` as channels_last (N, OD, OH, OW, OC) so the softmax+pool kernel reads OC contiguously per spatial point \u2014 currently OC stride is `OD*OH*OW` causing strided gathers.",
+    "large_guidance": "- Fuse conv + softmax + 4\u00d74\u00d74 maxpool in a single kernel (skip the intermediate `conv` tensor): one program per `(n, do, ho, wo)` computes all 64 conv outputs for the 4\u00b3 window across all OC=16 channels into a `[OC, 64]` register tile, applies per-position softmax along OC, then reduces max along the 64 axis. Total FLOPs per program: 64 positions \u00d7 16 OC \u00d7 3 IC \u00d7 27 = ~83K, fits easily; this eliminates the OD*OH*OW intermediate write/read entirely.\n- Use im2col-style GEMM: load the 6\u00d76\u00d76 input patch per IC into shared/registers once, then do `[OC, 64] = [OC, IC*27] @ [IC*27, 64]` via `tl.dot`, exploiting tensor cores. Weight `[OC=16, IC*27=81]` is tiny and fits in registers; reuse across all 64 spatial outputs of the pool window.\n- Switch input/weight to channels-last so the IC dimension is the contiguous GEMM-K axis, enabling vectorized loads and `tl.dot` accumulation.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 20,
+    "global_best_node_id": 9,
+    "global_best_score": [
+        1,
+        1,
+        0.7670958700808058
+    ]
+}

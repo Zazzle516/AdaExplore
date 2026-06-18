@@ -1,0 +1,29 @@
+{
+    "node_id": 21,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4748478178396993,
+    "max_reward": 0.4748478178396993,
+    "avg_reward": 0.4748478178396993,
+    "score": [
+        1,
+        1,
+        0.7174944971775191
+    ],
+    "small_guidance": "- The conv3d kernel is the dominant cost: BLOCK_S=128 with one program per (N, OC, S-tile) gives 128*16*N programs but each does a full IC*KT*KH*KW=81 inner-loop scalar weight loads. Try BLOCK_S=64 or 256 with num_warps=2/4/8 in an autotune sweep, and add num_stages=3-4 to pipeline the input loads.\n- Tile over OC as well (e.g. BLOCK_OC=4 or 8) so a single program reuses the loaded x_val across multiple output channels \u2014 this turns the inner loop into a small matmul and amortizes the input-gather cost dramatically.\n- In `fused_post_conv`, drop the separate `stats_kernel` + `apply_norm_clamp_max_kernel` two-launch design and use the existing `fused_norm_clamp_max_kernel` (single program per N doing both passes in-register), since C=16 and S=14*30*30=12600 fit comfortably; this halves launch overhead and removes the mean/invstd round-trip through HBM.",
+    "large_guidance": "- Rewrite conv3d as an implicit-GEMM: one program per (N, OC-tile, output-spatial-tile) computing a tile of shape [BLOCK_OC, BLOCK_S] via `tl.dot` over the GEMM-K axis (IC*KT*KH*KW=81). With OC=16 the OC tile can be the full 16, BLOCK_S=64-128, BLOCK_K=32 padded to 96. This replaces the current scalar FMA inner loop with tensor-core matmul and is the single biggest headroom item.\n- Use channels_last_3d layout for the conv input/output so the GEMM-K dimension (IC across kt,kh,kw windows) is contiguous and loads coalesce; weight can be pre-packed to [OC, IC*KT*KH*KW] at first forward and cached on the module.\n- Fuse the multiplier + instance-norm-stats accumulation into the conv epilogue: as each (N, OC) tile is produced, multiply by `multiplier[OC]` and atomically/locally accumulate per-(N,OC) sum and sumsq into a small workspace, so the post-conv pass becomes a single elementwise (norm + clamp + mul + channel-max) kernel without re-reading the conv output for stats.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 22,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.9527247729854249
+    ]
+}

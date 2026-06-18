@@ -1,0 +1,29 @@
+{
+    "node_id": 2,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness bug is in the conv kernel's output store: `out_off = pid_n*stride_on + offs_n*stride_oc + offs_m`, but `out` is allocated as `[N, OC, S_out]` contiguous so `stride_oc = S_out`, which is fine \u2014 however the `final_mean_kernel` formula assumes `conv_psum[n,c]` equals the exact sum of conv output, yet `partial_sum` is accumulated via `tl.atomic_add` from tiles where `acc_masked` already had bias added on every spatial tile. Bias is added once per program but each spatial tile gets its own program, so bias is summed correctly \u2014 recheck: actually each (pid_sp) tile adds bias to its tile's acc, so the sum across tiles correctly includes `bias * S_out`. The real issue is likely that `BLOCK_C` rounds up past `C=24` to 32 and `g_idx = offs_c // CPG` produces out-of-range group indices for masked lanes that still issue loads \u2014 clamp `g_idx` with `tl.where(mask_c, g_idx, 0)` before loading mean/rstd.\n- Also verify `groupnorm_stats_kernel` reads contiguous `[N, C, S]` correctly \u2014 it does. Set `BLOCK_S` to next-pow2 of `group_size` (CPG*S = 3*22*30*30=59400) and use a multi-iter loop, which it already does; bump `num_warps=4` for short groups.\n- Add an explicit `tl.where(mask_c, ..., 0.0)` mask to gamma/beta loads with safe `g_idx` to avoid OOB reads when `BLOCK_C > C`.",
+    "large_guidance": "- Keep the analytic-sum strategy (it's a strong fusion: conv \u2192 psum \u2192 GN-affine collapsed into a single per-batch reduction), but restructure so `conv_psum` is computed without atomics: launch the conv with one program per `(N, OC tile)` that loops over the entire spatial range internally, so each (N, oc) sum is local to one program and written non-atomically. Atomics across many spatial tiles are both slow and a frequent source of nondeterministic correctness drift.\n- Re-cast Conv3d as an implicit-GEMM where K = IC*KD*KH*KW is the inner loop and M = S_out, N = OC tile; precompute the (kd,kh,kw,ic) \u2192 input-offset table once per program in registers, and use `tl.dot` on `[BLOCK_M, BLOCK_K] x [BLOCK_K, BLOCK_N]` blocks instead of the current scalar outer-product accumulation. With KD*KH*KW*IC = 81, a single BLOCK_K=32 inner GEMM tile is plenty.\n- Consider folding the GN affine into the conv epilogue directly: after computing acc, immediately apply `(acc - mean[g]) * rstd[g] * gamma[c] + beta[c]` and accumulate the per-(N) scalar sum via a single atomic at the end \u2014 this requires a prior pass for stats but eliminates the `conv_psum` indirection and the analytic reconstruction (which is the likely source of the numerical mismatch).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 3,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.6106474816773771
+    ]
+}

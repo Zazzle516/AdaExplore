@@ -1,0 +1,29 @@
+{
+    "node_id": 36,
+    "parent_node_id": 30,
+    "context_node_ids": [
+        30
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The instance norm stats must be computed per (N, C) over the spatial volume S, but the current kernel reduces along axis=0 of an `[BLOCK_S, C]` tile which is correct shape-wise \u2014 however when `s_offs_i >= S`, masked loads put zeros into x, which biases sum_x2 correctly but the mean uses `1/S` not `1/valid` so that's fine. The real bug: each `(pid_n, pid_s)` program recomputes the full reduction over all S blocks but only writes its own block \u2014 that's wasteful but not incorrect. The correctness failure (max diff ~1.97) suggests instance norm stats are wrong; double-check that `multiplier` is applied **before** the InstanceNorm in the reference (it is), and that `conv_out` already contains `(conv(x) * mult)` \u2014 yes. So stats should be over `x * mult`. That looks right. Investigate whether `tl.load` with `mask=sm[:, None]` on a 2D `[BLOCK_S, C]` correctly broadcasts; explicitly use `mask=sm[:, None] & tl.full([1, C], 1, tl.int1)` or just `sm[:, None]` is fine \u2014 but verify `other=0.0` truly fills masked lanes.\n- Add a guard `inv_S = 1.0 / S.to(tl.float32)` \u2014 `S` is passed as int; division may need explicit cast. Also ensure `C` constexpr matches actual OC=16 (it does).\n- Try splitting: compute mean/invstd in a separate small kernel writing `[N, C]` stats, then a second kernel does norm+clamp+mult+max reading those stats \u2014 avoids redundant work across `pid_s` programs and removes the per-program full reduction.",
+    "large_guidance": "- Restructure into three kernels: (1) im2col-GEMM conv producing channels-last `[N, S, OC]` already fused with `* multiplier`; (2) a per-(N) reduction kernel with one program per N that computes mean/invstd over S for all C channels (C=16 fits in registers, S=14*30*30=12600 \u2014 use BLOCK_S=1024 with a loop, one program per N, store `[N, OC]` stats); (3) an elementwise kernel that loads stats, normalizes, clamps, multiplies, and reduces max across channels per spatial location, writing `[N, S]`. This avoids the current redundant full-spatial reduction inside every spatial-tile program.\n- Alternatively, keep two kernels but make the norm kernel persistent per N: grid=(N,), each program iterates over S twice (pass1 stats, pass2 output), keeping mean/invstd in registers between passes. With C=16 and S~12.6k this is very efficient and removes the duplicated reduction work.\n- Verify the conv kernel's channels-last output ordering matches what the norm kernel expects, and consider folding the first `* multiplier` into the conv epilogue (already done) and the second `* multiplier` and channel-max into the norm kernel epilogue (already done) \u2014 the structural issue is the redundant stats computation, not fusion boundaries.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 37,
+    "global_best_node_id": 28,
+    "global_best_score": [
+        1,
+        1,
+        1.6580138687333263
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 4,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.6157874944471482,
+    "max_reward": 0.6157874944471482,
+    "avg_reward": 0.6157874944471482,
+    "score": [
+        1,
+        1,
+        1.8802468291889727
+    ],
+    "small_guidance": "- The GEMM dominates; the partial-LSE buffer write is tiny. Add more aggressive autotune configs targeting M=1024, N=K=8192: try `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3/4` and `BLOCK_M=256, BLOCK_N=128, BLOCK_K=32/64`. Also try `num_stages=4` variants on the existing 128/128/64 config.\n- Drop the smallest tile configs (64x64, 128x64) \u2014 they cannot saturate the 4090 at this size and just pollute autotune. Keep only large-tile configs with `GROUP_M=8`.\n- The pre-transposed `W_t` makes K the leading (stride_wk large) dim, hurting coalescing on the inner load. Store W in its native (N,K) layout and load with `offs_n[:, None]*stride_wn + offs_k[None,:]` then `tl.dot(x, w.T)` \u2014 or keep W_t but ensure the N axis is the contiguous (inner) one (it already is since `.t().contiguous()` makes N inner \u2014 good; verify stride_wn==1 in the launcher).",
+    "large_guidance": "- The work is a (1024, 8192) @ (8192, 8192) GEMM followed by a tiny per-row reduction. A from-scratch design should make this a single split-K-free, persistent GEMM with a per-row online logsumexp epilogue: each program owns a (BLOCK_M, BLOCK_N) tile, atomically updates a per-row (max, sumexp) pair using the log-sum-exp merge rule, eliminating the second kernel and the scratch buffer entirely. Use `atomic_cas`-based merge or two atomics with a lock; alternatively, one program per row-tile that iterates all N-tiles serially keeping (max, sum) in registers \u2014 avoids atomics, costs one extra launch dim.\n- Alternative: split the grid as (row_tile, n_tile) and have one program per row_tile loop over all N tiles sequentially, accumulating logsumexp in registers and writing one scalar per row. This trades parallelism in N for zero scratch traffic and a single kernel; with M=1024 and BLOCK_M=64 you still get 16 programs each doing 8192/BLOCK_N N-iterations \u2014 likely good for a 4090's 128 SMs only if combined with split-K parallelism, so consider hybrid: split N across a few programs and use atomics for the final merge.\n- Consider using tf32 (`tl.dot(..., allow_tf32=True)`) since correctness tolerance is 5e-2 \u2014 large speedup on fp32 GEMMs on Ampere/Ada.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 5,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        1.8802468291889727
+    ]
+}

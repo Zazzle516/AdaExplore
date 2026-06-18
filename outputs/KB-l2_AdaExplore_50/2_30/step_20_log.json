@@ -1,0 +1,30 @@
+{
+    "node_id": 20,
+    "parent_node_id": 6,
+    "context_node_ids": [
+        1,
+        6
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness fails likely because the GEMM kernel doesn't mask the K dimension on the final iteration \u2014 when K is not a multiple of BLOCK_K, out-of-bounds A/B loads accumulate garbage. Add `mask_k = offs_k[None, :] < (K - k)` (and the transposed form for B) and apply to the `tl.load` calls inside the K loop, with `other=0.0`. Even though K=8192 is divisible by 32/64 here, also ensure pointer advancement and mask shapes are correct.\n- The more probable correctness bug: in `group_norm_hardtanh_kernel`, the mean is computed as `tl.sum(x, axis=0) / CPG`, but `x` was loaded with `other=0.0` over a BLOCK that is `next_power_of_2(CPG)`. Since CPG=512 is already a power of two, this is fine \u2014 but verify by setting `BLOCK = CPG` exactly when CPG is pow2, and double-check that `eps=1e-5` matches PyTorch's default (it does). The actual mismatch (~2e-4 avg, ~1.7e-3 max) suggests TF32 accumulation in `tl.dot`; try `allow_tf32=False` or cast inputs to fp32 explicitly to verify, then re-enable TF32 once a tighter tolerance path is confirmed.\n- Cache `gemm.bias`, `group_norm.weight`, `group_norm.bias` on the module as contiguous CUDA buffers in `__init__` instead of `.contiguous().cuda()` every forward \u2014 those host\u2192device/contig calls add latency per call.",
+    "large_guidance": "- Keep the two-kernel structure (tiled GEMM + fused GroupNorm/HardTanh) \u2014 it is the right decomposition for M=1024, N=8192, K=8192 and CPG=512. Don't try to fuse GN into the GEMM epilogue since GN needs a reduction across N-tiles within a group.\n- For the GroupNorm kernel, with CPG=512 use a single program per (row, group) with BLOCK=512, `num_warps=4`, and a Welford-style single-pass (sum and sum-of-squares accumulated together) to halve memory traffic vs. the current two-pass mean/diff approach.\n- For the GEMM, consider a split-K or persistent-tile design only if autotune saturates; otherwise a 128x256x64 tile with `num_warps=8, num_stages=3` and proper K-masking should be near peak for this shape on a 4090. Ensure the bias load happens once after the K-loop (already correct).",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 21,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

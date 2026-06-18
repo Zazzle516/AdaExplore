@@ -1,0 +1,27 @@
+{
+    "node_id": 19,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4772197004749969,
+    "max_reward": 0.4772197004749969,
+    "avg_reward": 0.4772197004749969,
+    "score": [
+        1,
+        1,
+        0.737062528918724
+    ],
+    "small_guidance": "- The conv3d (torch's cuDNN call) almost certainly dominates the 1.1 ms now that the post-conv tail is fused; tuning BLOCK_S/BLOCK_C of `_fused_norm_clamp_max_kernel` further will not move the needle. Still, fold the `x * multiplier` pre-multiply into the stats+norm kernel (skip the separate `x_mul` materialization) \u2014 that removes one full read+write of an [N,C,D,H,W]=128\u00b716\u00b714\u00b730\u00b730\u224825M-element tensor.\n- Merge `_stats_kernel` and `_fused_norm_clamp_max_kernel` into a single persistent per-(N,C) kernel that computes mean/var, normalizes, clamps, multiplies, and writes a partial channel-wise contribution to a per-(N,S) max buffer using `tl.atomic_max` \u2014 avoids the second global read of `x_flat`. Add `triton.autotune` over BLOCK_S\u2208{256,512,1024}, num_warps\u2208{4,8}, num_stages\u2208{2,3}.\n- Multiplier appears twice (pre-norm and post-clamp); since norm is scale-invariant w.r.t. positive multiplier, but multiplier can be negative (sign flips inputs to mean/var \u2014 still invariant since mean/var of \u03b1x = \u03b1\u00b7mean, \u03b1\u00b2\u00b7var \u2192 normalize cancels |\u03b1|, but sign of normalized value flips). Be careful: `(\u03b1x - \u03b1\u00b7mean)/(|\u03b1|\u00b7std) = sign(\u03b1)\u00b7(x-mean)/std`. So pre-multiply effect on normalized output is just `sign(multiplier)`. Folding this into the kernel saves the entire pre-multiply pass.",
+    "large_guidance": "- Replace `nn.Conv3d` with a custom Triton im2col-GEMM kernel. With N=128, OC=16, OD\u00b7OH\u00b7OW=14\u00b730\u00b730=12600, IC\u00b7kD\u00b7kH\u00b7kW=3\u00b727=81, this is a tiny-K GEMM where cuDNN has overhead; one program per (N, OC_tile=16, spatial_tile) with implicit im2col gather and an epilogue that adds bias and writes channels-last `[N, D, H, W, C]` should beat cuDNN here and feed the next kernel a coalesced layout.\n- Fuse the entire post-conv pipeline into one kernel per (N, spatial_tile) operating on channels-last data: load all 16 channels into registers, compute per-channel mean/var via two passes over the spatial tile using shared accumulators (or use a two-stage launch where stage-1 produces stats per (N,C) and stage-2 streams), then in the same pass do `clamp((x*m - mean)*invstd, lo, hi)*m` and reduce max over the C=16 register axis to write `[N, S]`. With C=16 fitting in one BLOCK_C, the channel loop disappears.\n- Alternative single-pass design: since C=16 is tiny, hold the entire `[C, S]` slice for one N in registers/SMEM by tiling S only; do online Welford per channel as you stream, then a second sweep does normalize+clamp+mul+max. One program per N, persistent across S tiles, eliminates the intermediate `mean`/`invstd` global tensors entirely.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 20,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.9527247729854249
+    ]
+}

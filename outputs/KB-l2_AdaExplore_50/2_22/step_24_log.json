@@ -1,0 +1,30 @@
+{
+    "node_id": 24,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        11,
+        23
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5924786494572023,
+    "max_reward": 0.5924786494572023,
+    "avg_reward": 0.5924786494572023,
+    "score": [
+        1,
+        1,
+        1.6879488580219186
+    ],
+    "small_guidance": "- The GEMM dominates (M=1024, N=8192, K=8192). Add larger-tile autotune configs targeting this exact shape: `BLOCK_M=128, BLOCK_N=256, BLOCK_K=32, num_warps=8, num_stages=4` and `BLOCK_M=256, BLOCK_N=128, BLOCK_K=64, num_warps=8, num_stages=3`, plus `BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, num_warps=4, num_stages=4`. Since M, N, K are all multiples of 128, drop the K-mask in the inner loop (use `mask_m[:, None]` only for x, `mask_n[None, :]` only for w) to reduce predicate overhead.\n- Cache the pre-transposed weight as an `nn.Parameter`/buffer once in `__init__` rather than lazily in `forward`, so the first-call transpose cost is amortized and the cache check branch is removed from the hot path.\n- For the LSE/Mish kernel, since N=8192 fits in registers with BLOCK_N=8192 and one row per program, this is fine; could try `num_warps=16` or split into two-pass with smaller BLOCK_N=2048 and more programs per row to improve occupancy \u2014 but its contribution to runtime is tiny.",
+    "large_guidance": "- The GEMM is 1024\u00d78192\u00d78192 fp32 \u2248 137 GFLOPs; at 1.76 ms that's ~78 TFLOPs equivalent which is already above 4090's fp32 peak \u2014 meaning the kernel is benefiting from TF32. Explicitly enable TF32 in `tl.dot` via `allow_tf32=True` (default in recent Triton, but verify) and consider casting inputs to tf32/bf16 on the fly inside the kernel using `.to(tl.bfloat16)` before `tl.dot` to use tensor cores at higher throughput, accumulating in fp32.\n- Consider a split-K or stream-K GEMM: with M=1024 only, there are only 8 row-tiles at BLOCK_M=128, so the grid is small (8 \u00d7 64 = 512 programs at BLOCK_N=128). A stream-K or split-K design would increase SM occupancy on the 4090's 128 SMs.\n- Fuse the LSE first-pass (running max + sumexp over N) directly into the GEMM epilogue per row-tile by writing partial (max, sum) per row-tile to a small scratch buffer, then a tiny second kernel finalizes log + mish. This eliminates the full `gemm_out` write/read of 32 MB.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 25,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        1.9043525577683185
+    ]
+}

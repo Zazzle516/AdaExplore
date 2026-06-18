@@ -1,0 +1,30 @@
+{
+    "node_id": 46,
+    "parent_node_id": 29,
+    "context_node_ids": [
+        17,
+        29
+    ],
+    "depth": 5,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5816190822155987,
+    "max_reward": 0.5816190822155987,
+    "avg_reward": 0.5816190822155987,
+    "score": [
+        1,
+        1,
+        1.5983574282786885
+    ],
+    "small_guidance": "- The conv_transpose3d (torch cuDNN) now dominates runtime since the GAP+BN epilogue is already fused; further tuning of `_gap_affine_kernel` (BLOCK_S, num_warps) will yield negligible end-to-end gain. If staying small, try `BLOCK_S=S` exactly (S=20*36*36=25920 \u2192 use 32768 with single iteration) and num_warps=8/num_stages=3 to minimize launch overhead, but expect <5% improvement.\n- Ensure `x.contiguous()` is avoided when conv_transpose already returns contiguous output; the `.view(N,C,S)` works without the extra copy.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)`, computing the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and atomically scattering into the output grid at `(d+kd, h+kh, w+kw)` (no stride/padding here so index math is trivial). Conv bias, scale_factor, and BN affine fold into a final epilogue.\n- Better: fuse conv_transpose + scale + BN + GAP into a single pipeline by recognizing GAP reduces over all output spatial \u2014 so each output element is summed exactly once. Reorganize as: for each `(n, oc)`, accumulate `sum over (d,h,w,ic,kd,kh,kw) of input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` (the spatial output extent is fully covered \u2192 sum reduces to `sum_d_h_w(input[n,ic]) * sum_kd_kh_kw(weight[ic,oc])` only if boundaries don't truncate; here output is 20\u00d736\u00d736 fully populated, so each input element contributes to exactly `kd*kh*kw` outputs all summed \u2192 this **is** algebraically valid as the reference computation, but counts as algebraic shortcut per the contract \u2014 **do not do this**).\n- Instead, keep conv_transpose materialized but write a direct Triton scatter-add kernel tiled over `(N, OC, output-D-tile)` using channels_last layout for OC contiguity; autotune `BLOCK_OC=32/64`, `BLOCK_SPATIAL=128/256`, num_warps=4/8. Then chain into the existing GAP+affine kernel.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 47,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        1.599996769230769
+    ]
+}

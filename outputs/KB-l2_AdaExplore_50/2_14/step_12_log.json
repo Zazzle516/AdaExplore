@@ -1,0 +1,27 @@
+{
+    "node_id": 12,
+    "parent_node_id": 11,
+    "context_node_ids": [],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness bug is the atomic_add race / double counting: multiple pid_n programs each add row_partial to out[m], but with `tl.atomic_add` the accumulation across N tiles is correct only if every tile sums its full BLOCK_N contribution. Issue: when N is not divisible by BLOCK_N, masked-out columns in `acc` are 0 (fine), but the bigger problem is numerical \u2014 values look totally off (max diff 1.7M), suggesting tiles overlap or stride for B is wrong. Double-check: B = W.T means stride_bk = W.stride(1) = 1, stride_bn = W.stride(0) = input_size. That looks right. More likely the `out` tensor isn't zero-initialized properly across runs, or `mask_m` on atomic_add silently writes garbage \u2014 guard the atomic with a true `mask=mask_m` and ensure `out = torch.zeros(...)` is fp32 and contiguous.\n- Try fusing the row reduction inside the kernel without atomics: have only one program along N (i.e. BLOCK_N covers all N, or loop over N inside the kernel) so each pid_m writes its final row sum directly with `tl.store`. This eliminates atomic correctness risk and is faster on 4090.\n- Add configs with larger BLOCK_M (128) since M=1024 and we only need a scalar per row; one program per row block with an inner K and N loop is simpler.",
+    "large_guidance": "- Redesign as a \"row-sum fused GEMM\": compute `out[m] = scale * sum_n sum_k x[m,k] * W[n,k]`. Reorder to `out[m] = scale * sum_k x[m,k] * (sum_n W[n,k])`... wait \u2014 that would be an algebraic shortcut (precomputing colsum of W) and is forbidden. Instead, keep the GEMM at runtime: one program per M-tile, loop over N tiles internally accumulating a `(BLOCK_M,)` row-sum register, so the matmul is performed but only the row reduction is written. No atomics, single store per row.\n- Use BLOCK_M=64 or 128, BLOCK_N=128, BLOCK_K=32 with `tl.dot`; after each `tl.dot` produces a (BLOCK_M, BLOCK_N) tile, do `row_acc += tl.sum(tile, axis=1)`. Outer loop is over N tiles, inner over K tiles per N tile (or swap). Final store: `out[m] = row_acc * scale`.\n- This keeps every reference op executing (matmul performed for all (M,N,K) elements, divide+sum+scale fused into epilogue), avoids atomics, and gives one coalesced store per row.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 13,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

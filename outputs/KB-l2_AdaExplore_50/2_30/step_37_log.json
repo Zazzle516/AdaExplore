@@ -1,0 +1,29 @@
+{
+    "node_id": 37,
+    "parent_node_id": 36,
+    "context_node_ids": [
+        2
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (max diff ~0.0016, avg ~0.00023) is just above the 5e-2 tolerance scale but suggests a subtle issue: the GEMM uses `offs_m % M` / `offs_n % N` for address computation which is fine, but the output store uses unmasked-style addressing. More importantly, check that `tl.dot(a, b, allow_tf32=True)` precision is sufficient \u2014 try `allow_tf32=False` or use fp32 accumulation explicitly to rule out TF32 drift causing the small mismatch.\n- In `group_norm_hardtanh_kernel`, pass `eps`, `hmin`, `hmax` as `tl.constexpr` (they're Python floats from init) to avoid launcher fragility, and verify `CPG=512` reduction is using `num_warps=8` with `num_stages=2`.\n- Sweep more GEMM configs targeting M=1024, N=8192, K=8192: add `BLOCK_M=64, BLOCK_N=64, BLOCK_K=64` and try `num_stages=4` variants on the 128x128x64 config.",
+    "large_guidance": "- Output mismatch ~1.5e-3 with TF32 enabled in `tl.dot` is consistent with TF32 precision loss across K=8192 reduction interacting with GroupNorm's variance computation (small numerical differences get amplified by rsqrt). Redesign: either disable TF32 in the dot, or fuse the GEMM epilogue directly into a per-row GroupNorm pass so that the GEMM output is consumed in higher precision without an intermediate fp32 tensor roundtrip.\n- Consider a fully fused single-kernel design: one program per (row, group), computing the partial GEMM output for that row's group of channels (CPG=512) by streaming K, then doing the group reduction in-kernel and applying hardtanh. This eliminates the intermediate 1024x8192 tensor and removes the second kernel launch.\n- Alternatively, keep two kernels but make the GroupNorm kernel use Welford's online algorithm for better numerical stability, and ensure the GEMM kernel writes results in fp32 with no TF32 contamination on the reduction.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 38,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

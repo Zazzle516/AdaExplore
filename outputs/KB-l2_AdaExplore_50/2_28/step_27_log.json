@@ -1,0 +1,31 @@
+{
+    "node_id": 27,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        1,
+        2,
+        23
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4853327323996614,
+    "max_reward": 0.4853327323996614,
+    "avg_reward": 0.4853327323996614,
+    "score": [
+        1,
+        1,
+        0.8039950422972064
+    ],
+    "small_guidance": "- The Linear (1024\u00d78192 \u00d7 8192\u00d78192) is by far the dominant cost (~140 GFLOPs of GEMM vs a single 8192-wide norm). Tuning num_warps on the norm kernel won't close the gap; consider lowering BLOCK_N work via vectorized loads (load as float4 via `tl.load` on a reshaped pointer) and try num_warps=8 with num_stages=3 since BLOCK_N=8192 already saturates a single SM.\n- Cast the load directly without `.to(tl.float32)` (inputs are fp32) and drop the redundant `tl.where` mask on `xm` since when N is a power of 2 equal to BLOCK_N the mask is all-true \u2014 let the compiler skip it by passing `BLOCK_N=N` exactly and removing the mask path.\n- Add an autotune key on `N` with explicit configs for BLOCK_N=8192 (num_warps=16/32, num_stages=2/3) \u2014 current configs don't vary BLOCK_N.",
+    "large_guidance": "- Replace `F.linear` with a custom tiled Triton GEMM (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8, num_warps=8, num_stages=3-4) \u2014 the cuBLAS call dominates runtime, and a fused GEMM+bias+InstanceNorm+residual epilogue avoids the full 1024\u00d78192 writeback/reread of the activation between Linear and the norm kernel.\n- Since InstanceNorm here is per-(N,C) with spatial size 1, mean=x and var=0, so normalization collapses to `(x-x)*rsqrt(eps)=0` \u2192 output is just `y*y`. **Wait \u2014 that's an algebraic shortcut and violates the safety contract.** Instead, keep the full normalization math but fuse it as the GEMM epilogue: after the K-reduction produces the row's single element per column, store the bias-added result, then run a second pass kernel that does mean/var across the 8192 columns of each row and the residual fusion. Two-kernel design: tiled GEMM with bias epilogue \u2192 row-wise norm+residual kernel.\n- Alternatively, since M=1024 and K=N=8192, a split-K GEMM may be worthwhile \u2014 but more impactful is fusing bias+norm by having the GEMM kernel atomically accumulate per-row sum and sum-of-squares into scratch buffers during the store, then a tiny second kernel finalizes mean/invstd, then a third applies (x-mean)*invstd + y, *y. Or run GEMM, then a single-pass Welford row-norm-residual kernel like the current one but with the GEMM tuned.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 28,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        0.8208452377944534
+    ]
+}

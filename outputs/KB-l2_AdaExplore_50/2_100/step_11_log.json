@@ -1,0 +1,29 @@
+{
+    "node_id": 11,
+    "parent_node_id": 10,
+    "context_node_ids": [
+        10
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.07896668769230769
+    ],
+    "small_guidance": "- The current kernel uses a gather (output-stationary) for ConvTranspose3d, which forces per-output `(pos % stride == 0)` masking that wastes ~7/8 of the work at stride=2. If keeping this layout, at least add `triton.autotune` over `BLOCK_OC \u2208 {32,64,128}`, `BLOCK_SP \u2208 {32,64,128}`, `BLOCK_IC \u2208 {16,32,64}`, `num_warps \u2208 {4,8}`, `num_stages \u2208 {2,3,4}` \u2014 current 32/64/32 with 4 warps is likely far from optimal for OC=128.\n- Tile the output spatial dim along `OW` (contiguous) rather than flattened `ODHW`, so consecutive `sp` lanes share `od`/`oh` and only `ow` varies \u2014 this collapses the `kd`/`kh` mask computation to scalars and makes input gathers coalesced along W.\n- Hoist the `ic_offs * (ID*IH*IW)` stride term and precompute `x_n_base + ic*stride` once outside the `kd/kh/kw` loops to cut redundant integer math in the innermost loop.",
+    "large_guidance": "- Rewrite as a **scatter-add** ConvTranspose3d: one program per `(N, IC-tile, input-spatial-tile)` loads `x[N, ic, id, ih, iw]` and the full `weight[ic, :, :, :, :]` slice, computes the outer product `x \u00b7 w` into a `(BLOCK_OC, KD*KH*KW)` tile, and `tl.atomic_add`s into the output at `(od = id*stride - pad + kd, ...)`. This does exactly the arithmetic ConvTranspose3d needs (no stride masking waste) and matches the skill guidance for ConvTranspose.\n- Alternatively, do an **explicit GEMM**: reshape weight to `[IC, OC*KD*KH*KW]`, compute `y = x.permute(0,2,3,4,1) @ weight_mat` via a tiled Triton matmul to get a `[N, ID, IH, IW, OC, KD, KH, KW]` column-buffer, then a small col2im scatter-add kernel folds it into the output with bias+clamp+div fused. The GEMM is dense and hits tensor-core-friendly shapes (M=N\u00b7ID\u00b7IH\u00b7IW=442k, N=OC\u00b7KD\u00b3=3456, K=IC=64).\n- Fuse bias add, clamp(min), and divide into the epilogue of whichever kernel writes the final output (scatter-add: do it in a separate finalize pass since atomics accumulate; GEMM+col2im: fuse into col2im store). Use channels-last input layout so the IC reduction axis is contiguous.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 12,
+    "global_best_node_id": 6,
+    "global_best_score": [
+        1,
+        1,
+        0.46325222924187726
+    ]
+}

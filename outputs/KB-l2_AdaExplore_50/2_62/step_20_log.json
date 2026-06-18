@@ -1,0 +1,29 @@
+{
+    "node_id": 20,
+    "parent_node_id": 19,
+    "context_node_ids": [
+        19
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness fails because the GN kernel reads `gamma`/`beta` with shape `[GROUPS_PER_PROG, BLOCK_CG]` using only `mask_c` along the channel axis \u2014 when `BLOCK_CG > CG` the masked-out lanes still get folded into `(x - mean) * rstd * gamma + beta`, but `beta` is loaded with `other=0.0` so masked output positions get `-mean*rstd*0 + 0 = 0` which is fine, *except* the mean/var are computed correctly only if `x` masked lanes are `0.0` (they are). The real bug is likely that `BLOCK_CG = next_power_of_2(CG)` with `CG=16` gives `BLOCK_CG=16` (ok), but the store uses `mask=mask_c[None,:]` \u2014 also ok. Re-examine: `tl.sum(x*x)` over padded zeros is fine. The 2.4e-4 avg diff suggests a real numeric issue \u2014 try computing mean/var in fp32 accumulator explicitly and using `rsqrt` instead of `1/sqrt`, and verify `gamma`/`beta` indexing uses the correct per-channel layout (GroupNorm gamma is `[C]`, indexed as `(g_start+g)*CG + c`, which matches \u2014 good).\n- The tolerance is `5e-2` so max diff `~5e-3` should pass; correctness=False with avg 2.4e-4 may be a harness re-seed issue (fc weights initialized on CPU then moved \u2014 `.cuda()` in `__init__` is fine, but `get_inputs` reseeds and the reference Model stays on CPU). Ensure `ModelNew` matches reference parameter init exactly: don't call `.cuda()` in `__init__`; let the test harness move the module. Move-to-cuda inside `__init__` reinitializes parameters with different RNG state than the reference Model.\n- Once correctness is fixed, lower `BLOCK_CG` to exactly `CG=16` (it already is) and bump `GROUPS_PER_PROG` to 16 with `num_warps=2` since each row has only 16 elements \u2014 current 8 groups \u00d7 16 = 128 elts per program is tiny.",
+    "large_guidance": "- The dominant cost here is the 1024\u00d78192\u00d78192 GEMM (~137 GFLOPs). Current autotune configs are reasonable but consider a split-K or stream-K variant since M=1024 is modest and N=K=8192 \u2014 a persistent kernel with `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_stages=4, num_warps=8` typically wins on 4090 for square-ish large GEMMs. Also pre-transpose `weight` once in `__init__` (store `weight.t().contiguous()`) so the GEMM B-operand has stride (N,1) \u2014 avoids the implicit transposed-stride access pattern.\n- For GN with `C=8192, G=512, CG=16`: a row has 8192 elements and 512 groups of 16. Fuse the entire row in one program: `BLOCK = 8192`, compute per-group mean/var via segmented reduction (reshape to `[512,16]` inside the kernel via `tl.reshape` or by indexing). One program per sample (1024 programs total), `num_warps=8`. This eliminates the multi-program-per-row launch overhead and lets the activation+doubling fuse trivially.\n- Critical: do not initialize parameters inside `ModelNew.__init__` on CUDA when the reference inits on CPU \u2014 the parameter RNG state will differ from the reference Model and the correctness check (which compares against a freshly-constructed reference) will fail by a small but consistent margin. Construct `nn.Linear`/`nn.GroupNorm` exactly as the reference does, with no `.cuda()` in init.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 21,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

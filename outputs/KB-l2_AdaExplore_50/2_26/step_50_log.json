@@ -1,0 +1,30 @@
+{
+    "node_id": 50,
+    "parent_node_id": 49,
+    "context_node_ids": [
+        45,
+        48
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.43664469226243013,
+    "max_reward": 0.43664469226243013,
+    "avg_reward": 0.43664469226243013,
+    "score": [
+        1,
+        1,
+        0.4023187111650485
+    ],
+    "small_guidance": "- The fused elementwise kernel is already trivial; bumping BLOCK_SIZE to 1024-2048 with num_warps=4 and num_stages=2 may help marginally, but the elementwise tail is not the bottleneck (output is 128*64*32^3 \u2248 268M elements, ~3-4ms at best). The ~20ms runtime is dominated by `nn.ConvTranspose3d`.\n- Fold the learned `self.bias` (shape `(C,1,1,1,1)`) into the epilogue kernel so the add+hardswish+bias is one pass \u2014 currently `self.bias` is created but never used in forward, which matches the reference (reference also doesn't use it), so leave as-is but be aware.\n- Consider casting to channels_last_3d before the conv to let cuDNN pick faster algos, though gains on ConvTranspose3d are limited.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add (or gather) kernel. Given stride=2, padding=1, output_padding=1, kernel=3: each input voxel contributes to up to 2\u00d72\u00d72 = 8 output voxels per (oc,ic) pair. A gather formulation (one program per output tile, loop over IC and the 1-2 valid kernel taps per output dim) avoids atomics and is the high-headroom path. Fuse the `+ add_input` and `x * hardswish(x)` epilogue directly into the GEMM-style kernel's store.\n- Structure as one program per `(N, OC_tile, D_tile * H_tile * W_tile)` with BLOCK_OC=32-64, output spatial tile 4\u00d74\u00d74 or 1\u00d78\u00d716; accumulate in fp32 over IC\u00d7kD\u00d7kH\u00d7kW with BLOCK_K=32. For each output coord, only kernel taps where `(out + pad - kk) % stride == 0` and the corresponding input coord is in bounds contribute \u2014 precompute these as compile-time masks since stride/pad/kernel are constexpr.\n- Alternatively, since stride=2 and kernel=3, a direct \"transposed conv via 8 sub-convolutions\" decomposition (polyphase) \u2014 each output parity (d%2,h%2,w%2) is a regular conv with a sliced weight \u2014 maps cleanly to a Triton im2col GEMM with 8 sub-problems, each at the input resolution. This is often the fastest formulation for stride-2 ConvTranspose3d.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 51,
+    "global_best_node_id": 44,
+    "global_best_score": [
+        1,
+        1,
+        0.7969005240384616
+    ]
+}

@@ -1,0 +1,27 @@
+{
+    "node_id": 21,
+    "parent_node_id": 15,
+    "context_node_ids": [],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The output buffer is initialized with `torch.zeros` and accumulated via `tl.atomic_add` across `NUM_SPLITS` programs \u2014 this is correct in principle, but the kernel currently has a correctness bug. The issue is that each split's `n_tile` loop uses `mask_n = offs_n < n_end`, but `acc` is computed with full `BLOCK_N` width and `tl.dot` over masked `w_block` \u2014 verify that `n_start` is aligned to `BLOCK_N`, otherwise tiles overlap across splits. Force `n_per_split = triton.cdiv(N, NUM_SPLITS * BLOCK_N) * BLOCK_N` on the host side and pass per-program `n_start`/`n_end` explicitly.\n- Drop the split-K-style atomic accumulation entirely: set `NUM_SPLITS=1` and let one program per `BLOCK_M` row tile sweep all of N sequentially. For M=1024 with BLOCK_M=64, that's 16 programs \u2014 too few. Instead, use `BLOCK_M=32` (32 programs) and rely on the large K-loop for occupancy.\n- Try larger autotune configs sized to (M=1024, N=8192, K=8192): `BLOCK_M=64, BLOCK_N=128, BLOCK_K=64, num_warps=4, num_stages=4` and enable `allow_tf32=True` in `tl.dot` (correctness tolerance is 5e-2, TF32 is fine).",
+    "large_guidance": "- Rewrite as a row-parallel fused matvec-style reduction: one program per row-tile of M, where the program computes `sum_n( sum_k x[m,k] * w[n,k] )` = `sum_k x[m,k] * (sum_n w[n,k])`. Wait \u2014 this is the algebraic shortcut forbidden by the safety contract. Instead, keep the full GEMM but fuse the N-reduction inside the kernel: each program owns BLOCK_M rows, loops over N tiles, and within each N-tile does a `tl.dot` then immediately reduces along N into a `(BLOCK_M,)` accumulator \u2014 no atomic needed. This is what the current kernel attempts; just remove the split entirely and use grid=(cdiv(M, BLOCK_M),).\n- For occupancy with only ~16-32 programs, use a split-K strategy along the K axis with atomic accumulation into the (M,1) output, where each program handles (BLOCK_M rows \u00d7 full N \u00d7 BLOCK_K_CHUNK columns of K). This gives more parallelism without violating the contract since the full matmul still runs.\n- Consider a two-kernel design: (1) GEMM writes (M,N) to scratch with bias/scale fused, (2) a fast row-reduction kernel sums to (M,1). Two kernels but each is simple and well-tuned; the GEMM dominates anyway at these sizes (~137 GFLOPs).",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 22,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        0.10046266372480192
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 4,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.475248758914946,
+    "max_reward": 0.475248758914946,
+    "avg_reward": 0.475248758914946,
+    "score": [
+        1,
+        1,
+        0.7208022610483041
+    ],
+    "small_guidance": "- The fused ReLU+GroupNorm kernel is fine but the ConvTranspose3d dominates runtime; further tuning of this fused kernel (e.g. BLOCK_S=1024 with num_warps=4, or single-pass Welford) yields at most a few percent and won't close the gap to baseline=7.01ms vs 9.73ms.\n- If staying small, try fusing ReLU into a custom transposed-conv epilogue rather than as a separate kernel, eliminating the intermediate read/write of the full N*C*D*H*W tensor (~33MB) between conv and norm.\n- Use `channels_last_3d` memory format for the conv output so the GroupNorm reduction loads contiguous channels per group.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile) computes `input \u00d7 weight` outer product and atomically scatters into the output grid at `(d*stride+kd, h*stride+kh, w*stride+kw)`. With stride=1, padding=0, kernel=3 the output is (D+2,H+2,W+2)=(34,34,34) \u2014 small enough that a gather-based formulation (one program per output voxel, loop over kernel and IC) is likely better than scatter and avoids atomics.\n- Prefer the gather formulation: for each output voxel (n, oc, do, ho, wo), sum over (ic, kd, kh, kw) of `weight[ic, oc, kd, kh, kw] * input[n, ic, do-kd, ho-kh, wo-kw]` with bounds masking. Tile (OC, spatial) as a GEMM with K=IC*27; BLOCK_M=64 (OC), BLOCK_N=64 (spatial), BLOCK_K=32, num_warps=4, autotune.\n- Fuse the ReLU into the conv-transpose epilogue (apply `tl.maximum(acc, 0)` before store), then keep the existing GroupNorm kernel as a separate launch \u2014 this removes one full-tensor pass. If feasible, also fuse a first reduction pass for group-stats into the conv kernel via atomic adds to per-group sum/sumsq buffers, then a tiny second kernel does the normalize.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 5,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.7208022610483041
+    ]
+}

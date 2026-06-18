@@ -1,0 +1,31 @@
+{
+    "node_id": 22,
+    "parent_node_id": 21,
+    "context_node_ids": [
+        13,
+        16,
+        21
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.48232099134199136,
+    "max_reward": 0.48232099134199136,
+    "avg_reward": 0.48232099134199136,
+    "score": [
+        1,
+        1,
+        0.7791481785714286
+    ],
+    "small_guidance": "- The current implementation runs the GEMM via `torch.addmm` then does a separate stats pass and an apply pass \u2014 three full passes over a 16384\u00d74096 tensor. Fuse the scale + BN-apply epilogue directly into the addmm output writeback (eval path) or at least drop the separate `fused_addmm_epilogue_kernel` dead code and tune `BLOCK_M_AP=256, BLOCK_N_AP=64, num_warps=4, num_stages=4` for the apply pass \u2014 current 128\u00d7128 with 8 warps is over-resourced for a pure elementwise affine.\n- For the stats kernel, increase `BLOCK_N_STAT` to 256 and reduce `M_CHUNKS` to 4 (fewer atomic_adds, larger contiguous loads); also try `BLOCK_M_STAT=1024, num_warps=8, num_stages=4` so each program amortizes the scale broadcast better.\n- Wrap both kernels in `triton.autotune` over a small config list and key on `(M, N)` so the launcher picks the best shape rather than the hand-picked single config.",
+    "large_guidance": "- The dominant cost at (M=16384, N=4096, K=4096) is the GEMM itself (~550 GFLOPs); the BN epilogue is memory-bound and tiny by comparison. A from-scratch rewrite should implement a custom tiled `tl.dot` GEMM (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8, num_warps=4, num_stages=3) that fuses bias-add + scale multiply into the accumulator epilogue in the eval path, eliminating the cuBLAS addmm + separate apply kernel entirely.\n- For the training path, split into two custom kernels only: (1) a fused GEMM+scale+bias kernel that writes Y and simultaneously accumulates per-N partial sums/sumsqs to a small `[num_pid_m, N]` workspace via atomic_add on the N-tile (or a two-stage reduction with a final tree-reduce kernel), then (2) a fused apply kernel. This collapses one full pass over Y.\n- Consider a persistent GEMM where each SM processes a strip of M tiles for the same N tile, keeping the scale/bias vectors in registers across multiple M tiles and computing the column reductions in-register before a single atomic flush per program \u2014 this removes the standalone stats-kernel pass entirely.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 23,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.7791481785714286
+    ]
+}

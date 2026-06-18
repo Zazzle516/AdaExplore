@@ -1,0 +1,29 @@
+{
+    "node_id": 38,
+    "parent_node_id": 37,
+    "context_node_ids": [
+        37
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.6186235300650484,
+    "max_reward": 0.6186235300650484,
+    "avg_reward": 0.6186235300650484,
+    "score": [
+        1,
+        1,
+        1.9036441230366492
+    ],
+    "small_guidance": "- The kernel writes output with `offs_n * M + offs_m` (channel-strided stores per row), which is a non-coalesced scatter pattern. Swap the store layout so `offs_m` is the contiguous axis: `out_addr = pid_b*OC*M + offs_m[:,None]*OC + offs_n[None,:]` into a NHWC buffer, then permute once at the end (or keep NHWC and have the next op consume it). This alone should give a meaningful uplift.\n- Add a `BLOCK_M=128, BLOCK_N=128, num_warps=8, num_stages=4` config and prune the smaller (64/64, 32/128) tiles \u2014 at OH*OW=64516 and OC=64, large-M / moderate-N tiles dominate. Also try `BLOCK_M=256, BLOCK_N=128, num_warps=8, num_stages=3`.\n- `K = 8*3*3 = 72`, `K_CONST = 128` wastes ~44% of the K-loop on masked zeros. Specialize on (IC=8, KH=KW=3) and unroll K manually with `K_CONST=72`-friendly packing (e.g. pad weight to K=80 or split into K=64 + K=8 to avoid the next-pow2 inflation).",
+    "large_guidance": "- Switch to a channels-last (NHWC) data layout end-to-end: store input as NHWC so the GEMM-K axis (IC*KH*KW) has IC innermost and contiguous, enabling coalesced loads across K. Output in NHWC too, eliminating the strided store seen now.\n- Make the kernel persistent / one-program-per-(batch, OC-tile) and stream the output spatial tiles in a loop, reusing the loaded weight tile across all spatial positions of a batch. With OC=64 (one BLOCK_N covers all channels) and KH=KW=3, the weight tile is tiny (72\u00d764) and can live in registers/SMEM for the whole batch \u2014 turning the kernel from GEMM-bound to spatial-bound.\n- Alternatively, since KH=KW=3 and IC=8 are small constants, write a direct (non-im2col) conv kernel: each program owns a (BLOCK_H \u00d7 BLOCK_W) output tile for one (n, oc_tile), preload the (IC, KH, KW, BLOCK_N) weight slab once, and slide over input with halo loads. This removes the implicit-gemm index arithmetic and the K-padding waste, and is typically the fastest pattern for 3\u00d73 small-IC convs on Ada.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 39,
+    "global_best_node_id": 36,
+    "global_best_score": [
+        1,
+        1,
+        2.5605354049295777
+    ]
+}

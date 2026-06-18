@@ -1,0 +1,29 @@
+{
+    "node_id": 16,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        12
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness issue is the NaN in avg_difference and tiny mismatches: the GEMM kernel uses `tl.atomic_add` of `col_sum`/`col_sumsq` across many M-tiles, but `acc_masked` uses `mask = mask_m[:,None] & mask_n[None,:]` correctly \u2014 however the issue is that the autotuner re-runs the kernel multiple times during tuning, accumulating into the same `sum_buf`/`sumsq_buf` and producing wrong stats. Fix by either (a) zeroing the buffers right before the apply step is impossible since tuning already polluted them, or (b) splitting stats into a dedicated second kernel pass (`bn_stats_kernel` already exists) and removing the atomic_adds from the GEMM kernel entirely.\n- Alternatively, mark `sum_buf`/`sumsq_buf` as non-key autotune args and use `reset_to_zero=['sum_ptr','sumsq_ptr']` in `triton.autotune` so each tuning trial starts from zero.\n- Once correct, tune apply kernel `BLOCK_M=128, BLOCK_N=128, num_warps=4` and ensure `out` is consumed contiguously (row-major, N inner) \u2014 current indexing `offs_m[:,None]*N + offs_n[None,:]` is fine.",
+    "large_guidance": "- Drop the in-GEMM atomic stats accumulation entirely. It both hurts GEMM throughput (atomic traffic on N=8192 columns from every tile) and breaks correctness under autotune re-runs. Instead: (1) fused GEMM+bias+scale kernel writes `out`, (2) dedicated column-reduction kernel computes sum/sumsq from `out` (one program per column with a blocked M reduction, tl.sum over BLOCK_M), (3) fused apply kernel reads `out` and writes `y` with the affine. Three clean launches, no atomics.\n- Consider fusing steps (2) and (3): since M=1024 fits easily, use a persistent per-column-tile kernel that loads the full (M, BLOCK_N) column tile into registers/shared, reduces to get mean/var, then writes the normalized output in the same kernel \u2014 eliminating a full read of `out`.\n- For the GEMM itself with M=1024, N=K=8192, prefer larger N tiles (BLOCK_M=64, BLOCK_N=256, BLOCK_K=32, num_warps=8, num_stages=4) and ensure the weight is pre-transposed once at init (W^T stored contiguous in K) so the inner B load is contiguous along N rather than strided by K.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 17,
+    "global_best_node_id": 12,
+    "global_best_score": [
+        1,
+        1,
+        0.5658960882834168
+    ]
+}

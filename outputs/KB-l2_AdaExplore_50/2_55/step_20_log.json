@@ -1,0 +1,29 @@
+{
+    "node_id": 20,
+    "parent_node_id": 17,
+    "context_node_ids": [
+        17
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The stage1 kernel uses `tl.sum(w_vals * x_vals[None, :], axis=1)` which is a manual reduction rather than `tl.dot`. Replace with a proper tiled GEMM using `tl.dot` with BLOCK_M=32/64 (over output rows), BLOCK_N=1 won't work \u2014 instead tile (B, OUT) jointly: BLOCK_M=32 over batch, BLOCK_N=64/128 over output, BLOCK_K=32/64. This unlocks tensor-core throughput.\n- Transpose the weight matrix once at init (store W^T contiguous as [IN_FEATURES, OUT_FEATURES]) so the K-loop loads B contiguously along the K axis for `tl.dot`.\n- Add larger autotune configs covering BLOCK_M\u2208{32,64,128}, BLOCK_N\u2208{64,128,256}, BLOCK_K\u2208{32,64}, num_warps\u2208{4,8}, num_stages\u2208{3,4}, and a GROUP_M=8 swizzle.",
+    "large_guidance": "- Redesign as a single fused GEMM+pool+sum+scale kernel using `tl.dot`. Grid: one program per batch-tile (BLOCK_M rows of x). Each program iterates over output tiles of size BLOCK_N (multiple of kernel_size=2), computes the GEMM tile via `tl.dot`, adds bias, does pairwise max along N (reshape to [BLOCK_M, BLOCK_N/2, 2] and max), accumulates the running sum across N tiles in registers, then at the end multiplies by scale and stores one scalar per row. This eliminates the intermediate `pooled` tensor entirely.\n- Pre-transpose weight to [IN_FEATURES, OUT_FEATURES] layout at init so `tl.dot(x_tile, w_tile)` has contiguous K on both operands; this is the key change vs. current row-wise gather of W.\n- Because M=128 is small, consider a persistent kernel where each SM processes a fixed (M_tile, all-N) stripe and accumulates the row-sum locally; this avoids any cross-program reduction and matches the 4090's 128 SMs nicely (BLOCK_M=8 \u2192 16 programs, or BLOCK_M=4 \u2192 32 programs, all running concurrently with full N sweep).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 21,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

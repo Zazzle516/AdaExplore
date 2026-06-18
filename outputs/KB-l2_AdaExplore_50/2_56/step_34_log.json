@@ -1,0 +1,29 @@
+{
+    "node_id": 34,
+    "parent_node_id": 33,
+    "context_node_ids": [
+        33
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The atomic_add accumulates partials from multiple N-tiles into the same output element across different pid_n; ensure `out` is zero-initialized (it is) AND that bias is added only once per (m,n) tile \u2014 currently bias is added in every N-tile, which is correct since each (m,n) appears once. The correctness issue is likely the `tl.trans(w)` with masked loads producing wrong reduction when K isn't multiple of BLOCK_K, or stride confusion. Verify W layout: `nn.Linear.weight` is `[N, K]` with stride `(K, 1)`, so `stride_wn=K, stride_wk=1` \u2014 looks fine. Investigate fp32 accumulator precision: with K=32768 and N=32768 reduction, summing 32768 sigmoids in fp32 could lose precision; switch the cross-tile accumulation to use a separate fp32 atomic on per-row partials computed in higher precision (already fp32, so the issue is more likely a kernel logic bug).\n- Add a config with `BLOCK_N=K=32768`-friendly tiles and consider `BLOCK_K=128` to reduce loop iterations on K=32768.\n- The most likely correctness bug: when one N-tile is fully out-of-bounds (pid_n at edge), the kernel still does atomic_add of partial=0 \u2014 fine. But `tl.atomic_add` on float32 with many concurrent writers across N-tiles can have nondeterministic ordering; that doesn't cause 2.4M error. The real bug is probably that `nn.Linear` weight on CPU init + `.cuda()` each forward call doesn't move buffers persistently \u2014 move weight/bias to CUDA in `__init__` to avoid repeated H2D and ensure consistency.",
+    "large_guidance": "- Redesign as one program per row (M=128 rows total): each program streams the full K=32768 input row into SRAM/registers once, then iterates over N=32768 in chunks of BLOCK_N, computing `dot(x_row, W[n:n+BLOCK_N])` via `tl.dot` with a small inner BLOCK_K loop, applying bias+sigmoid in-register, and accumulating a scalar row-sum. This eliminates the atomic_add entirely and gives deterministic fp32 reduction. Grid = (M,), with BLOCK_N tiled internally.\n- Alternatively, use a 2-stage approach: stage 1 computes the full `[M,N]` matmul+sigmoid into a temp buffer with a well-tuned GEMM; stage 2 does a tree reduction along N. Avoids atomic contention and lets stage 1 reuse a standard Triton GEMM template.\n- Since M=128 is small but N,K are huge (\u22484GB weight), the kernel is memory-bound on W. Consider splitK along K with one program per (row, n-tile) writing to a temp `[M, num_n_tiles]` then a second reduction kernel \u2014 keeps W loads coalesced and avoids reloading W for each row by mapping multiple rows per program (persistent over rows, BLOCK_M=128).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 35,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

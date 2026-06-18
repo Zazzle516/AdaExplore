@@ -1,0 +1,29 @@
+{
+    "node_id": 48,
+    "parent_node_id": 46,
+    "context_node_ids": [
+        46
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.6293705454545455,
+    "max_reward": 0.6293705454545455,
+    "avg_reward": 0.6293705454545455,
+    "score": [
+        1,
+        1,
+        1.992307
+    ],
+    "small_guidance": "- Add larger autotune configs targeting the M dimension (OH*OW = 64516 is huge): try BLOCK_M=256/BLOCK_N=64 and BLOCK_M=128/BLOCK_N=128 with num_warps=8, num_stages=2-3; the current best likely picks 128x128 but more K=16 variants with num_stages=4 may help since K_TOTAL=72 is tiny.\n- Store output directly in NHWC (or write contiguously along M) to make the store coalesced \u2014 currently `out_offset = ... + offs_n[None,:]*(OH*OW) + offs_m[:,None]` writes with stride OH*OW across the N tile, which is uncoalesced; either transpose output layout or swap the store to write [BLOCK_M contiguous, BLOCK_N strided] with a permute at the end.\n- Use the tanh-softplus identity directly via `tl.exp` once: `sp = log1p(exp(acc))` then `th = 1 - 2/(exp(2*sp)+1)` saves one exp; or use the numerically-stable `softplus = max(acc,0) + log1p(exp(-abs(acc)))` to avoid overflow and reduce ops.",
+    "large_guidance": "- Since K_TOTAL = 8*3*3 = 72 is very small, drop the K-loop entirely: pick BLOCK_K = next_pow2(72) = 128 and do a single GEMM step with masking. This removes loop overhead and lets the compiler fully unroll the im2col gather. Combine with BLOCK_M=128, BLOCK_N=64 (OC=64 fits in one N tile, eliminating pid_n).\n- With OC=64 fitting in a single tile, restructure the grid as (pid_m over OH*OW, pid_b over N) only, and load the entire weight (64 x 72 = 4608 floats = 18KB) once into SRAM at the top \u2014 this turns the kernel into a pure input-gather + dense matmul with weights resident, eliminating repeated weight loads.\n- Output in NHWC and add a cheap NHWC\u2192NCHW permute at the end (or keep NHWC if downstream allows); the current NCHW store pattern is the main remaining bottleneck after the GEMM. Alternatively, fuse the layout transpose into the kernel via a shared-memory staging tile so both load and store are coalesced.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 49,
+    "global_best_node_id": 39,
+    "global_best_score": [
+        1,
+        1,
+        2.634753822463768
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 26,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        23
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM kernel uses `allow_tf32=False` which forces full FP32 mma \u2014 on a 4090 this leaves enormous throughput on the table. Switch to `allow_tf32=True` (the reference uses default fp32 matmul which on Ampere+ already enables TF32 paths via cuBLAS); this alone should roughly halve GEMM time. Also add larger configs like `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4` and `BLOCK_M=256, BLOCK_N=128, BLOCK_K=32` since M=N=1024..8192 is large.\n- For the fused norm kernel, CPG = 8192/256 = 32, so `BLOCK_CPG=32` is tiny \u2014 launching 1024*256 = 262K programs of 32 elements each is wasteful. Process multiple groups per program (e.g. tile 4\u20138 groups along the group axis or fuse all groups of a row into one program of width 8192 with per-group reductions via reshape) to amortize launch overhead and improve memory throughput. Use `num_warps=1` for the current per-(N,G) kernel since 32 elements only needs 1 warp.\n- Pre-transpose `weight.t().contiguous()` once at init time and cache it as a buffer rather than every forward call (currently a hidden 8192\u00d78192 copy per forward, ~270MB).",
+    "large_guidance": "- Redesign the GEMM as a TF32 tiled matmul (or call cuBLAS via `torch.addmm` and only fuse the epilogue) \u2014 at M=1024, N=K=8192, cuBLAS TF32 hits ~80+ TFLOPs on a 4090 while the current FP32 Triton kernel is bound by FP32 mma (~30 TFLOPs). The fastest path is `addmm` for the linear, then a single fused GN+Swish+Mul+Swish kernel.\n- Restructure the post-GEMM kernel to one program per row (N=1024 rows): load the entire 8192-element row, do per-group mean/var via reshape to (G=256, CPG=32), then apply gamma/beta/mw and the two Swishes inline. This collapses 256\u00d7N launches into N launches and keeps everything in registers/SMEM.\n- Alternatively fuse the GEMM epilogue with GroupNorm by having the GEMM write into a buffer and immediately launch the per-row fused norm kernel; avoid the materialization round-trip if memory bandwidth becomes the bottleneck once GEMM is fast.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 27,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

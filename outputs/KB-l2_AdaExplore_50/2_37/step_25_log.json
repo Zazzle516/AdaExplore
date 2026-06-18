@@ -1,0 +1,30 @@
+{
+    "node_id": 25,
+    "parent_node_id": 22,
+    "context_node_ids": [
+        3,
+        22
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness failure (~1.6e-3 max diff) is likely from masked lanes in GroupNorm: when `mask=False`, `x=0` is included in the mean via division by `CPG` which is fine, but `xc = x - mean` uses `tl.where(mask, x-mean, 0.0)` correctly \u2014 however `BLOCK_CPG` of 64 equals CPG=64 here so masking isn't the issue. The real issue is likely TF32 in the GEMM accumulating into fp32 then feeding GroupNorm; tighten by setting `allow_tf32=False` (or use `tf32x3`) in `tl.dot` to bring max diff under the 5e-2 tolerance \u2014 but 1.6e-3 already passes 5e-2, so check the correctness harness: likely an unrelated bug. Verify `W.stride(0)` vs `stride_wn`: `W` is `(N, K)` so `stride_wn = W.stride(0)`, `stride_wk = W.stride(1)` \u2014 that's correct.\n- Add an autotune key on `M` only (since N, K are fixed) and add wider tiles (`BLOCK_M=256, BLOCK_N=256, BLOCK_K=32`) since M=32768 is huge.\n- For GroupNorm with CPG=64, use `num_warps=1` and unroll; current `num_warps=2` over 64 elements is over-provisioned.",
+    "large_guidance": "- Fuse GroupNorm into the GEMM epilogue is hard because groups span N-tile boundaries; instead, choose `BLOCK_N = CPG` (64) or a multiple so each program owns whole groups for its M rows, then do the per-row-per-group reduction in-register and write normalized output directly \u2014 eliminating the entire second kernel pass over a 32768\u00d74096 tensor.\n- Alternatively, persist the GEMM output in shared memory / registers per row-tile and apply GroupNorm before storing to global. With M=32768, N=4096, this saves a full 512MB read+write round trip.\n- Consider splitting strategy: GEMM writes to global as today, but launch GroupNorm with one program per row processing all 64 groups using a 2D layout (`BLOCK_N=4096`, vectorized loads) to amortize launch overhead and reuse the row in L2.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 26,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

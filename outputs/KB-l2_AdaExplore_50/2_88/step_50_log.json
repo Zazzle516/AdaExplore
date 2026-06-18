@@ -1,0 +1,32 @@
+{
+    "node_id": 50,
+    "parent_node_id": 32,
+    "context_node_ids": [
+        8,
+        11,
+        31,
+        32
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness fails: avg diff ~5e-5 is suspiciously close to fp32 epsilon-level. Likely cause: the GN kernel loads `tl.load(ptrs)` without masking \u2014 when `groups_per_prog * group_size` exceeds what's safely in range, or when the layout-shape interaction is off. With out_features=8192, num_groups=256, group_size=32, GROUPS_PER_PROG=8 gives a 8x32=256 tile which is fine, but verify `chan_offs` stays in `[0, N)` \u2014 add explicit masks `chan_offs < N` to all loads/stores to be safe.\n- The mean/var computation uses `sum_x / GROUP_SIZE` where GROUP_SIZE is a constexpr int \u2014 ensure division is float (`/ float(GROUP_SIZE)` or multiply by `1.0/GROUP_SIZE`) to avoid integer division surprises in Triton.\n- Add autotune to the GN-fused kernel over `GROUPS_PER_PROG` \u2208 {1,2,4,8,16} and `num_warps` \u2208 {2,4,8} keyed on `(N, G)` to find best occupancy for the (1024, 8192, 256-groups) shape.",
+    "large_guidance": "- Keep the two-kernel structure (fused GEMM+bias, then fused GN+Swish+Mul+Swish) \u2014 it's the right fusion boundary for this graph. The GEMM dominates (1024\u00d78192\u00d78192 = 68 GFLOP), so prioritize a well-tuned `tl.dot` GEMM with split-K disabled, larger tiles (BLOCK_M=128, BLOCK_N=256, BLOCK_K=32\u201364), and `num_stages=3\u20134` to overlap K-loop loads.\n- For the GN-fused epilogue: with group_size=32, one program per (row, group) gives 256\u00d71024 = 262K programs \u2014 too many. Pack ~8\u201316 groups per program (entire row = 256 groups can fit if we make one program per row with a tiled reduction). Consider a row-persistent kernel: one program handles one full row (8192 elements), computes 256 group means/vars via segmented reduction, then applies normalize+swish+mul+swish in registers \u2014 this halves global memory traffic.\n- Alternatively, since group_size=32 is small, use a 2D tile of shape (GROUPS_PER_PROG=32, GROUP_SIZE=32) = 1024 elements per program, num_warps=4, so 1024 rows \u00d7 8 programs/row = 8192 programs total \u2014 much better occupancy than the current launch grid.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 51,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

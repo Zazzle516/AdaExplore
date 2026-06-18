@@ -1,0 +1,30 @@
+{
+    "node_id": 28,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        3,
+        4
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The GroupNorm kernel has a correctness bug: `xc = tl.where(mask, x - mean[:, None], 0.0)` uses the full `mask` (which includes `mask_r`), but rows beyond `total_groups` produce a garbage `mean` from masked-zero loads. More importantly, when `ROWS_PER_PROG > 1`, `gb_off = grp[:, None] * CPG + offs_c[None, :]` is correct, but the gamma/beta load uses `mask` (row+channel) \u2014 that's fine. The real bug is likely that `Gamma_ptr`/`Beta_ptr` are loaded with the row-dependent mask but they're per-channel; use `mask_c[None, :]` only for the gamma/beta load. Also ensure `mean` divides by `CPG` (a constexpr int), not over masked sum issues.\n- Sweep `ROWS_PER_PROG` in {1, 2, 4, 8} and `num_warps` in {2, 4} via autotune; for CPG=64 a single row per program with num_warps=2 may be most accurate and fast.\n- Add an autotune `key=['M','C','G']` on group_norm and consider fusing the Swish+bias+groupnorm boundary later (store intermediate in shared/global is fine for now since matmul output is large).",
+    "large_guidance": "- Redesign GroupNorm with one program per (row, group) (2D grid: `[M, G]`), eliminating ROWS_PER_PROG packing entirely. With CPG=64 and G=64, BLOCK_CPG=64 fits trivially in registers and removes the row-mask complexity that's causing the correctness failure.\n- Consider a fused epilogue: have the GEMM kernel write tiles in (row, group) layout already and run GroupNorm as a persistent kernel that consumes one row at a time, computing all G groups in registers \u2014 avoids the intermediate `y` write/read of 32768\u00d74096 fp32 (512MB of traffic).\n- Alternative: keep two kernels but make GroupNorm use `tl.rsqrt` and compute mean/var with a Welford or two-pass reduction along the channel axis only, using `tl.sum(x, axis=0)` with the channel laid out on axis 0 for better warp reduction efficiency.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 29,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

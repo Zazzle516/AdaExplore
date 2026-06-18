@@ -1,0 +1,29 @@
+{
+    "node_id": 10,
+    "parent_node_id": 9,
+    "context_node_ids": [
+        9
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing with ~0.0023 max diff \u2014 the BN affine fusion looks correct but check that `bn.weight`/`bn.bias` are contiguous and on CUDA; also ensure `mean`/`var` dtype matches (use `.to(y.dtype)` on stats before applying). The likely bug is that in eval mode the running stats may not be initialized as expected, but in training mode the variance computed with single-pass `(x-mean)^2` against an inexact mean can drift \u2014 keep two-pass but recompute the mean as `tl.sum(x)/M` using full reduction (current code does this) \u2014 try increasing `BLOCK_M` in `bn_stats_kernel` to 2048 or use Welford for better numerical fidelity.\n- Try autotune configs with `BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, num_warps=4, num_stages=4` for the 1024\u00d78192\u00d78192 GEMM \u2014 K=8192 benefits from deeper pipelining.\n- In `bn_apply_kernel`, use `BLOCK_M=64, BLOCK_N=128` with `num_warps=4` since M=1024 only gives 8 row-tiles; smaller tiles increase parallelism.",
+    "large_guidance": "- Fuse the BN apply into the GEMM epilogue for eval mode (running stats are constant) \u2014 precompute `scale_combined = self.scale * bn.weight / sqrt(running_var + eps)` and `shift = bn.bias - running_mean * bn.weight / sqrt(running_var + eps)` and apply in the GEMM epilogue, eliminating the separate apply kernel entirely. For training, keep the two-stage flow but fuse stats computation with a split-K reduction.\n- Consider a split-K GEMM strategy for the 8192\u00d78192\u00d78192 problem: split the K dimension across multiple programs and atomic-add into the output, then apply bias+scale in a small epilogue kernel. This better utilizes the 128 SMs on the 4090.\n- For BN stats in training, use a two-stage reduction kernel: partial sums per (column, M-tile) block in stage 1, then a final reduction in stage 2 \u2014 this parallelizes across the M dimension instead of one program per column.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 11,
+    "global_best_node_id": 6,
+    "global_best_score": [
+        1,
+        1,
+        0.5597450438455535
+    ]
+}

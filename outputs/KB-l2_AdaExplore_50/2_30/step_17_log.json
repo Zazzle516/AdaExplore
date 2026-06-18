@@ -1,0 +1,32 @@
+{
+    "node_id": 17,
+    "parent_node_id": 10,
+    "context_node_ids": [
+        1,
+        2,
+        4,
+        10
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing with avg_diff ~2e-4 \u2014 likely the GroupNorm kernel uses `tl.load`/`tl.store` without masks when `BLOCK > CPG` or reads OOB; explicitly compute `mask = offs < CPG` and pass `mask=mask, other=0.0` to loads and `mask=mask` to the store. For C=8192, G=16, CPG=512 this is exact pow2 so likely fine \u2014 instead suspect the GEMM tail path: when K is a multiple of BLOCK_K the `if K_main < K` branch is skipped but `offs_k` mask still uses the original `offs_k` which is fine; check that `tl.dot` accumulates in fp32 with `allow_tf32=True` \u2014 this introduces TF32 rounding error vs. cuBLAS fp32. Try `allow_tf32=False` or accept the diff; the test tolerance is 5e-2 so 1.6e-3 max-diff should pass \u2014 the real bug may be that weight strides are passed swapped incorrectly. Verify: `nn.Linear` stores weight as (N, K) row-major, so `weight.stride(0)=K, weight.stride(1)=1`. We need B viewed as (K, N) so `stride_bk = weight.stride(1) = 1`, `stride_bn = weight.stride(0) = K`. The current code passes `weight.stride(1), weight.stride(0)` as `(stride_bk, stride_bn)` = (1, K) \u2713 \u2014 correct.\n- The real issue is likely that `gemm_bias_kernel` masks loads on only one axis (`mask_m[:, None]` without `offs_k < K` on the K dim); when M tile extends past M, masked rows produce 0 which is correct, but when the inner K dim is fine since K_main covers full K. However, on `b` load only `mask_n[None, :]` is used \u2014 K rows are unmasked and can read OOB when at the tail. With K=8192 and BLOCK_K=32/64, 8192 is divisible so no tail, but the OOB on M tile when M=1024 and BLOCK_M=128 also divides. So no OOB. The mismatch is TF32 \u2014 switch `allow_tf32=False` to get exact fp32 and confirm correctness, then re-enable with a tighter tolerance check.\n- Add an autotune to the groupnorm kernel over `num_warps \u2208 {4,8}` and `num_stages \u2208 {2,3}` once correctness is fixed.",
+    "large_guidance": "- The structure (tiled GEMM+bias fused, then fused GroupNorm+HardTanh) is correct and near-optimal for this shape (M=1024, N=K=8192). A redesign should keep both kernels but consider fusing the GroupNorm reduction directly into the GEMM epilogue is infeasible (cross-tile reduction). Instead, store GEMM output in fp16/bf16 only if downstream accepts; keep fp32.\n- For GroupNorm with CPG=512, a single program loading 512 contiguous floats per (row, group) is ideal; ensure `BLOCK=512`, `num_warps=4` (one warp handles 128 elems, four warps = 512), `num_stages=1`. Use Welford for numerical stability instead of two-pass to reduce register pressure.\n- Investigate using `tl.dot` with input cast to tf32 explicitly only if accuracy holds; otherwise force fp32 mma by `allow_tf32=False` \u2014 the correctness failure suggests TF32 drift accumulated over K=8192 reductions exceeds the harness tolerance for this specific check.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 18,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

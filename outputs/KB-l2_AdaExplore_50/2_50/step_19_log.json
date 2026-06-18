@@ -1,0 +1,29 @@
+{
+    "node_id": 19,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.7625475953379954,
+    "max_reward": 0.7625475953379954,
+    "avg_reward": 0.7625475953379954,
+    "score": [
+        1,
+        1,
+        3.0910176615384612
+    ],
+    "small_guidance": "- The inner loop iterates `ic` then `kd/kh/kw` with `tl.static_range` on the kernel dims; try swapping so `kd/kh/kw` are the outer static loops and the IC loop is the inner range \u2014 for KD=KH=KW=3 and IC=3 this lets the compiler unroll all 27 weight loads as constants and the IC=3 loop can also be `tl.static_range(3)` since IC is small/known. Mark IC as a constexpr or use `tl.static_range(3)`.\n- Add autotune configs with larger BLOCK (1024) and `num_stages=3/4` since POD*POH*POW = 8*16*16 = 2048 per (n,oc) \u2014 current BLOCK=256/512 launches 4-8 programs per (n,oc); a single BLOCK=2048 or BLOCK=1024 with num_warps=8 may reduce launch overhead and improve weight reuse.\n- The 2x2x2 pool loop currently re-issues 8 independent gathers per output; precompute the 8 (od,oh,ow) sets and recognize that consecutive pool windows share input contributions \u2014 but at minimum hoist `cb` add outside the pool 2x2x2 loop (add `8*cb` once) to remove 7 redundant adds.",
+    "large_guidance": "- Switch from gather (per-output) to scatter-add (per-input): one program per `(N, IC tile, input-spatial tile)` loads x once, multiplies by the full (OC, KD, KH, KW) weight slab, and atomically/serially accumulates into the pooled output. Since AvgPool kernel=2 aligns with stride=2, each input voxel contributes to a small bounded set of pooled outputs \u2014 the scatter math is simple and weight reuse across output channels becomes a real GEMM-K.\n- Cast as im2col-GEMM: build implicit columns of shape (IC*KD*KH*KW, OD*OH*OW) and multiply by weight (OC, IC*KD*KH*KW), then fuse the 2x2x2 average and bias/scale into the epilogue. Tile the output-spatial \u00d7 OC plane with BLOCK_M=64, BLOCK_N=16 (OC=16), BLOCK_K=27 or 81 and use `tl.dot` for the matmul \u2014 this is what the conv skill recommends and exposes tensor-core-style throughput vs. the current scalar FMA loop.\n- Use channels-last (NDHWC) layout for both input and the pooled output, so the IC reduction is the contiguous axis and loads coalesce; precompute per-output (kd,kh,kw)-valid masks once outside the IC loop.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 20,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        12.676097665615142
+    ]
+}

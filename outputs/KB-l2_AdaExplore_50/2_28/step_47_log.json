@@ -1,0 +1,29 @@
+{
+    "node_id": 47,
+    "parent_node_id": 46,
+    "context_node_ids": [
+        46
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure is likely because `InstanceNorm2d` with `track_running_stats=False` (default) uses **unbiased=False** variance (divide by N), which matches the kernel \u2014 but the issue is likely the kernel reduction precision. Try doing the mean/var reduction in fp32 with a single-pass Welford or load the row once into SRAM (BLOCK_N >= 8192) to avoid re-reading and reduce accumulated rounding. With N=8192, set BLOCK_N=8192 and TILES=1, num_warps=16 or 32.\n- Verify the eps handling: pass `eps` as `tl.constexpr` (Python float baked in) rather than as a runtime arg to avoid any implicit dtype promotion issues.\n- Consider that `nn.Linear` bias is added before instance norm; the small ~1e-3 max diff suggests a numerical/precision issue rather than a logic bug \u2014 switch reduction to Kahan or compute `var = E[x^2] - mean^2` carefully, or do a single-pass over a row resident in registers.",
+    "large_guidance": "- Rewrite the instance-norm + residual kernel as a **persistent single-row kernel** that loads the entire 8192-element row into registers/SRAM once (BLOCK_N=8192, num_warps=16), computes mean and variance in one pass via sum and sum-of-squares both accumulated in fp32, then writes the fused `(xhat + y) * y` output \u2014 eliminating the 3x re-load of x.\n- For the GEMM, M=1024, N=8192, K=8192 is large and square-ish; consider a split-K or stream-K strategy, or simply add larger tile configs (BLOCK_M=128 BLOCK_N=256 BLOCK_K=64 num_warps=8 num_stages=4) and ensure the weight is pre-transposed to a layout where the K-dim is contiguous for B loads.\n- Alternatively, fuse the bias+instnorm+residual entirely: after the GEMM produces a row tile, immediately reduce within the row \u2014 but since GEMM tiles in M, full-row reductions require a separate pass; keep them as two kernels but make the second one persistent and single-pass.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 48,
+    "global_best_node_id": 28,
+    "global_best_score": [
+        1,
+        1,
+        0.8257900886245404
+    ]
+}

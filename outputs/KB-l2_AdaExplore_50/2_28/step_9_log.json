@@ -1,0 +1,29 @@
+{
+    "node_id": 9,
+    "parent_node_id": 8,
+    "context_node_ids": [
+        8
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing: InstanceNorm2d with `num_features=out_features` expects channels=out_features, but the reference reshapes `x` (B, F) \u2192 (B,1,1,F) so channels=1 and the norm reduces over H,W=1\u00d7F. However, InstanceNorm2d with `affine=False` (default) just normalizes; the issue is likely `tl.sum(x)/F` where F is an int \u2014 cast F to float (`F.to(tl.float32)` via a `float(F)` constexpr or `1.0/F` computed in Python) since integer division semantics in Triton may truncate. Pass `inv_F = 1.0 / F` as a float kernel arg.\n- Also ensure `eps` is passed as fp32 (it's a Python float \u2014 fine, but make it `tl.constexpr` or cast). Recompute mean/var in fp32 consistently and only cast `y` to fp32 before the fused add/mul, then store as input dtype.\n- After fixing, tune `fused_post_kernel`: for F=8192, try `BLOCK_SIZE=8192, num_warps=16, num_stages=2`; also try splitting into a 2-stage reduction if shared-memory pressure is high.",
+    "large_guidance": "- Keep the two-kernel structure (tiled GEMM + fused norm/residual/mul). The GEMM dominates (1024\u00d78192\u00d78192 \u2248 137 GFLOPs) \u2014 focus redesign on a high-quality GEMM: persistent kernel with `BLOCK_M=128, BLOCK_N=256, BLOCK_K=32, GROUP_M=8, num_warps=8, num_stages=4`, or a split-K variant if N-tiles underfill the SMs.\n- Fuse the InstanceNorm + residual-add + mul epilogue directly into the GEMM's store path only if the GEMM tile spans the full feature dim (it doesn't here, since N is tiled). So keep them separate, but consider writing the GEMM output in fp16/bf16-accumulated-to-fp32 layout that the norm kernel can consume row-contiguously (already the case).\n- For the norm kernel, since F=8192 fits in registers with BLOCK=8192 and num_warps=16, use a single-pass Welford or two-pass with the row resident in registers; avoid re-loading x for the variance pass by keeping `xc` in registers.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 10,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.8111310929684835
+    ]
+}

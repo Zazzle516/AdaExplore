@@ -1,0 +1,27 @@
+{
+    "node_id": 36,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure is likely from the BN running-stats update: in training, BatchNorm normalizes with the *current batch* mean/var but the unbiased correction in the reference uses `var * M/(M-1)` only for running_var (which you do). Verify `mean` and `invstd` dtype \u2014 store stats in fp32 but ensure `z` is fp32 too; also check that `bn_stats_kernel` reduces correctly when `BLOCK_M=256` and `M=1024` (4 iterations, fine). Re-examine `bn.weight`/`bn.bias` \u2014 at init they are 1/0 so output should match; investigate whether `self.scale` is being applied in the wrong dtype path.\n- Add `triton.autotune` to `bn_apply_kernel` over `BLOCK_M`\u2208{64,128}, `BLOCK_N`\u2208{128,256}, num_warps\u2208{4,8}; the current fixed (64,128) is suboptimal for 1024\u00d78192.\n- For `bn_stats_kernel`, with N=8192 launching N programs each doing a tiny reduction over M=1024 is fine, but use `num_warps=2` and larger `BLOCK_M=1024` (single-pass) to eliminate the loop.",
+    "large_guidance": "- Fuse BN-apply into the GEMM epilogue for the eval path: after computing `acc`, load per-column `mean`, `invstd`, `bn.weight`, `bn.bias` and write the normalized output directly \u2014 eliminates one full read/write of an 8M-element tensor.\n- For training, do a two-kernel design: (1) fused GEMM+scale+bias that also accumulates per-column partial sums and sums-of-squares into a workspace using `tl.atomic_add` (one row group per program), then (2) a finalize kernel computes mean/invstd and a third kernel applies BN. Alternatively, keep z materialized but use a single-pass column reduction kernel with `BLOCK_M = next_pow2(M) = 1024` (no loop).\n- The GEMM dominates (1024\u00d78192\u00d78192 \u2248 137 GFLOPs); ensure the autotune sweep includes `BLOCK_M=128,BLOCK_N=256,BLOCK_K=64,num_warps=8,num_stages=3` and `BLOCK_M=256,BLOCK_N=128,BLOCK_K=32` which are typically best on Ada for square K=8192.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 37,
+    "global_best_node_id": 24,
+    "global_best_score": [
+        1,
+        1,
+        0.5932781570713239
+    ]
+}

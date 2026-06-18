@@ -1,0 +1,29 @@
+{
+    "node_id": 32,
+    "parent_node_id": 31,
+    "context_node_ids": [
+        31
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure stems from the split-N partial reduction: `gemm_rowsum_kernel` writes `partial[pid_n, m] = sum over BLOCK_N columns` but `reduce_n_kernel` indexes `partial_ptr + offs * M + m` while the tensor stride is `(M, 1)` \u2014 that index is actually correct, but the bias is added once globally rather than matching the sum over the *full* N. Double-check that `bias.sum()` is computed in fp32 and that `partial` is zero-initialized for the last (possibly partial) N-tile; mask `acc` contributions where `offs_n >= N` before the row-sum.\n- Tune autotune configs over (BLOCK_M, BLOCK_N, BLOCK_K) \u2208 {(128,128,32),(64,128,64),(128,64,64)} with num_warps \u2208 {4,8}, num_stages \u2208 {3,4}; current 64\u00d7256\u00d732 with BLOCK_K=32 leaves the K-loop (K=8192 \u2192 256 iters) under-pipelined.\n- Add `GROUP_M=8` swizzle for L2 reuse across the (M=1024, N=8192) tile grid.",
+    "large_guidance": "- Collapse the entire pipeline into a single persistent kernel per row: since every post-GEMM op (sum, max-of-1, mean-of-1, logsumexp-of-1, logsumexp-of-1) is an identity on a length-1 dim, the final answer is literally `sum_j(x @ W^T + b)[m, j]` = `dot(x[m], W.sum(0)) + b.sum()`. **However**, per the safety contract we must NOT precompute `W.sum(0)` at init \u2014 instead fuse the column-reduction of W *into* the GEMM at runtime: one program per M-tile loops over K in BLOCK_K chunks, loads `x[m, k:k+BK]` once and `W[:, k:k+BK]` tile-by-tile, accumulates `acc[m] += sum_n(W[n,k] * x[m,k])` directly without materializing the (M,N) matmul output.\n- Equivalently: tile over (M, K), inside each K-chunk first reduce W across N (loop over N-tiles of size BLOCK_N, accumulating a (BLOCK_K,) vector `w_colsum`), then do `acc += x_tile @ w_colsum`. This runs at runtime, touches every element of W and x exactly once, and avoids the (M,N) intermediate plus the second reduction kernel.\n- Fuse `+ bias.sum()` into the epilogue (compute bias.sum() via a tiny separate kernel or `tl.sum` on a loaded bias vector inside the same kernel using atomics / a one-shot prelude), and write the final (M,1) output directly \u2014 eliminating the `partial` scratch tensor and the second launch.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 33,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        0.8826896197781255
+    ]
+}

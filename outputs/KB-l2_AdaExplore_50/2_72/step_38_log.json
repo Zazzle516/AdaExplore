@@ -1,0 +1,29 @@
+{
+    "node_id": 38,
+    "parent_node_id": 31,
+    "context_node_ids": [
+        31
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4243229628338856,
+    "max_reward": 0.4243229628338856,
+    "avg_reward": 0.4243229628338856,
+    "score": [
+        1,
+        1,
+        0.3006644433795561
+    ],
+    "small_guidance": "- The conv_transpose gather kernel is the bottleneck (19.3ms vs 5.8ms baseline). Add larger autotune configs with BLOCK_S up to 512 and try num_warps=8/16, num_stages=3; also try smaller BLOCK_S=32 with num_warps=2 since the inner loop is heavy per output element.\n- Reorder loop nests so the IC loop is innermost (or vectorize over IC with a BLOCK_IC tile) to enable register reuse of the (od,oh,ow)\u2192(id,ih,iw) index math which is invariant across ic. Hoist id_valid/ih_valid computation outside the kw loop (already partly done) and precompute id_ * IH * IW once.\n- Fuse the bias add into the conv_transpose kernel epilogue (store conv_out + bias[oc] directly), eliminating one pass; then bn_avgpool4 reads pre-biased data.",
+    "large_guidance": "- Rewrite the conv_transpose as a scatter-add (input \u00d7 kernel outer product scattered into output) instead of gather. With stride=2, padding=1, KD=3, each input voxel contributes to only KD*KH*KW=27 output positions, so a scatter loops 27 times per input element, whereas the current gather loops KD*KH*KW=27 times per output element AND most are invalid (only ~1/8 valid due to stride mod check). Alternative: implement as an im2col-style GEMM where K = IC*KD*KH*KW with masking \u2014 one program per (N, OC_tile, output_spatial_tile), BLOCK_M=32, BLOCK_N=64, BLOCK_K=16, num_warps=4, num_stages=2 (fits SMEM budget).\n- Fuse the entire pipeline: conv_transpose \u2192 bias \u2192 BN (eval) \u2192 4\u00d74\u00d74 avg pool into a single kernel that directly produces the final pooled output. Each output point depends on a 4\u00d74\u00d74 region of conv_transpose output; with stride=2 this maps to a small region of input. One program per (N, OC, OD2*OH2*OW2 tile), accumulate directly without materializing the large (N,OC,64,64,64) intermediate (which is ~64MB and dominates memory traffic).\n- Use channels_last (NDHWC) layout so the OC reduction in conv_transpose has contiguous weight access along K, and store the pooled output back in NCDHW for downstream compatibility.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 39,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        0.36042383585251137
+    ]
+}

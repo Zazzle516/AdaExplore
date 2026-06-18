@@ -1,0 +1,27 @@
+{
+    "node_id": 10,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.41997633222113373,
+    "max_reward": 0.41997633222113373,
+    "avg_reward": 0.41997633222113373,
+    "score": [
+        1,
+        1,
+        0.2648047408243532
+    ],
+    "small_guidance": "- The conv_transpose is the dominant cost (the two custom kernels touch only a tiny tensor). Tuning min/sum kernels won't move fast_p; focus must shift to the conv. For the existing tail kernels, fuse min+sum+gelu+bias into one kernel over (N, W) that loops over H and reduces min over C inline, eliminating the (N,1,H,W) intermediate.\n- If keeping the tail separate, add `num_warps=4, num_stages=2` and use `tl.reduce` with BLOCK_C=128 (exact C) so no masking is needed.\n- The biggest tuning win remaining within this structure is to never materialize the full (N,128,H_out,W_out) conv output \u2014 fuse the channel-min directly into a custom conv_transpose kernel epilogue.",
+    "large_guidance": "- Replace `nn.ConvTranspose2d` with a custom Triton scatter-add (or gather-form) conv-transpose kernel that fuses the channel-wise min, height sum, GELU, and bias into the epilogue. Output shape is (N,1,1,W_out); each program can own one (n, w_out) tile and accumulate min over OC and sum over H_out without ever writing the full (N,OC,H_out,W_out) tensor \u2014 this is legitimate fusion (the full multiply-accumulate over the OC*H_out*W_out grid still runs).\n- Use the gather formulation: for each output pixel (n, oc, h_out, w_out), iterate over (ic, kh, kw) with the transpose index math `h_in = (h_out + padding - kh)/stride` (valid only when divisible); compute the full conv value, then take min across oc inside the kernel via an online min, and sum across h_out via an outer loop. Tile over oc with BLOCK_OC=32 or 64, keep ic as the GEMM-K reduction with BLOCK_IC=16/32.\n- Layout: convert weight to (IC, OC, KH, KW) once at init and keep input NCHW; one program per (n, w_out) computing all h_out sequentially keeps the min/sum reduction in registers. Autotune over BLOCK_OC \u2208 {32,64,128}, BLOCK_IC \u2208 {16,32,64}, num_warps \u2208 {4,8}.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 11,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        0.6079174983905384
+    ]
+}

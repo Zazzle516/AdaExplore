@@ -1,0 +1,29 @@
+{
+    "node_id": 9,
+    "parent_node_id": 7,
+    "context_node_ids": [
+        7
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4521952937538652,
+    "max_reward": 0.4521952937538652,
+    "avg_reward": 0.4521952937538652,
+    "score": [
+        1,
+        1,
+        0.5306111734693878
+    ],
+    "small_guidance": "- The ConvTranspose3d dominates runtime here (the BN+pool is already fused into a tiny mean+affine). Tuning BLOCK_S / num_warps in `_mean_per_nc_kernel` will not move the needle \u2014 the conv must be replaced. If staying small, at least try BLOCK_S=4096 with num_warps=8 and num_stages=3 for the S\u224880k reduction, and merge `_launch_mean` + `_launch_affine` into one kernel that emits `(N,C)` directly to remove the intermediate.\n- Fold scale_factor into the BN affine analytically (already done) \u2014 additionally precompute `a`,`b` once at eval and cache to avoid per-forward small launches.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)`, computing `input \u00d7 weight` outer product and scatter-adding into the `(N, OC, D_out, H_out, W_out)` grid with stride=1, padding=0, kernel=5. With kernel_size=5 and no stride, the output is `(20, 36, 36)` per channel \u2014 manageable.\n- Better: skip materializing the full conv output. Since the only consumer is a global mean over `(D_out,H_out,W_out)`, fuse conv-transpose + scale + BN-affine + spatial mean into one kernel that accumulates per-`(N,OC)` partial sums directly. Each program handles a tile of `(N, OC)` and loops over `(IC, kD, kH, kW, D_in, H_in, W_in)`, accumulating `sum_{d_out,h_out,w_out} y[...]` in registers, then applies `a*mean + b` at the end. This avoids the 16\u00d7128\u00d720\u00d736\u00d736 = ~53M-element intermediate entirely. NOTE: this is allowed because conv-transpose still runs at runtime on the actual input \u2014 it is operator fusion, not an algebraic shortcut.\n- Alternatively, exchange the loop order: for each output element a gather-style direct conv-transpose (gather form: `out[n,oc,do,ho,wo] = sum_{ic,kd,kh,kw} x[n,ic,do-kd, ho-kh, wo-kw] * w[ic,oc,kd,kh,kw]`) as a GEMM with `M=OC, N=D_out*H_out*W_out, K=IC*kD*kH*kW` per batch, in channels_last; then reduce in-kernel.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 10,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.5342454965753425
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 41,
+    "parent_node_id": 38,
+    "context_node_ids": [
+        38
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure is likely from the GroupNorm path: with C=8192 and num_groups=256, CH_PER_G=32, which is fine, but check that gamma/beta are applied per-channel correctly and that `xc = tl.where(mask, x - mean, 0.0)` is masking properly (it is). The avg diff of 5e-5 across all trials suggests a numerical/precision issue rather than a logic bug \u2014 try loading x as fp32 directly (already done) and ensure the GEMM output is fp32. Also verify `triton_gemm_bias` handles non-contiguous weight strides; `w.stride(1), w.stride(0)` assumes contiguous weight \u2014 assert `self.gemm.weight.is_contiguous()` and call `.contiguous()` if needed.\n- Increase `num_warps` to 4 for BLOCK=32 in the GN kernel (currently nw=1 for BLOCK<=64), since each program is doing very little work and warp occupancy is poor with 1 warp.\n- Add autotune to `fused_gn_swish_mul_swish_kernel` over num_warps \u2208 {1,2,4} and num_stages \u2208 {1,2}, keyed on CH_PER_G.",
+    "large_guidance": "- Consider fusing the bias-add, GroupNorm, Swish, multiply, Swish epilogue directly into the GEMM kernel's store path. Since num_groups=256 and CH_PER_G=32 (a single BLOCK_N tile of width 32 or 64 can hold an integer number of groups), each GEMM output tile already has the data needed to compute group statistics in-register \u2014 eliminating the extra full-tensor read/write of the (1024, 8192) intermediate. Use BLOCK_N=32 or 64 aligned with CH_PER_G so each tile contains whole groups.\n- Alternatively, split-K GEMM writing to a temp, then a single persistent epilogue kernel that processes one row at a time, computing all 256 group stats with a strided reduction (one program per row, BLOCK over C=8192 with group-wise tl.sum via reshape) \u2014 this avoids launching N*num_groups=262144 tiny programs (current grid), which is the likely bottleneck.\n- For the GEMM itself at M=1024, N=8192, K=8192, prefer BLOCK_M=128, BLOCK_N=256, BLOCK_K=32-64, num_warps=8, num_stages=3-4; ensure weight is pre-transposed once at init so the K-loop loads B contiguously along N.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 42,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

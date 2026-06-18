@@ -1,0 +1,29 @@
+{
+    "node_id": 24,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        23
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The split-K path uses `tl.atomic_add` on an output initialized to zeros \u2014 but bias/swish/scale runs as a separate kernel reading from `out`. Ensure atomic accumulation completes; correctness mismatch suggests the dead first loop (which leaves `a_ptrs`/`b_ptrs` advanced and `acc` reset) plus tail masking is wrong. Remove the dead first loop entirely, and use proper bounds masking on both M and N dims of loads (currently only K is masked, so out-of-bounds rows/cols read garbage that gets accumulated).\n- Mask loads with `(offs_am[:, None] < M) & (mask_k[None, :])` for A and analogously for B to avoid wrap-around `%` reading bogus K-tail data; the `% M`/`% N` trick is only safe when combined with a store-mask AND when loads don't pollute valid rows (they do via atomic_add from other split-K programs).\n- Drop SPLIT_K=8 configs and add `SPLIT_K=1, BLOCK_M=128, BLOCK_N=256, BLOCK_K=32, num_warps=8, num_stages=3` \u2014 for M=128, N=32768, K=32768 a single-K-program with large N-tile is likely faster than atomic-add contention.",
+    "large_guidance": "- M=128 is tiny while K=N=32768 is huge \u2014 this is a skinny-GEMM. Redesign as a single-pass non-split-K kernel with `BLOCK_M=128` (covers all rows in one tile), `BLOCK_N=128 or 256`, `BLOCK_K=32 or 64`, grid = (cdiv(N, BLOCK_N),), persistent over the single M-tile. Fuse bias + swish + scale into the epilogue of this GEMM kernel \u2014 eliminate the second kernel entirely.\n- Since weight is (out=32768, in=32768) and accessed as B=W.T, do the transpose once at `__init__` (store `self.weight_t` contiguous) rather than every forward \u2014 the `weight.t().contiguous()` copy of a 4GB tensor every call dominates runtime.\n- If split-K is retained, allocate a separate fp32 accumulator and run the bias+swish+scale as a second pass that reads it; do NOT atomic_add into the same buffer the epilogue reads, and ensure the buffer is zero-initialized inside the launcher (it is, but verify the kernel's `tl.store` vs `tl.atomic_add` branch is taken consistently).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 25,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

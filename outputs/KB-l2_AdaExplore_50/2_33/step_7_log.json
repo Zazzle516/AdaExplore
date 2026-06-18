@@ -1,0 +1,29 @@
+{
+    "node_id": 7,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing: in training mode the BN uses the biased batch variance which is correct, but the reference `nn.BatchNorm1d` in training mode normalizes with the biased var and updates running stats with unbiased \u2014 verify but more importantly ensure `bn_stats_kernel` reads from the GEMM output with the correct strides (out is contiguous so `stride_xm=N, stride_xn=1`; that matches). The likely bug is that `mean`/`var` are fp32 but `out` is fp32 too \u2014 check that `bn_apply_kernel` loads `mean`/`var` as fp32 and that `eps` is passed as a float (currently passed positionally as a Python float \u2014 make it `tl.constexpr` or a 0-d tensor per the safety contract).\n- Pass `eps` as `tl.constexpr` to `bn_apply_kernel` to avoid Triton's fragile float-arg launcher path; this is a known pitfall listed above.\n- Once correct, autotune `bn_apply_kernel` over `(BLOCK_M, BLOCK_N) \u2208 {(64,256),(128,128),(32,512)}` with `num_warps=4/8`, and increase `bn_stats_kernel` `BLOCK_M` to 2048 with `num_warps=8` since M=1024 fits in one block (eliminate the outer loop entirely).",
+    "large_guidance": "- Since M=1024 fits in a single block along the reduction axis, rewrite BN stats as a single-pass persistent kernel: one program per channel, `BLOCK_M=1024`, load the column once, compute sum and sum-of-squares simultaneously, then `var = E[x^2] - E[x]^2`. This halves global memory traffic vs. the current two-pass design.\n- Better: fuse the BN-apply pass with the GEMM epilogue is not possible (needs cross-row reduction), but fuse BN stats *into* the GEMM by having each GEMM program atomically accumulate per-column partial sums and sum-of-squares into N-sized buffers, then launch only the apply kernel. This eliminates one full read of the (M,N)=1024\u00d78192 tensor.\n- Alternatively, since (M=1024, N=8192) is BN-heavy, write a single fused \"stats+apply\" kernel parameterized by channel-tile: each program owns a tile of N channels, reads its (M, BLOCK_N) slab once into registers/shared, computes mean+var, then writes normalized output in the same pass \u2014 one read + one write instead of two reads + one write.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 8,
+    "global_best_node_id": 6,
+    "global_best_score": [
+        1,
+        1,
+        0.5597450438455535
+    ]
+}

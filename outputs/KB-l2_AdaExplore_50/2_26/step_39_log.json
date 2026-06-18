@@ -1,0 +1,30 @@
+{
+    "node_id": 39,
+    "parent_node_id": 38,
+    "context_node_ids": [
+        17,
+        38
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.48265026243567755,
+    "max_reward": 0.48265026243567755,
+    "avg_reward": 0.48265026243567755,
+    "score": [
+        1,
+        1,
+        0.7818646650943397
+    ],
+    "small_guidance": "- The fused elementwise epilogue is already memory-bound and tiny relative to the conv; further BLOCK_SIZE/num_warps sweeps won't move fast_p. If staying small, ensure `add_input` is converted to channels_last_3d once (cache it) and verify the conv actually runs in channels_last_3d on 4090 (cuDNN often falls back for ConvTranspose3d).\n- Fold the learned `self.bias` (currently unused in forward \u2014 verify reference parity) and the add into a single kernel pass; if bias is intentionally dropped, keep it that way but double-check the reference does the same.\n- Try `num_warps=2` with `BLOCK_SIZE=4096` since the kernel is pure bandwidth; reduce register pressure to improve occupancy.",
+    "large_guidance": "- The ConvTranspose3d dominates (~8.3 ms baseline, epilogue is negligible). Replace it with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile) computing the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and scatter-adding into the output grid with stride=2, padding=1, output_padding=1. Use atomic adds on overlap or, better, gather formulation: one program per (N, OC tile, output-spatial tile) that iterates input positions contributing to each output voxel (since stride=2 and kernel=3, only ~2 input taps per output dim contribute).\n- Prefer the gather (im2col-style) formulation for transposed conv: for each output voxel (od,oh,ow), the contributing input coords are `(od+pad-kd)/stride` when divisible \u2014 at most \u2308k/stride\u2309=2 taps per spatial dim, so 8 taps \u00d7 IC GEMM-K. Tile as GEMM with BLOCK_M=OC tile (64), BLOCK_N=output-spatial tile (e.g. 64), BLOCK_K=IC (32 fits fully). Fuse the `+ add_input` and `* hardswish(.)` into the epilogue.\n- Use channels_last_3d throughout so IC and OC are the contiguous axis, enabling coalesced loads across the GEMM-K reduction. Persistent kernel over the (N, OC-tile) grid to amortize launch and weight reloads.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 40,
+    "global_best_node_id": 34,
+    "global_best_score": [
+        1,
+        1,
+        0.7893109952380952
+    ]
+}

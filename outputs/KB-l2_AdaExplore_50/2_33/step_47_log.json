@@ -1,0 +1,29 @@
+{
+    "node_id": 47,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing (~2.6e-3 max diff vs 5e-2 tol... wait, max_diff 0.0026 < 5e-2 should pass; if reported false, likely training-mode running stats mismatch). Ensure BN stats are computed from the *scaled* output (which is correct here), and use unbiased var (`M/(M-1)`) \u2014 already done. Double-check that `bn.weight`/`bn.bias` are float32 and that `out` dtype matches; also the `bn_apply_kernel` uses `eps` as `tl.constexpr` but eps is a Python float \u2014 pass it via constexpr or as a 0-d tensor.\n- The GEMM is the dominant cost (M=N=K=8192). Add larger autotune tiles like `BLOCK_M=128,BLOCK_N=256,BLOCK_K=64,num_warps=8,num_stages=3` and `BLOCK_M=256,BLOCK_N=128,BLOCK_K=64`. Also try `GROUP_M=4` and `GROUP_M=16`.\n- Fuse BN-apply into the GEMM epilogue when not training (eval path): one kernel does `(A@B^T + bias)*scale*bn_scale + bn_shift`, eliminating two extra global passes.",
+    "large_guidance": "- Rewrite as a single fused GEMM+scale+BN kernel that runs in two phases: phase-1 (stats) computes per-column sum and sum-of-squares of `(A@B^T+bias)*scale` via a split-K reduction with atomic adds into `sum`/`sumsq` buffers; phase-2 (apply) recomputes the GEMM tile and emits the normalized output using mean/invstd derived from the stats buffer. This avoids materializing the M\u00d7N intermediate twice and gets BN essentially for free.\n- Alternatively, keep three kernels but make the GEMM output transposed (N\u00d7M layout) so that BN stats reduction is contiguous along M \u2014 this turns the bn_stats reduction into coalesced loads instead of strided column reads.\n- For eval-mode (running stats), fold `(scale * bn_weight/sqrt(running_var+eps))` and `(bn_bias - running_mean * scale * bn_weight/sqrt(...))` into a single per-column affine precomputed once per forward, and apply it entirely inside the GEMM epilogue \u2014 collapsing the whole forward to one kernel launch.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 48,
+    "global_best_node_id": 43,
+    "global_best_score": [
+        1,
+        1,
+        1.4797857480974401
+    ]
+}

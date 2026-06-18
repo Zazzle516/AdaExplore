@@ -1,0 +1,29 @@
+{
+    "node_id": 43,
+    "parent_node_id": 25,
+    "context_node_ids": [
+        25
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5139824894069609,
+    "max_reward": 0.5139824894069609,
+    "avg_reward": 0.5139824894069609,
+    "score": [
+        1,
+        1,
+        1.0403555376074274
+    ],
+    "small_guidance": "- The conv_transpose3d is the dominant cost (~8.3ms) \u2014 the fused post kernel is already fast and tiny. Tuning the post kernel further yields negligible gain. If staying small, add `torch.backends.cuda.matmul.allow_tf32 = True` and try `channels_last_3d` memory format on the conv input/weight to let cuDNN pick a faster algorithm.\n- Add a `torch.backends.cudnn.benchmark` warmup pass in `__init__` (with a dummy forward) so the first measured run doesn't pay autotune cost.\n- Consider fusing the `+ sum_weight` bias into the conv via cuDNN's bias path by absorbing `sum_weight / (kh*kw*kd_overlap)` adjustment \u2014 actually just fold it into `conv_transpose.bias` (bias += sum_weight) at eval time so the elementwise add disappears.",
+    "large_guidance": "- The runtime is dominated by `nn.ConvTranspose3d`. To break past `fast_p \u2248 1.04`, replace it with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)`, computing the input\u00d7weight outer product and scattering into the output grid with stride=2, padding=1, output_padding=1. Fuse bias + sum_weight + LayerNorm + AvgPool + GELU into the epilogue of a follow-up kernel that consumes the conv output (or, since pool=2 aligns with stride=2, fuse pool directly by accumulating into a smaller output buffer).\n- Alternatively, implement conv_transpose3d as a gather-style GEMM where each output voxel reads the relevant input/kernel slice \u2014 this maps cleanly to a tiled matmul with `BLOCK_M`(OC)=64, `BLOCK_N`(spatial)=32, `BLOCK_K`(IC*kd*kh*kw)=16, num_warps=4, num_stages=2 (well within SMEM). Use NDHWC layout so the IC reduction is contiguous.\n- Because pool_kernel_size matches conv stride, you can fuse pool by directly computing the conv output at pooled resolution: each pooled output is the average of 8 conv outputs, all of which share input contributions \u2014 but per the safety contract, must still perform the full conv multiply-add count. Implement as: produce all 8 conv outputs in registers per pooled cell, apply LN+sum_weight, average, then GELU, store once. This eliminates the intermediate full-resolution write.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 44,
+    "global_best_node_id": 42,
+    "global_best_score": [
+        1,
+        1,
+        1.0453392767097385
+    ]
+}

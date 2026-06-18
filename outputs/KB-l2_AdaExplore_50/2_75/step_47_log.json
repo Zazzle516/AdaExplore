@@ -1,0 +1,32 @@
+{
+    "node_id": 47,
+    "parent_node_id": 35,
+    "context_node_ids": [
+        3,
+        20,
+        22,
+        35
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM is the dominant cost (M=1024, N=8192, K=8192 = ~137 GFLOPs). Add larger tile autotune configs tuned for 4090: `BLOCK_M=128, BLOCK_N=256, BLOCK_K=32/64, num_warps=8, num_stages=3` and `BLOCK_M=256, BLOCK_N=128, BLOCK_K=32, num_warps=8, num_stages=3`. Also drop the `self._weight_t.copy_()` refresh in eval \u2014 it's a full 256MB D2D copy on every forward when `training=False` path is taken (currently only training, but ensure eval mode is used in benchmarks).\n- Pre-transpose-and-copy of weight is 256MB; pre-store it once in `__init__` and skip the refresh entirely unless weight actually changed (compare data_ptr). The current `_refresh_weight_t` runs whenever device differs \u2014 fine, but make sure it doesn't fire in the timed path.\n- For the GN+min kernel, fuse the min reduction across all groups in a single program per row (one program per row, load all N=8192 elements as a 2D tile of shape `(num_groups, C_per_g)=(512,16)`) to eliminate `atomic_min` and the separate `min_buf` init. Use `num_warps=8, num_stages=2`.",
+    "large_guidance": "- Rewrite as two kernels only: (1) a tuned GEMM (the 3.76 ms is almost entirely GEMM \u2014 peak 4090 fp32 is ~82 TFLOPs, so this workload's lower bound is ~1.7 ms; current kernel is ~2x off peak). Consider TF32 via `tl.dot(a, b, allow_tf32=True)` and fp16/bf16 accumulate path if accuracy allows under `atol=5e-2`. (2) A single fused GN+min+bias-add kernel: one program per row, loads the 8192-element row into registers/SMEM, computes per-group mean/var, normalizes, takes min across the full row, then writes `min + bias[1, :, 1, 1]` broadcast to the (1, N, 1, 1) output directly \u2014 no intermediate `min_buf`, no atomics, no separate add kernel.\n- Eliminate the pre-transposed weight buffer entirely: use a GEMM kernel that loads `B` (weight) with `stride_bk=1, stride_bn=in_features` (i.e., the natural `nn.Linear` layout where weight is `(out_features, in_features)` row-major, treated as `B^T`). This avoids the 256MB transpose copy and a buffer that doubles parameter memory.\n- Consider a split-K GEMM given K=8192 is large and M=1024 is modest; with `BLOCK_M=128, BLOCK_N=128`, the grid is only 8\u00d764=512 tiles, underutilizing the 128 SMs on a 4090 for large-K. Split-K of 2-4 with atomic accumulate or a small reduction kernel can push closer to peak.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 48,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

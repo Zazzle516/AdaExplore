@@ -1,0 +1,31 @@
+{
+    "node_id": 14,
+    "parent_node_id": 8,
+    "context_node_ids": [
+        3,
+        7,
+        8
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The split-K kernel is incorrect: `a_ptrs`/`b_ptrs` are initialized with `offs_k = pid_sk * BLOCK_K` but stepped by `BLOCK_K` (not `SPLIT_K*BLOCK_K`), and the intended split-K layout (`pid_sk * K_per_split` start) doesn't match the pointer init. Fix by initializing `offs_k = pid_sk * K_per_split + tl.arange(0, BLOCK_K)` and stepping by `BLOCK_K` per iter, with a single mask `(k_offset + arange) < min((pid_sk+1)*K_per_split, K)`.\n- FP16 accumulation on K=32768 with bias added in epilogue is fine, but consider keeping x in fp32 or using tf32 for accuracy \u2014 current max diff ~2994 suggests the split-K indexing bug is double-counting/missing tiles, not just precision.\n- Once correctness is fixed, drop SPLIT_K to 1 or 2 for M=128, N=32768 (grid is already huge: 1*256=256 tiles) \u2014 SPLIT_K=4-8 adds atomic contention without parallelism benefit.",
+    "large_guidance": "- Redesign as a standard non-split-K GEMM: M=128 is tiny, N=32768 and K=32768 are huge. Use `BLOCK_M=128` (covers all of M in one row tile), `BLOCK_N=128 or 256`, `BLOCK_K=32 or 64`, no split-K, and fuse bias + swish + scale directly in the epilogue before the store. This eliminates the atomic-add buffer, the fp32 intermediate, and the second kernel launch entirely.\n- Since M=128 fits in one tile, the grid is just `(N/BLOCK_N,)` with `pid_n` only \u2014 no GROUP_M swizzle needed. Persistent K-loop with `num_stages=4` to overlap the large K loads.\n- Keep weight pre-transposed in fp16 (already done) and load x in fp16; accumulate in fp32 via `tl.dot`. Apply `acc = acc + bias; out = acc * sigmoid(acc) * scaling_factor` in registers, store fp16 (or fp32) directly to output. Single kernel, single pass.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 15,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

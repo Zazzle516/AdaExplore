@@ -1,0 +1,30 @@
+{
+    "node_id": 15,
+    "parent_node_id": 8,
+    "context_node_ids": [
+        1,
+        8
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4803788306251793,
+    "max_reward": 0.4803788306251793,
+    "avg_reward": 0.4803788306251793,
+    "score": [
+        1,
+        1,
+        0.7631253526577286
+    ],
+    "small_guidance": "- The GEMM dominates: M=N=K=8192. Add larger tile configs targeted at this square shape, e.g. `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3/4` and `BLOCK_M=256, BLOCK_N=128, BLOCK_K=64`. Also try `GROUP_M=4` and `GROUP_M=16` since L2 reuse on 4090 differs from A100 \u2014 pinning to 8 may be suboptimal.\n- Pre-transpose `W` to `[K, N]` row-major once in `__init__` (cache it) so the inner B-load is contiguous along N (`stride_wk=N, stride_wn=1`); current layout strides B with `stride_wn=K` which is the long stride and hurts coalescing on the inner load.\n- Softmax row width is 8192 \u2192 currently hits the tiled 3-pass path. Switch to a single-pass online softmax over the row with `BLOCK=1024` or `2048`, `num_warps=8`, `num_stages=2`, eliminating two extra passes over the 32MB activation tensor.",
+    "large_guidance": "- Fuse the softmax row-max/row-sum into the GEMM epilogue: use a persistent kernel where each program owns a full output row tile (BLOCK_M rows \u00d7 full N) and streams BLOCK_N column tiles, accumulating GEMM, then in the same launch performs online-softmax over N. This avoids writing/re-reading the 1024\u00d78192 fp32 intermediate (~32MB) which is a large chunk of the 3.38ms.\n- Alternatively, do a 2-kernel split-K GEMM that writes the activation, then a single-pass softmax \u2014 but the bigger win is removing the materialization. With M=1024 and N=8192, row-resident accumulators across N tiles are feasible if BLOCK_M is small (e.g. 32 or 64) using register tiles for partial max/sum.\n- Store the transposed weight `[K,N]` once at init (and the fused A, Bp vectors) so the hot loop never strides; this combined with the fused softmax epilogue is the structural change most likely to close the 0.76 \u2192 1.0+ gap.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 16,
+    "global_best_node_id": 13,
+    "global_best_score": [
+        1,
+        1,
+        0.774583691286223
+    ]
+}

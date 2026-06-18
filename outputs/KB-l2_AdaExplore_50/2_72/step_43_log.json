@@ -1,0 +1,29 @@
+{
+    "node_id": 43,
+    "parent_node_id": 41,
+    "context_node_ids": [
+        41
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4195622372766882,
+    "max_reward": 0.4195622372766882,
+    "avg_reward": 0.4195622372766882,
+    "score": [
+        1,
+        1,
+        0.2613884575326772
+    ],
+    "small_guidance": "- The pool BLOCK=256 is too large for output spatial size (OD\u00b7OH\u00b7OW = 8\u00b78\u00b78 = 512); try BLOCK=64 or 128 with num_warps=2 to reduce wasted lanes, and add an autotune over {(64,2),(128,4),(256,4),(512,8)}.\n- The fused BN+pool kernel is fine but the conv_transpose3d call dominates (~22ms vs 5.8ms baseline). Tuning the tail will not close the gap; focus must shift to the conv_transpose. As a small win, fold the conv_transpose bias add into the BN scale/shift (bias is constant per channel, so shift += scale * conv_bias - already implicit via BN, but if bias_shape param is used elsewhere it can be merged).\n- Ensure y is in channels_last_3d memory format before the fused kernel so the channel-broadcasted scale/shift access is contiguous along the inner dim.",
+    "large_guidance": "- Replace `F.conv_transpose3d` with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile) loads input values, multiplies by the (IC, OC, KD, KH, KW) weight, and atomically scatter-adds the outer product into the output grid at positions `(od = id*stride - pad + kd, ...)`. This is the heaviest op (input 64\u00b73\u00b732\u00b3, output 64\u00b716\u00b763\u00b3 \u2248 256M elements) and is responsible for nearly all 22ms.\n- Alternatively, fuse the entire pipeline: since avg_pool 4\u00d7 over the conv_transpose output, each pooled output sums 64 conv_transpose outputs. Implement a gather-style kernel: one program per (N, OC, pooled-spatial tile) iterates the 4\u00d74\u00d74 pool window and for each output position computes the conv_transpose sum directly (the heavy multiply-add work is preserved \u2014 every (ic, kd, kh, kw) contribution is computed per output element). Then apply BN scale/shift in the epilogue. This avoids materializing the large 64\u00b716\u00b763\u00b3 intermediate.\n- Use channels_last_3d layout throughout so OC is the contiguous dim and the IC\u00b7KD\u00b7KH\u00b7KW reduction is the GEMM-K. Autotune with safe tiles (BLOCK_OC=16 or 32, BLOCK_SPATIAL=32-64, BLOCK_K=16-32) at num_warps=4, num_stages=2 to stay within SMEM.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 44,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        0.36042383585251137
+    ]
+}

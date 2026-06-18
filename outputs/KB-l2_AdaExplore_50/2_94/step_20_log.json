@@ -1,0 +1,29 @@
+{
+    "node_id": 20,
+    "parent_node_id": 19,
+    "context_node_ids": [
+        19
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing with small numerical mismatch (~2e-3). The issue is in GroupNorm: when computing `diff = x - mean`, the masked-out lanes get `0 - mean = -mean`, then you zero them. That's fine, but check that `CPG` is being used as a float divisor \u2014 `sum_x / CPG` with integer CPG may be okay but cast `CPG` to float explicitly: `mean = sum_x / CPG.to(tl.float32)` or use `1.0 * CPG`. Also verify `bias.view(-1)` matches reference \u2014 reference adds `self.bias` of shape `(out_features,)` which broadcasts correctly, so that's fine.\n- The real bug: in `fused_gemm`, weight strides are passed as `weight.stride(1), weight.stride(0)` \u2014 this transposes the weight to compute `x @ W.T` which is correct for Linear. But verify the masked load uses correct B layout; with `stride_bk=weight.stride(1)=1` and `stride_bn=weight.stride(0)=K`, B is `(K, N)` view of W.T, which is correct.\n- Try adding `num_warps=8` configs with `BLOCK_M=256` for M=1024, and tune GroupNorm with `BLOCK=32` (CPG = 8192/256 = 32) and `num_warps=1` since the reduction is tiny.",
+    "large_guidance": "- The dominant cost is the 1024\u00d78192\u00d78192 GEMM (~137 GFLOPs). Consider a split-K or stream-K GEMM, or use `tl.dot(..., allow_tf32=True)` with TF32 to double throughput on Ada.\n- Fuse GroupNorm into a second kernel that does row-wise reduction across all groups in one program per row (M=1024 rows, C=8192, 256 groups of 32 channels each \u2014 small per-group reduction). A persistent per-row kernel can compute all 256 group stats in one launch using a 2D block.\n- Verify numerical correctness: the mish formula `log(1+exp(x))` overflows for large x; use the stable form `softplus(x) = max(x,0) + log1p(exp(-|x|))`. Since hardtanh clamps to [-1,1] first, this isn't an overflow issue but check the tanh computation is precise \u2014 use `tl.libdevice.tanh` if available rather than manual exp.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 21,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 22,
+    "parent_node_id": 18,
+    "context_node_ids": [
+        20,
+        18
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.48437288582022764,
+    "max_reward": 0.48437288582022764,
+    "avg_reward": 0.48437288582022764,
+    "score": [
+        1,
+        1,
+        0.7960763080168777
+    ],
+    "small_guidance": "- The fused bias-tanh epilogue is already cheap; the conv_transpose dominates. Tuning BLOCK/num_warps further on the epilogue won't move the needle. If staying small, try BLOCK=8192 with num_warps=4, num_stages=2 and flatten to a 1D grid over N*C*HW with bias indexed by `(offs // HW) % C` to reduce launch overhead \u2014 but expect <5% gain.\n- Set `torch.backends.cudnn.benchmark = True` once at import and ensure inputs are `channels_last` so cuDNN picks a faster ConvTranspose2d algorithm.\n- Consider pre-subtracting the conv's built-in bias from `self.bias` at init (still runs the conv with bias=None+epilogue) \u2014 this keeps all ops but avoids a redundant bias add inside cuDNN.",
+    "large_guidance": "- Replace `nn.ConvTranspose2d` with a custom Triton scatter-add kernel: for each input element `(n, ic, ih, iw)` with a tile over `oc`, compute the outer product `input[n,ic,ih,iw] * weight[ic,oc,kh,kw]` and scatter-add into `output[n, oc, ih*stride - pad + kh, iw*stride - pad + kw]`, fusing bias subtraction and tanh in the final epilogue once accumulation completes. Given stride=2, kernel=4, padding=1, output_padding=1, output is exactly 2\u00d7 input spatially with no fractional alignment.\n- Alternatively, implement as a gather-style direct kernel: one program per `(N, OC tile, OH tile, OW tile)`. For each output pixel `(oh, ow)`, iterate over `(kh, kw)` pairs where `(oh + pad - kh)` is divisible by stride; gather the corresponding input pixel and accumulate over IC as a GEMM-K reduction with `BLOCK_IC=32-64`. This avoids atomics entirely and fuses bias-tanh into the store. Use channels_last layout so IC loads coalesce.\n- Tile shape suggestion: BLOCK_OC=64, BLOCK_SPATIAL=64 (e.g. 8\u00d78), BLOCK_IC=32, num_warps=4, num_stages=2-3, autotuned. Output is 32\u00d764\u00d7512\u00d7512 = 512MB so the kernel will be bandwidth-bound on stores; folding tanh into the epilogue saves one full read+write pass.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 23,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        1.1098240294117647
+    ]
+}

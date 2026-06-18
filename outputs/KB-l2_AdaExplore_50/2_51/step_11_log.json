@@ -1,0 +1,30 @@
+{
+    "node_id": 11,
+    "parent_node_id": 6,
+    "context_node_ids": [
+        3,
+        6
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.571454166052064,
+    "max_reward": 0.571454166052064,
+    "avg_reward": 0.571454166052064,
+    "score": [
+        1,
+        1,
+        1.5144968699295278
+    ],
+    "small_guidance": "- Add `triton.autotune` over `(BLOCK_M, BLOCK_N, BLOCK_K, num_warps, num_stages)` for the GEMM-rowsum kernel; for M=2048, N=8192, K=8192 try configs like (128,128,32,8,3), (128,256,32,8,4), (64,256,32,4,3), (128,128,64,8,3) and add a `GROUP_M=8` block-swizzle for L2 reuse.\n- Replace `tl.atomic_add` on rowsum with a 2D partial-sum buffer `[ceil(N/BLOCK_N), M]` (or per-program partial) followed by a tiny reduction kernel \u2014 atomics across many N tiles serialize and are a measurable bottleneck.\n- Pretranspose W once at init (store `W.t().contiguous()`) so the K-axis is the inner contiguous load in the dot loop, eliminating strided B loads.",
+    "large_guidance": "- Restructure as a \"row-reduce GEMM\": one program per M-tile reduces fully across N inside the kernel (loop over N blocks in the inner dimension, accumulating `(X @ W^T + b - sub).sum(dim=1)` directly into registers), eliminating the rowsum materialization, atomics, and the second kernel's broadcast read of the rowsum scalar. Output is just `[M]`, then fuse mean/logsumexp(=identity since dim has size 1)/GELU into a tiny epilogue.\n- Fuse the residual-add directly into the epilogue by having each M-tile program also stream-load its `original_x` row tile and write `x + gelu(scalar)` \u2014 this avoids launching a second kernel and the extra full read/write of the residual tensor (the dominant memory traffic at 2048\u00d78192 fp32 = 64 MB).\n- Since logsumexp over a size-1 dim is a no-op, the math reduces to `gelu(mean_n(X@W^T + b - sub))`. The whole forward is a single persistent kernel: per row, accumulate `dot(x_row, W_col_tile) + (b-sub)_tile` over all N tiles, divide by N, apply GELU, then add to original_x row tile and store. K=8192 is large so use `BLOCK_K=64`, `num_stages=4` to overlap loads.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 12,
+    "global_best_node_id": 10,
+    "global_best_score": [
+        1,
+        1,
+        1.5925164056531704
+    ]
+}

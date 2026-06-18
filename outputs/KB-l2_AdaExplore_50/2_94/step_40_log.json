@@ -1,0 +1,31 @@
+{
+    "node_id": 40,
+    "parent_node_id": 24,
+    "context_node_ids": [
+        3,
+        23,
+        24
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM uses `allow_tf32=False`, which is leaving major perf on the table for an fp32 GEMM on Ampere/Ada. Switch to `tl.dot(a, b, allow_tf32=True)` \u2014 accuracy is well within the 5e-2 tolerance and this typically doubles throughput.\n- Add larger autotune tiles biased toward this 1024\u00d78192\u00d78192 shape: `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4`, and `BLOCK_M=256, BLOCK_N=128, BLOCK_K=64`. Drop the small `BLOCK_M=64` configs which won't be selected here.\n- Avoid the `Wt = W.t().contiguous()` cache (extra memory + first-call cost): instead invoke the kernel with B's strides set so B is read as (K, N) directly from `self.gemm.weight` (shape N, K) by swapping `stride_bk`/`stride_bn`. Saves an 8192\u00d78192 copy and lets the bias/Wt path be branch-free.",
+    "large_guidance": "- Restructure as a persistent split-K-free GEMM with epilogue fusion already in place, but compute mish via `softplus = where(x>20, x, log1p(exp(x)))` followed by `tanh` (using `(1 - 2/(e^{2sp}+1))`) to avoid overflow and remove one exp. Since hardtanh clamps to [-1,1] first, softplus input is bounded \u2014 replace mish entirely with a small polynomial / use the identity `mish(x) = x*tanh(softplus(x))` evaluated on a clamped domain where a degree-5 minimax could replace exp/log.\n- Fuse GroupNorm's per-(row,group) reduction directly into the GEMM epilogue: have each GEMM program write its tile and, when `BLOCK_N` aligns with `channels_per_group` (CG=32 here), accumulate partial sums in shared/registers for the group reduction. Alternatively, split the pipeline so GEMM stores into a row-major buffer and GroupNorm uses one program per (row, group) loading 32 contiguous fp32 \u2014 current BLOCK=32 with num_warps=4 wastes warps; use `num_warps=1` and pack multiple groups per program (e.g., 8 groups \u00d7 32 = 256 elements per program) to amortize launch overhead across 1024\u00d7256=262k programs.\n- The GroupNorm kernel currently launches 262,144 programs each doing 32 elements \u2014 extremely launch-bound. Redesign to one program per row handling all 256 groups (8192 elements), doing 256 independent small reductions via reshape to (256,32) inside the kernel, then writing the normalized row. This collapses the grid to 1024 programs.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 41,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

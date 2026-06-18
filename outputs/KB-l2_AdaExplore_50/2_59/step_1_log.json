@@ -1,0 +1,27 @@
+{
+    "node_id": 1,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- Add larger tile configs tuned for the M=128, N=K=32768 regime: with only 2 row-tiles of BLOCK_M=64, the grid is N-tile bound. Try `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3/4` and `BLOCK_M=64, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4` to better overlap the long K=32768 loop.\n- Drop the per-iteration K masks (since K=32768 is divisible by 32/64, the inner `k_remaining` masks are pure overhead) \u2014 split into a fast main loop without K masks and a tail epilogue, or assert K % BLOCK_K == 0 and remove the mask.\n- Since M=128 is tiny, consider `GROUP_M=1` (or compute swizzle only over N) \u2014 the current GROUP_M=8 swizzle has no effect when num_pid_m \u2264 2 and may mis-schedule; let all SMs stream over N tiles for better L2 reuse of A.",
+    "large_guidance": "- Problem is heavily K-reduction dominated (128\u00d732768\u00d732768 \u2248 275 GFLOPs, but A is only 16 MB and B is 4 GB). Rewrite as a Split-K GEMM: launch grid `(M_tiles * N_tiles, SPLIT_K)` with `tl.atomic_add` (or a 2-stage reduction buffer) so the long K dimension is parallelized across SMs \u2014 current kernel serializes 32768/BLOCK_K iters inside a single program, leaving SMs idle given only 2\u20134 M-tiles.\n- Use fp16/bf16 tensor-core `tl.dot` by casting A and B to bf16 inside the kernel (accumulate in fp32). On Ada/4090, bf16 tensor cores give ~2\u00d7 the throughput of fp32 `tl.dot`, and the loose 5e-2 tolerance easily absorbs the precision loss. Keep the Swish+scale epilogue fused on the fp32 accumulator.\n- Consider a persistent-kernel design: one program per SM iterating over assigned `(m_tile, n_tile)` pairs, with the bias+sigmoid+scale epilogue fused before store \u2014 amortizes launch/scheduling overhead and improves B-tile reuse across N tiles for the same M row group.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 2,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

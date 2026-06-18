@@ -1,0 +1,29 @@
+{
+    "node_id": 5,
+    "parent_node_id": 2,
+    "context_node_ids": [
+        2
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The GEMM call passes `stride_bk=1, stride_bn=W.stride(0)` for `W` of shape `(out_features, in_features)`. That treats W as if it were `(K, N)` column-major, but B should index `[K, N]` from `W[N, K]`: correct strides are `stride_bk = W.stride(1) = 1` and `stride_bn = W.stride(0) = in_features`. Actually those match \u2014 but verify by computing `Y = x @ W.T + bias`; if needed, transpose W once with `.t().contiguous()` and pass standard `(K, N)` strides to remove ambiguity.\n- The `update_running_stats_kernel` uses `BLOCK=256` with `grid = cdiv(N, 256)`; for N=4096 that's fine. However the running-var update uses biased var; switch to unbiased `var * M/(M-1)` (already done) \u2014 but ensure `num_batches_tracked` increment matches PyTorch semantics (it does). Add `num_warps=4, num_stages=2` to small kernels via autotune.\n- Output dtype mismatch: BN output in reference stays fp32 but the kernel writes back into Y in-place which is fine; however the NaN suggests mean/var divides by `M` as int \u2014 cast `M` to float (`M.to(tl.float32)` or pass as float) to avoid integer division surprises in Triton.",
+    "large_guidance": "- Correctness is failing with NaN average difference, which strongly suggests the GEMM is producing garbage (likely the W stride bug or the `% M`/`% N` wraparound combined with masked-K loads producing out-of-bounds reads on the last tile). Redesign: drop the modulo trick on offsets, use explicit `mask = offs_am[:, None] < M` on A loads and `mask = offs_bn[None, :] < N` on B loads, and combine with the K mask using a 2D mask per load.\n- Fuse the BN stats reduction directly into the GEMM epilogue using a split-K-free single pass: write Y, and atomically (or via a second persistent reduction kernel over Y) compute sum/sumsq. But simpler and more reliable: keep three kernels (GEMM+scale \u2192 stats \u2192 apply) and ensure stats kernel reads the just-written Y; current ordering is correct, so focus on fixing GEMM correctness.\n- For eval mode, fuse `(scale, bn_weight, bn_bias, running_mean, running_var)` into a single pre-computed `(scale_eff, shift_eff)` per channel at forward entry, then do GEMM with epilogue `acc * scale_eff + shift_eff` \u2014 eliminates the second pass entirely in eval. In train mode, keep two-pass but use fp32 accumulators and float division.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 6,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

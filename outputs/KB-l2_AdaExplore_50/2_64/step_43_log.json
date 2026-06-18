@@ -1,0 +1,29 @@
+{
+    "node_id": 43,
+    "parent_node_id": 28,
+    "context_node_ids": [
+        37
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.7626631636136587,
+    "max_reward": 0.7626631636136587,
+    "avg_reward": 0.7626631636136587,
+    "score": [
+        1,
+        1,
+        3.091971099812684
+    ],
+    "small_guidance": "- The GEMM (1024\u00d78192\u00d78192 in bf16) dominates runtime; the LSE+activation kernel touches only 1024\u00d78192 fp32 values. Try keeping the GEMM output in bf16 and have `lse_act_kernel` load bf16 directly (cast to fp32 in-register), eliminating the bf16\u2192fp32 materialization pass.\n- Tune `BLOCK_N=2048` with `num_warps=8, num_stages=2` (or `BLOCK_N=4096, num_warps=8`) \u2014 `num_warps=16` with `BLOCK_N=8192` likely over-subscribes registers on a 4090 and reduces occupancy for a per-row kernel with only M=1024 programs.\n- Consider splitting each row across multiple programs (split-K style reduction with atomic max+sum or a 2-stage launch) so all 128 SMs are saturated; with M=1024 rows the current grid is fine, but per-row parallelism would still help bandwidth.",
+    "large_guidance": "- Replace `F.linear` with a custom Triton GEMM that fuses the LogSumExp reduction into the matmul epilogue: each program tile computes a (BLOCK_M \u00d7 N) row-stripe of the output and online-accumulates running max/sum across N tiles as `tl.dot` produces them, never writing the 1024\u00d78192 intermediate. This removes a full HBM write+read of the GEMM output (~134 MB in fp32) which is a large fraction of current runtime.\n- Use a persistent split-K GEMM in bf16/tf32 with BLOCK_M=64\u2013128, BLOCK_N=128, BLOCK_K=32\u201364, GROUP_M=8, and finalize LSE + double-LeakyReLU + double-GELU in a tiny post-pass over the 1024-element reduced tensor (or fuse into the last N-tile's epilogue using a 2-pass online softmax-style algorithm).\n- Alternatively, since M=1024 and K=8192 are both large, structure as one program per output row that streams the full row of the weight matrix tile-by-tile in K, computing dot products for a BLOCK_N chunk and folding into running (max, sum) in-register \u2014 avoids materializing the N=8192 logits entirely.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 44,
+    "global_best_node_id": 40,
+    "global_best_score": [
+        1,
+        1,
+        3.2794665909810385
+    ]
+}

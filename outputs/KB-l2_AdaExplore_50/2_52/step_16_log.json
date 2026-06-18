@@ -1,0 +1,29 @@
+{
+    "node_id": 16,
+    "parent_node_id": 12,
+    "context_node_ids": [
+        12
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.45561011153884123,
+    "max_reward": 0.45561011153884123,
+    "avg_reward": 0.45561011153884123,
+    "score": [
+        1,
+        1,
+        0.5587834201954398
+    ],
+    "small_guidance": "- The training path runs two passes over the conv output (stats kernel + apply_bn kernel). Reduce BLOCK in `_mish_stats_kernel` from 4096 to 1024 with num_warps=4 \u2014 HW=15876 per (N,C), so a 4096-wide vector wastes registers/SMEM; a 1024-wide tile with the same loop iterates fewer times per warp and frees occupancy.\n- For `_apply_bn_kernel` / `_mish_bn_kernel`, BLOCK=8192 with num_warps=8 is oversized for a pure elementwise pass; try BLOCK=2048, num_warps=4, num_stages=2 and add `@triton.autotune` over `{(1024,4),(2048,4),(4096,8)}` keyed on `n_el`.\n- Replace the `tl.log(1+tl.exp(x))` then `exp(2*sp)` chain with the numerically-equivalent direct Mish form `x * tanh(softplus(x))` computed as `sp = tl.where(x>20, x, tl.log1p(tl.exp(-tl.abs(x))) + tl.maximum(x,0))`; this avoids one exp and is safer for large x. (Use `tl.log` of `1+exp` only after clipping.)",
+    "large_guidance": "- The conv (64\u2192128, 3\u00d73, 64\u00d7128\u00d7128 input) dominates runtime \u2014 `fast_p\u22480.56` despite the BN/Mish epilogue already being fused. Replace `nn.Conv2d` with a custom Triton im2col-GEMM kernel that fuses Mish + BN scale/shift directly into the epilogue on the accumulator (eval path), eliminating the separate cudnn conv launch and the extra read/write of the conv output.\n- Use one program per `(N, OC tile, output-spatial tile)` with implicit im2col (compute input offsets in-kernel). Start with safe tiles `(BM,BN,BK)=(64,64,32)`, num_warps=4, num_stages=2, autotuned over `{(32,32,16),(64,32,16),(32,64,16),(64,64,32)}`. Channels-last input layout makes the K=IC*kh*kw loads coalesce.\n- For training, compute per-channel sum and sum-of-squares in the same conv-epilogue kernel via `tl.atomic_add` into C-sized buffers (already proven correct here), then a second small kernel applies the affine. This collapses three passes (conv, mish+stats, apply) into two.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 17,
+    "global_best_node_id": 16,
+    "global_best_score": [
+        1,
+        1,
+        0.5587834201954398
+    ]
+}

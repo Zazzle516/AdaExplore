@@ -1,0 +1,31 @@
+{
+    "node_id": 13,
+    "parent_node_id": 12,
+    "context_node_ids": [
+        3,
+        7,
+        12
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing \u2014 the BN stats kernel computes per-batch mean/var but the apply kernel must use those same stats (not running stats) in training. That part looks ok; the likely bug is the unbiased_var update overwriting `var` semantics or the use of `use_var = var` (biased) with eps \u2014 verify matches `F.batch_norm` (which uses biased var for normalization in training). Also check that `bn_stats_kernel` correctly handles M=1024 with BLOCK_M=1024 (single iteration; sum_x init as scalar tl.zeros((), ...) plus tl.sum may produce a 0-d issue \u2014 switch to `sum_x = 0.0` accumulator or `tl.zeros([1], ...)`).\n- Pass `eps` as a regular float arg or 0-d tensor instead of `tl.constexpr` to reduce recompiles, and fuse the BN apply into the GEMM epilogue once stats are known (two-launch design: GEMM+scale \u2192 stats \u2192 fused-apply; or persistent GEMM that writes both raw and stats via atomics).\n- Add autotune configs with BLOCK_M=256/BLOCK_N=128 and num_stages=2 for the K=8192 case; current best may be memory-bound on B-loads since B is strided (stride_bn=K=8192). Consider pre-transposing W to a contiguous (K,N) buffer once in `__init__` so B loads are contiguous along N.",
+    "large_guidance": "- Redesign with a contiguous transposed weight: store `W_t` of shape (K, N) contiguous at init (recomputed if weight changes, or just once since eval-style). The current strided B-load (stride_bn=K) prevents efficient vectorized loads in the K-loop and is likely the main perf limiter at 1024\u00d78192\u00d78192.\n- Fuse scale into the GEMM epilogue (already done) AND fuse the BN apply by doing a two-kernel pipeline: (1) GEMM+scale+bias writes `out` and simultaneously accumulates per-column sum and sum-of-squares via `tl.atomic_add` into (N,) buffers; (2) a single elementwise kernel computes mean/var from those reductions and applies BN in-place. This removes the separate two-pass stats kernel (which re-reads the full MxN tensor twice).\n- Alternatively, since M=1024 is small relative to N=8192, use a column-major tiled GEMM where each program owns a full column slab and can compute partial sums in-register before writing \u2014 enabling a true fused GEMM\u2192stats\u2192BN in one launch with a barrier via persistent grid + atomics.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 14,
+    "global_best_node_id": 12,
+    "global_best_score": [
+        1,
+        1,
+        0.5658960882834168
+    ]
+}

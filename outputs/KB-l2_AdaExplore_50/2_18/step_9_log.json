@@ -1,0 +1,27 @@
+{
+    "node_id": 9,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The output is wrong: after sum\u2192max(dim=1)\u2192mean(dim=1)\u2192logsumexp\u2192logsumexp on a (M,1) tensor, the final result equals the sum (since on a length-1 dim, max/mean are identity and logsumexp(x)=x). The huge max_difference (~24k) suggests an accumulation bug \u2014 likely the atomic_add receives non-zero values from masked-out (offs_m >= M or offs_n >= N) tiles because the bias term `b_vals[None, :]` is added before the n_valid_mask zeroing only for in-range n, but the m-mask isn't applied to `acc` before sum, allowing garbage in OOB m rows; here M=1024, N=8192 are nicely divisible so OOB isn't the issue \u2014 instead the bug is that for the K=8192 case the partial sums across the N-grid use atomic_add into a tensor not zeroed correctly, or fp32 atomic ordering creates noise. Verify `torch.zeros` is fp32 and add an `m_mask` to zero `acc` rows too.\n- Tile sizes for M=1024, N=8192, K=8192: try BLOCK_M=64, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3, and prefer a single-pass K reduction (no atomic) by having one program per BLOCK_M row tile that loops over all N tiles internally, eliminating the atomic_add.\n- Pre-transpose weight once in `__init__` so the K axis is contiguous for `tl.dot` without `tl.trans` in the hot loop.",
+    "large_guidance": "- Replace the atomic-add reduction with a deterministic two-stage design or a single-program-per-row-tile design: grid = (cdiv(M, BLOCK_M),), each program loops over N in BLOCK_N chunks and over K in BLOCK_K chunks, accumulating `tl.dot(x_tile, wT_tile)` into a [BLOCK_M, BLOCK_N] register tile, adds bias, sums across N into a [BLOCK_M] register, accumulates into a row-resident scalar, and writes once. This removes the atomic-add (source of nondeterminism and likely correctness issues) and removes the need for `tl.zeros` init.\n- Since the final scalar per row is just `sum_n(linear(x)[m,n])`, fuse the entire pipeline (sum/max/mean/logsumexp/logsumexp are all identity on length-1 dim) into a single write of one fp32 per row. Confirm output shape (M,1) by `.unsqueeze(1)` or storing directly into a (M,1) buffer.\n- Store W as `W.t().contiguous()` in `__init__` so the K-axis on B is contiguous (matching tl.dot's preferred layout: A [BM,BK] x B [BK,BN]); use GROUP_M swizzle is unnecessary here since grid is 1-D over M.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 10,
+    "global_best_node_id": 6,
+    "global_best_score": [
+        1,
+        1,
+        0.09541046375595273
+    ]
+}

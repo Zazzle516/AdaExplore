@@ -1,0 +1,27 @@
+{
+    "node_id": 23,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness mismatch (~0.004 max diff, ~5e-5 avg) is consistent with using `nn.GroupNorm` weight/bias which are initialized to (1, 0) but the reference uses learnable affine \u2014 actually the issue is likely that `gamma` and `beta` are loaded but with `other=0.0`; for masked-off lanes that's fine. The real bug: `num_groups=256, out_features=8192` \u2192 CPG=32, which is small and OK. Verify `eps=1e-5` matches PyTorch default and that gamma/beta are passed as the actual `group_norm.weight`/`bias` (they are). The diff suggests numerical precision \u2014 try computing mean/var in fp32 (already done) and double-check: actual issue is likely that `multiply_weight` shape (out_features,) is fine. Try tightening: use `tl.rsqrt` instead of `1.0/tl.sqrt`, and ensure inputs are loaded as fp32 from fp32 tensors directly.\n- For the GEMM (M=1024, N=8192, K=8192 \u2014 large), add a `GROUP_M=8` block-swizzle for L2 reuse and include larger tiles like `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64` with num_stages=3, num_warps=8.\n- The 4090 is Ada (not Ampere as stated); fp32 tl.dot uses TF32 by default which gives ~1e-3 error \u2014 this likely *is* the source of the correctness failure. Pass `allow_tf32=False` to `tl.dot` or set `tl.dot(a, b, out_dtype=tl.float32, input_precision=\"ieee\")` to force ieee fp32 and pass the 5e-2 tolerance with margin.",
+    "large_guidance": "- Rewrite the GEMM with a proper persistent + swizzled tile schedule (GROUP_M=8) and use `input_precision=\"ieee\"` (or \"tf32x3\") on `tl.dot` to avoid the TF32 precision drift that's causing the 0.004 max-diff failure. With M=1024, N=K=8192, optimal tiles are likely BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, num_warps=8, num_stages=3-4.\n- Consider fusing the GroupNorm+Swish+Mul+Swish epilogue *into the GEMM* output stage when N tile aligns with group boundaries \u2014 but since GN needs a reduction across CPG=32 channels, keep them separate; instead make the GN kernel persistent per (batch row) processing all G=256 groups of CPG=32 in one program with vectorized inner ops.\n- For the GN-fused kernel, with CPG=32 and G=256 per row, a single program per row loading the full row (8192 fp32 = 32KB) into SRAM and doing 256 group reductions in registers would amortize launch overhead and avoid 256 separate programs per row.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 24,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

@@ -1,0 +1,31 @@
+{
+    "node_id": 20,
+    "parent_node_id": 5,
+    "context_node_ids": [
+        3,
+        4,
+        5
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.48916774216149944,
+    "max_reward": 0.48916774216149944,
+    "avg_reward": 0.48916774216149944,
+    "score": [
+        1,
+        1,
+        0.83563387283237
+    ],
+    "small_guidance": "- The conv3d kernel materializes a (16, BLOCK_SP) accumulator with BLOCK_SP=256 and walks 3\u00d73\u00d73\u00d73=81 scalar loads per spatial element; try BLOCK_SP=128 with num_warps=8 and num_stages=3, or BLOCK_SP=64 with num_warps=4 \u2014 the current shape spills and the inner static_range explodes register pressure.\n- Wrap `conv3d_kernel` in `triton.autotune` over `BLOCK_SP \u2208 {64,128,256}` \u00d7 `num_warps \u2208 {4,8}` \u00d7 `num_stages \u2208 {2,3,4}` keyed on `(N, OD*OH*OW)`; the current single config is leaving headroom.\n- In `fused_gn_min_clamp_kernel` you do two passes loading x from global; cache `(x - mean) * rstd` by recomputing only once and drop the second `tl.load` of weight/bias per block \u2014 pre-broadcast the per-channel `w/b` into a length-S table once and gather, or split the kernel so each program owns one channel slice and avoids `idx//S` divisions.",
+    "large_guidance": "- Restructure conv3d as an implicit-GEMM: one program per `(N, OC_tile, OUT_SPATIAL_tile)` doing `tl.dot` over a K-axis of `IC*KD*KH*KW` with `BLOCK_M=16` (full OC), `BLOCK_N=64/128`, `BLOCK_K=32`. With OC=16 and K=81, a tiled `tl.dot` will use tensor cores instead of the current outer-product accumulate, which is the dominant cost.\n- Fuse the GroupNorm reduction's first pass into the conv epilogue: have the conv kernel additionally atomic-add partial sum/sum-sq per (N, group) into a small scratch buffer while writing y, then a tiny second kernel computes mean/rstd, then a third applies normalize+min+clamp. This removes one full read of the post-conv tensor (which is ~128\u00b716\u00b714\u00b762\u00b762 \u2248 138M elements).\n- Alternatively, since OC=16 and groups=8 (channels_per_group=2), keep the conv output in registers per spatial tile and do the GN reduction tree across the program grid via a persistent kernel that owns a whole `(N, group)` slab \u2014 this is feasible because slab size is 2\u00b714\u00b762\u00b762 \u2248 108K floats and can be tiled over D.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 21,
+    "global_best_node_id": 20,
+    "global_best_score": [
+        1,
+        1,
+        0.83563387283237
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 9,
+    "parent_node_id": 8,
+    "context_node_ids": [
+        2
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.42372967816091955,
+    "max_reward": 0.42372967816091955,
+    "avg_reward": 0.42372967816091955,
+    "score": [
+        1,
+        1,
+        0.2957698448275862
+    ],
+    "small_guidance": "- The output store is strided (writing to NCHW with offs_m as channel dim and offs_n as flattened spatial across batches) \u2014 coalescing is poor. Try writing to a channels-last intermediate (or transpose so the inner contiguous axis is OW) before BN, this often gives 2-3x on the store path.\n- Add larger K tiles (BLOCK_K=64) and an `(BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, num_warps=8, num_stages=3)` config \u2014 stays within the ~132KB SMEM budget for fp32 and increases arithmetic intensity for the IC=64,KH*KW=9 (K=576) inner loop.\n- Fuse BatchNorm (eval-time affine: scale = \u03b3/\u221a(var+eps), shift = \u03b2 - \u03bc\u00b7scale) into the conv epilogue after the Mish; in training mode keep the current path. This eliminates a full read/write of the (64,128,126,126) tensor.",
+    "large_guidance": "- Switch to an implicit-GEMM with channels-last (NHWC) input/output layout: program tile is (BLOCK_M over OC, BLOCK_N over N*OH*OW) but with OC as the contiguous axis. Loads from x become contiguous along IC, weight becomes (KH*KW*IC, OC), and stores to NHWC output coalesce \u2014 this fixes the current strided-store penalty.\n- Fuse the entire pipeline: conv + Mish + BN-affine (eval) into one kernel writing the final NCHW (or NHWC\u2192NCHW) output. At training time, do conv+Mish in Triton, then a separate fused BN reduction kernel (per-channel Welford with one program per OC block summing across N*OH*OW); this avoids two extra full-tensor passes.\n- Specialize KH=KW=3 with a fully-unrolled 3\u00d73 inner loop (no BLOCK_K loop over kernel positions), iterating only over IC tiles. With IC=64 that's a single K=64 inner reduction \u00d7 9 unrolled spatial taps, dramatically reducing index math and enabling better register reuse than the generic im2col GEMM.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 10,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.34309302
+    ]
+}

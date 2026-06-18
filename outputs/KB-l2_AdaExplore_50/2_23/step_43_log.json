@@ -1,0 +1,29 @@
+{
+    "node_id": 43,
+    "parent_node_id": 42,
+    "context_node_ids": [
+        40
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5242581824982164,
+    "max_reward": 0.5242581824982164,
+    "avg_reward": 0.5242581824982164,
+    "score": [
+        1,
+        1,
+        1.1251300056102853
+    ],
+    "small_guidance": "- The conv3d via `F.conv3d` likely dominates the 1.27ms runtime; tuning the GN+mean kernels further won't help much. If staying small, try fusing stats+normalize into a single persistent kernel per `(N, group)` that keeps the spatial slice resident, avoiding the second pass over `y` and the atomic_add into `out` (do an in-program reduction across `s_blk` by making one program own all spatial elements per group, with BLOCK_S sized to SPATIAL/(some tiles) and an internal loop).\n- Fold the conv bias into the conv output once (or absorb into GN affine: new_scale = gn_w * inv_std, new_shift = gn_b - mean*new_scale + conv_b*new_scale) so the bias load isn't repeated in both kernels. Also pre-cast `sum_buf`/`sumsq_buf` writes to avoid two atomic_adds per program by using a single 2-element store.\n- Sweep BLOCK_S in {512, 2048, 4096}, num_warps in {4,8}, num_stages in {2,3,4} via `triton.autotune`; SPATIAL = 22*30*30 = 19800 per (N,group), so BLOCK_S=2048 with num_warps=8 may improve memory throughput.",
+    "large_guidance": "- Replace `F.conv3d` with a custom Triton im2col-style GEMM kernel: one program per `(N, OC_tile, output-spatial tile)`, with IC*K*K*K = 81 as the GEMM-K axis (tiny, fully unrollable). This is the dominant cost (~80%+ of runtime) and the highest-headroom move per the skill guide.\n- Fuse the entire pipeline end-to-end: conv epilogue writes pre-bias activations to a workspace, then a single persistent kernel per `(N, group)` does two-pass stats + normalize + partial mean reduction in registers, atomic-adding only the final per-batch scalar. Eliminates the separate stats/normalize launches and the intermediate y tensor's second read.\n- Use channels_last3d layout for the conv output so the OC axis is contiguous, making the GN reduction across CHANS_PER_GROUP a contiguous load and enabling vectorized 4-wide loads in the normalize pass.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 44,
+    "global_best_node_id": 41,
+    "global_best_score": [
+        1,
+        1,
+        1.3739568337740984
+    ]
+}

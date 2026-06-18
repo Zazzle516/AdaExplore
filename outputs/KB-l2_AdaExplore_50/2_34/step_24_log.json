@@ -1,0 +1,30 @@
+{
+    "node_id": 24,
+    "parent_node_id": 14,
+    "context_node_ids": [
+        10,
+        14
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.41571574589646465,
+    "max_reward": 0.41571574589646465,
+    "avg_reward": 0.41571574589646465,
+    "score": [
+        1,
+        1,
+        0.22965490364583332
+    ],
+    "small_guidance": "- The LN kernel is fine but irrelevant: runtime is dominated by `nn.ConvTranspose3d`. Tuning BLOCK_R/BLOCK_C of the LN kernel will not move `fast_p` past ~0.23. If staying in tuning mode, at least try `BLOCK_R=32`, `num_warps=4`, `num_stages=3`, and switch the post-conv tensor to `channels_last_3d` so the LN load along C is contiguous.\n- Fold the conv_transpose bias add into the LN kernel epilogue (skip the separate bias broadcast in the conv) \u2014 minor but free.\n- Consider precomputing `gamma * scale` and `beta * scale` once on the host (since scale is constant and LN affine is constant at eval) to remove one multiply in the epilogue.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input D\u00b7H\u00b7W tile)` loads input, multiplies by the `(IC, OC, kD, kH, kW)` weight, and `tl.atomic_add`s into the output grid at strided positions with padding/output_padding handled in index math. Since this is the heavy op (~95% of runtime), this is where the speedup must come from.\n- Alternatively, formulate ConvTranspose3d as a gather-GEMM: for each output voxel, gather contributing input positions `(id = (od + pad - kd)/stride)` valid only when divisible by stride, accumulate `\u03a3_{ic,kd,kh,kw} W[ic,oc,kd,kh,kw] * x[n,ic,id,ih,iw]` with a tiled GEMM over `(OC, IC*kD*kH*kW)`. Use `channels_last_3d` so OC and IC are contiguous; tile `BLOCK_M=32, BLOCK_N=32, BLOCK_K=16`, `num_warps=4`, `num_stages=2` to stay safely under SMEM.\n- Fuse the LN+GELU+scale directly into the conv-transpose epilogue: have each output-spatial program produce a full row of length OC, do the LN reduction across OC inside the same kernel (OC=64 fits trivially in one block), then GELU+scale before the store. This eliminates the entire LN kernel launch and the round-trip through HBM.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 25,
+    "global_best_node_id": 15,
+    "global_best_score": [
+        1,
+        1,
+        0.7944818288288288
+    ]
+}

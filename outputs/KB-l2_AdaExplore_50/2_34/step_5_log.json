@@ -1,0 +1,29 @@
+{
+    "node_id": 5,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.41535794437952794,
+    "max_reward": 0.41535794437952794,
+    "avg_reward": 0.41535794437952794,
+    "score": [
+        1,
+        1,
+        0.2267030411311054
+    ],
+    "small_guidance": "- The LN+GELU+scale kernel is fine but tiny relative to the ConvTranspose3d cost; tuning it further won't move fast_p. If staying small, try channels_last layout so the LN reduction axis is contiguous and bump num_warps to 8 for C=64 with BLOCK_C=64, num_stages=2.\n- Add `@triton.autotune` over `(BLOCK_C, num_warps) \u2208 {(64,2),(64,4),(64,8),(128,4)}` keyed on C; current single-config launch is suboptimal but the headroom is sub-millisecond.\n- Could batch multiple rows per program (e.g. BLOCK_ROW=4) to amortize launch overhead since N = 32\u00b764\u00b732\u00b764\u00b764 rows is huge.",
+    "large_guidance": "- The ConvTranspose3d is the dominant cost (runtime 38.9ms vs baseline 8.8ms means torch's cuDNN convT is faster than current path \u2014 actually the custom path is slower because nothing replaced convT). Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)`, computing the input\u00d7weight outer product and scatter-adding into the output grid handling stride=2/padding=1. Fold bias add, LayerNorm (over OC), GELU, and scale into the same epilogue \u2014 but LN reduces over OC which requires all OC contributions complete before normalization, so structure as two kernels: (1) fused scatter-add convT producing full output, (2) fused LN+GELU+scale (already have).\n- Alternatively, implement convT as a gather-style GEMM: for each output voxel `(n,oc,od,oh,ow)`, gather the contributing `(ic,kd,kh,kw)` input elements (those where `(od+pad-kd)` is divisible by stride and in range) and do a tiled matmul over `IC*KD*KH*KW` reduction. Use channels_last_3d so OC is the contiguous GEMM-N axis. Tile `(BLOCK_OC=32, BLOCK_SPATIAL=32, BLOCK_K=16)` with num_warps=4, num_stages=2 to fit SMEM safely.\n- Fold the conv bias into the convT epilogue's accumulator; do not run a separate bias kernel. Keep LN as a second pass since its reduction is across OC which the conv kernel produces incrementally.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 6,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.22965490364583332
+    ]
+}

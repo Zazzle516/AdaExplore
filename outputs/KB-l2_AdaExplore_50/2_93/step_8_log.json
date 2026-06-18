@@ -1,0 +1,29 @@
+{
+    "node_id": 8,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5008714919941776,
+    "max_reward": 0.5008714919941776,
+    "avg_reward": 0.5008714919941776,
+    "score": [
+        1,
+        1,
+        0.932189808951965
+    ],
+    "small_guidance": "- The K dimension here is small (IC*KH*KW = 64*4*4 = 1024) but the per-K iteration does heavy index math (mod/div for kh,kw and validity masks). Add autotune configs with larger BLOCK_K (128) so fewer K iterations are needed, and try BLOCK_M=128/BLOCK_N=128 with num_warps=8, num_stages=2-4 \u2014 current shapes (M=128*130*130\u22482.16M, N=128) favor wide M tiles.\n- Hoist the `H_out`, `W_out`, `H*W`, `OC*KH*KW` constant strides as `tl.constexpr` where possible (KH, KW, STRIDE already are) and precompute `n_idx*IC*H*W` and `n_idx*OC*H_out*W_out` once outside the K loop instead of recomputing in the offset expression each iteration.\n- Reorder the K-loop so the outer loop is over `ic` (BLOCK_K_IC chunks of IC) and the inner KH*KW=16 is fully unrolled \u2014 this removes the per-k modulo math and lets the validity masks (which depend only on kh,kw, not ic) be computed once per (kh,kw) and reused across all ic.",
+    "large_guidance": "- Switch from gather (output-stationary, \"where did this output come from\") to scatter-add (input-stationary, \"where does this input go\"): one program per (N, IC tile, hi, wi tile) computes the input\u00d7weight outer product and scatter-adds into the KH\u00d7KW output footprint. With stride=2 and KH=KW=4 there is no overlap conflict per (kh,kw) offset, and this eliminates the divisibility/modulo masks entirely \u2014 every multiply contributes to a valid output.\n- Alternatively, keep the GEMM view but restructure as: per output (ho,wo), only `ceil(KH/STRIDE)*ceil(KW/STRIDE) = 2*2 = 4` (kh,kw) pairs are valid (those matching `ho%STRIDE` and `wo%STRIDE`). Specialize the kernel on `(ho%STRIDE, wo%STRIDE)` (4 variants, or pick at runtime via program_id) so the inner reduction is K=IC*4=256 instead of 1024 with 75% wasted lanes \u2014 a 4\u00d7 reduction in real FLOPs done.\n- Use channels-last (NHWC) layout for both input and output so the IC / OC axes are the contiguous innermost dim; this makes the GEMM-K loads coalesced without strided gathers and lets `tl.dot` operate on naturally contiguous tiles.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 9,
+    "global_best_node_id": 8,
+    "global_best_score": [
+        1,
+        1,
+        0.932189808951965
+    ]
+}

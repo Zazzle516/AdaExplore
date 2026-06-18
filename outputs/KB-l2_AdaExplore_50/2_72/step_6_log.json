@@ -1,0 +1,30 @@
+{
+    "node_id": 6,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        3,
+        4
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.41442114926117984,
+    "max_reward": 0.41442114926117984,
+    "avg_reward": 0.41442114926117984,
+    "score": [
+        1,
+        1,
+        0.21897448140473333
+    ],
+    "small_guidance": "- The scatter kernel uses one program per input voxel \u00d7 OC tile with atomic_add into the output; this serializes writes heavily. Increase BLOCK_OC to 32 or 64 (OC=16 fits in a single tile of 16) and drop atomics by having exactly one program per input voxel covering all OC at once (BLOCK_OC=16, single oc tile), eliminating the second grid dim.\n- Hoist x_val loads outside the kd/kh/kw loops \u2014 load all 3 IC values once per program into registers, then reuse across all 27 kernel taps. Also precompute oc-stride weight base to reduce address arithmetic in the inner static_range.\n- The finalize kernel does val/64 + bias then scale*..+shift, but the divide-by-64 should only apply to the pool-window sum; since the scatter only writes valid taps, pooled values at the border are scaled wrong. Verify and, if correct, fuse the *(1/64) into scale at host side (scale' = scale/64, shift' unchanged after folding bias) to remove one multiply.",
+    "large_guidance": "- Replace scatter-add + atomics with a gather-based direct ConvTranspose3d kernel: one program per (N, OC_tile, output-spatial tile of the *pooled* grid, i.e. OD\u00d7OH\u00d7OW). Each program computes a 4\u00d74\u00d74 pool window of pre-pool conv-transpose outputs by gathering the contributing input taps (input positions (od+pad-kd)/stride etc.) and accumulating directly into the pooled sum \u2014 fusing conv-transpose + BN + both avg-pools into a single kernel with no intermediate tensor and no atomics.\n- Output spatial after two pool=2 is OD=OH=OW=16 (since conv-transpose out is 64), giving N\u00b7OC\u00b716\u00b3 = 64\u00b716\u00b74096 = 4.2M output elements \u2014 perfect for one-program-per-output-tile GEMM-style. Tile (BLOCK_OC=16, BLOCK_SPATIAL=64) and reduce over IC\u00b7KD\u00b7KH\u00b7KW\u00b764(pool) inside the program, using tl.dot if you reshape the inner reduction as a matmul (W[IC*K\u00b3, OC] \u00d7 X_gather[BLOCK_SPATIAL, IC*K\u00b3]).\n- Fold BN scale/shift and the 1/64 pool normalization into the epilogue of this single kernel; pre-fold scale*=1/64 host-side. Use channels_last layout for the input to make the IC reduction contiguous and coalesce loads across the GEMM-K dimension.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 7,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        0.36042383585251137
+    ]
+}

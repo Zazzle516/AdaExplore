@@ -1,0 +1,27 @@
+{
+    "node_id": 8,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Fix the correctness bug in `gn_leakyrelu_double_kernel`: gamma/beta are indexed as `grp * CPG + offs`, but `nn.GroupNorm` stores `weight`/`bias` of shape `(C,)` indexed by channel \u2014 that part is fine, but the bigger issue is that `tl.where(mask, x - mean, 0.0)` is correct yet `var` uses `xc*xc` which includes masked lanes as 0 (OK). The real bug is likely numeric: ensure `CPG` is cast to float for division (`mean = sum_x / CPG.to(tl.float32)`), and load gamma/beta with `other=0.0` only when masked \u2014 these are minor. The max_diff ~0.005 with `atol=5e-2` suggests it might actually pass; verify the correctness threshold and whether `eps` is passed correctly (Python float \u2192 should be `tl.constexpr` or 0-d tensor per safety contract).\n- Pass `eps` and `neg_slope` as `tl.constexpr` to avoid launcher fragility, and add `num_warps=4, num_stages=2` to the GN kernel launch.\n- Add more GEMM autotune configs tuned for M=1024, N=8192, K=8192 (e.g. `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4`) and add a `GROUP_M=8` swizzle for L2 reuse.",
+    "large_guidance": "- The GEMM dominates (1024\u00d78192\u00d78192 = 137 GFLOPs). Rewrite with a proper tiled GEMM that includes a `GROUP_M` block-swizzle for L2 reuse and stages=4 for K-loop overlap; this is the largest available speedup.\n- Fuse the GroupNorm + LeakyReLU + (x+x) entirely into the GEMM epilogue is not viable (needs cross-tile reduction over CPG=16 channels), but you can fuse the `2*` scalar into the GN kernel's affine (multiply gamma and beta by 2 at load), and fuse LeakyReLU into the GN store \u2014 already done. Consider a persistent GN kernel where one program handles multiple groups per row to amortize launch overhead (N*G = 1024*512 = 524288 programs is too many).\n- Reorganize GN to one program per row processing all G groups with vectorized reductions, since CPG=16 is tiny \u2014 pack 8-16 groups per program (BLOCK_GROUPS) and do the per-group reduction with `tl.sum` over a 2D `[BLOCK_GROUPS, CPG]` tile. This cuts the grid by ~16x and improves occupancy.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 9,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

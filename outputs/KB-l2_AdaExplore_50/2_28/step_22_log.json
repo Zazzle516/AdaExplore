@@ -1,0 +1,29 @@
+{
+    "node_id": 22,
+    "parent_node_id": 21,
+    "context_node_ids": [
+        21
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (max diff ~0.0015) likely stems from the InstanceNorm2d semantics: with `affine=False` and `track_running_stats=False` (default), it normalizes over (H,W) per (N,C). With input shape (batch, 1, 1, out_features), C=1 so it normalizes over H*W=1*out_features per sample \u2014 your row-wise norm over out_features is correct. But check whether eval-mode running stats are being used; default InstanceNorm2d does NOT track running stats, so this should be fine. The numerical drift is more likely from accumulating `tl.sum` in fp32 of fp32 inputs across BLOCK_N=2048 chunks vs PyTorch's algorithm \u2014 try computing sum and sum_of_squares in a single pass and using `var = E[x^2] - mean^2` then clamp, or increase precision by accumulating in fp64-equivalent via Kahan, or reduce BLOCK_N to 1024 with num_warps=8 for better numerical behavior.\n- Verify the GEMM is producing bit-accurate linear output by isolating it (compare `triton_linear(x,W,b)` vs `F.linear(x,W,b)`) \u2014 the 1e-3 max diff suggests the norm pass, not the GEMM, but confirm.\n- Once correctness passes, raise GEMM autotune coverage with `BLOCK_M=128,BLOCK_N=256,BLOCK_K=64,num_warps=8,num_stages=4` and `BLOCK_M=256,BLOCK_N=128,...` for the M=1024,N=8192,K=8192 shape.",
+    "large_guidance": "- Fuse the entire pipeline into a single persistent kernel per row: each program owns one row of the output. It streams the K dimension to compute `dot(x_row, W) + b` into an on-chip accumulator of length N=8192 (split across warps if needed), then in the same kernel computes mean/var over that accumulator, normalizes, adds y, multiplies y, and stores. This avoids materializing the (1024,8192) intermediate to HBM twice.\n- Alternatively, keep the GEMM separate but make the norm+epilogue a two-pass online (Welford) reduction in one kernel that loads x once, with x cached via `tl.load` in L2; ensure BLOCK_N divides 8192 cleanly (e.g. 1024 or 2048) and use `num_warps=8`, `num_stages=3`.\n- Consider casting weight to a transposed layout once at init (store W^T contiguous) so the GEMM uses contiguous inner-axis loads on B without strided access.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 23,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        0.8208452377944534
+    ]
+}

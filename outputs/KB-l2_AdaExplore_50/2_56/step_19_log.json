@@ -1,0 +1,29 @@
+{
+    "node_id": 19,
+    "parent_node_id": 8,
+    "context_node_ids": [
+        8
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The atomic_add accumulation into `out` is being called with a non-zero initial tensor across multiple runs, but more importantly: the current kernel uses `tl.atomic_add(out_ptr + offs_m, partial, mask=mask_m)` where `out` has shape `(M, 1)` \u2014 that's fine, but `out` is reset each forward via `torch.zeros`, so atomics should work. The real bug is likely that multiple N-tiles race-add into the same `out[m]` correctly, but the output has shape (M,1) and offs_m indexes contiguously \u2014 verify `out` is treated as flat M elements (it is, since stride is 1). Re-examine: most likely the bug is `mask_n` masking the sigmoid to 0 \u2014 that's correct since `sigmoid(0)=0.5`, not 0, so padding lanes contribute 0.5 each! Fix: pad accumulator with very-negative values before sigmoid, OR mask after sigmoid by subtracting 0.5 contributions, OR ensure N is divisible by BLOCK_N (here N=32768, all configs divide it, so this is moot) \u2014 but be safe and set padded sigmoid lanes to 0 explicitly *after* sigmoid (already done). Recheck the actual issue.\n- Actual bug: `tl.where(mask_n[None, :], sig, 0.0)` is correct. But `tl.atomic_add` on `out_ptr + offs_m` with `out` shape (M,1) \u2014 offs_m goes 0..M-1, stride is 1, fine. The correctness failure (4/5 trials, huge diff ~5e5) suggests a race or accumulation error \u2014 likely `out` is float32 and atomics on fp32 are fine. Try increasing BLOCK_N to cover full N=32768 in one tile per row to eliminate atomics, or use a two-pass approach with a per-tile partial buffer + final reduction.\n- Add configs with BLOCK_M=128, BLOCK_N=64 and verify tile masking; also try `num_stages=2` to reduce register pressure.",
+    "large_guidance": "- Restructure to eliminate the cross-N-tile atomic add: launch one program per M-row-tile, loop over all N tiles inside the kernel, and accumulate the sigmoid-sum in registers before a single store. With M=128 and N=K=32768, grid = `cdiv(M, BLOCK_M)` programs each doing the full GEMM over N \u2014 this turns the row-reduction into a pure register accumulation and removes all atomics.\n- Alternatively: split-K style \u2014 one program per (M_tile, N_tile) writes its `partial[BLOCK_M]` to a scratch `[num_n_tiles, M]` buffer, then a tiny second kernel sums across `num_n_tiles`. Avoids fp32 atomic contention which on Ada can serialize and may also be the source of nondeterministic correctness failures.\n- Since the final output is just `(M, 1)`, consider a persistent kernel: one program per M row, streaming K in chunks while iterating N tiles, fusing matmul+bias+sigmoid+sum entirely in registers. With K=32768 this is a heavy inner reduction but avoids any global writes except the final scalar per row.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 20,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

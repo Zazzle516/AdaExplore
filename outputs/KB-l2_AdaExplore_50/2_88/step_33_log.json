@@ -1,0 +1,30 @@
+{
+    "node_id": 33,
+    "parent_node_id": 26,
+    "context_node_ids": [
+        23,
+        26
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness fails: the GroupNorm kernel ignores `mask` when computing `sum_x` via `tl.where(mask, x, 0.0)` but `x` was loaded with `other=0.0` already \u2014 that's fine, but `BLOCK_CPG = next_power_of_2(CPG)` with CPG=32 gives BLOCK_CPG=32 so mask is all-true; max diff ~3e-3 suggests fp32 accuracy is OK but multiply_weight broadcast may be wrong. Verify `MW_ptr + c_idx` indexing \u2014 multiply_weight has shape `(out_features,)` so global channel index is correct. The likely bug is that `gamma`/`beta`/`mw` are loaded as `.to(tl.float32)` but stored back without converting \u2014 fine. Re-check: the failure is likely numerical from non-deterministic GroupNorm reference; try tightening by computing in fp32 throughout and using a two-pass Welford-style mean/var with higher precision summation.\n- Add `tl.multiple_of` / `tl.max_contiguous` hints on `c_idx` loads and switch to per-group (GROUPS_PER_PROG=1) with larger num_warps for CPG=32 to reduce register pressure.\n- Add an autotune over `GROUPS_PER_PROG \u2208 {1,2,4,8}` and `num_warps \u2208 {2,4,8}` keyed on `(C, G)`.",
+    "large_guidance": "- The GEMM dominates (1024\u00d78192\u00d78192). Consider a split-K or persistent GEMM with `tl.dot` using BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4, and fuse bias in epilogue (already done). Cache `w_t` as a buffer registered on the module to avoid first-call transpose cost.\n- Fuse the GroupNorm-Swish-Mul-Swish epilogue into the GEMM's store path is impractical (needs cross-tile reduction along N), so keep them separate but ensure the GN kernel uses one program per `(N, group)` with the entire CPG=32 row resident; CPG=32 is tiny so launch overhead dominates \u2014 coalesce multiple rows per program (`ROWS_PER_PROG=2 or 4`) to amortize.\n- Consider rewriting GN epilogue as a single program per row handling all 256 groups (C=8192 per row fits) using a tiled reduction with vectorized loads of width 8 \u2014 fewer launches (just N=1024 programs) than the current N*G/GPP grid.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 34,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

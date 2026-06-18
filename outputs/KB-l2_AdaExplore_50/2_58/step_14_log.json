@@ -1,0 +1,29 @@
+{
+    "node_id": 14,
+    "parent_node_id": 11,
+    "context_node_ids": [
+        11
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4151047739383817,
+    "max_reward": 0.4151047739383817,
+    "avg_reward": 0.4151047739383817,
+    "score": [
+        1,
+        1,
+        0.22461438499164882
+    ],
+    "small_guidance": "- The forward already uses `F.conv_transpose3d` (cuDNN); the custom scatter kernel is unused. Drop it from the module to reduce import-time cost, and focus tuning on `fused_post_kernel`: try `num_warps=2` with `BLOCK_C=16` (OC=16 fits exactly), and merge the (D*H*W) and N grid dims into a 1D grid of total elements processed in tiles to reduce launch overhead.\n- In `fused_post_kernel`, process multiple spatial points per program (e.g. `BLOCK_S=8` spatial elements \u00d7 C channels as a 2D tile) so each program does a row-wise reduction over C for several outputs \u2014 amortizes pointer math and bias load.\n- Ensure the bias is loaded once per program (already scalar) and consider passing bias as a Python float via `tl.constexpr`-style 0-d tensor; current code is fine but verify no per-element reload.",
+    "large_guidance": "- The runtime is dominated by `F.conv_transpose3d` (cuDNN). With `fast_p\u22480.22` and the post kernel being trivially cheap, the only path to closing the gap is replacing the conv_transpose with a custom kernel. Implement it as a **gather-style GEMM**: one program per `(N, OC tile, output-spatial tile)`, where each output element gathers from input via the inverse-stride index math (the existing scatter logic, but tiled as a GEMM over IC*KD*KH*KW reduction axis). This converts the op into a tiled matmul with `M=OC`, `N=output_spatial_tile`, `K=IC*KD*KH*KW`, which is what cuDNN does internally but tunable.\n- Alternative: implement as **input-stationary scatter-add with atomics** \u2014 one program per `(N, IC tile, input-spatial tile)`, scattering the outer product `input[ic] * weight[ic, :, kd, kh, kw]` into the output grid. For stride=2, padding=1, KD=KH=KW=3, only 27 output positions per input voxel are touched \u2014 small enough for register-resident accumulation per kernel offset, and atomics are avoided if you parallelize only over N and OC.\n- Fuse the LogSumExp+HardSwish+bias+clamp epilogue directly into the conv-transpose kernel: since LSE reduces over OC, have each program compute its full OC output for a given spatial tile, hold it in registers, perform the channel reduction in-register, then store the single fused scalar. This eliminates the OC-sized intermediate tensor entirely (currently ~128*16*32*64*64 fp32 = 1GB written then read).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 15,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.3267919485553208
+    ]
+}

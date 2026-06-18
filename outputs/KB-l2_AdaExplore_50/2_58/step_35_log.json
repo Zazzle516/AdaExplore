@@ -1,0 +1,29 @@
+{
+    "node_id": 35,
+    "parent_node_id": 27,
+    "context_node_ids": [
+        27
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4129345866437764,
+    "max_reward": 0.4129345866437764,
+    "avg_reward": 0.4129345866437764,
+    "score": [
+        1,
+        1,
+        0.20671033981115505
+    ],
+    "small_guidance": "- The post-processing kernel is already cheap; the 27.6ms runtime is dominated by `nn.ConvTranspose3d`. Tuning BLOCK_C/num_warps on `fused_post_kernel` will not move the needle \u2014 the conv must be replaced.\n- If staying with this structure, drop the `x.permute(...).contiguous()` in `fused_post` (it's a full extra copy of the conv output) by indexing channels_last layout directly via strides in the kernel.\n- Minor: with C=16 already a power of two, set BLOCK_C=16, num_warps=1 to reduce launch overhead on the 128*16*32*32 = 2M-program grid (or tile multiple spatial points per program).",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)`, computing the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and `tl.atomic_add`-ing into the output grid at strided positions `(d*stride - pad + kd, ...)`. This is the dominant cost (~22ms of 27.6ms) and has the most headroom.\n- Better: fuse the LogSumExp-over-OC + HardSwish + bias + clamp into the convtranspose epilogue. Since the only consumer reduces over OC, accumulate per-output-spatial-voxel a running max and sum-exp across OC contributions inside the conv kernel, eliminating the OC=16 intermediate write entirely. This requires gather-style (output-centric) convtranspose: one program per output voxel iterates over contributing `(ic, kd, kh, kw)` taps to compute each OC channel's value, then reduces across OC in registers.\n- Use channels_last_3d output layout with OC=16 contiguous so the LSE reduction over OC is a coalesced 16-wide register reduce; tile spatial as `BLOCK_DHW=32 or 64` per program with `num_warps=4`, `num_stages=2`.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 36,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.3267919485553208
+    ]
+}

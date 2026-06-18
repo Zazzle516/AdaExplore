@@ -1,0 +1,30 @@
+{
+    "node_id": 49,
+    "parent_node_id": 41,
+    "context_node_ids": [
+        10,
+        41
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.46569932695374805,
+    "max_reward": 0.46569932695374805,
+    "avg_reward": 0.46569932695374805,
+    "score": [
+        1,
+        1,
+        0.642019447368421
+    ],
+    "small_guidance": "- Add a `triton.autotune` sweep over `BLOCK_HW \u2208 {64,128,256}`, `BLOCK_OC \u2208 {32,64,128}`, `BLOCK_IC \u2208 {16,32,64}`, `num_warps \u2208 {4,8}`, `num_stages \u2208 {2,3,4}`; current 64/64/32 is likely not optimal for the (128,128, ~64\u00d764) GEMM-per-phase shape.\n- Re-pack `phase_weight` as `[4, IC, 4, OC]` (taps adjacent to IC) so the per-tap weight tile load is contiguous along OC and the `* 4 + w_tap_off` strided gather becomes a unit-stride load; equivalently, lift the `dh_sub/dw_sub` inner loops *inside* the IC loop and accumulate 4 taps into one `tl.dot` by concatenating along K (K=BLOCK_IC*4) \u2014 one dot instead of four.\n- Swap the output store to a channels-last-style write or store one OC-row at a time with `tl.store` over a contiguous chunk; the current store stride pattern (`offs_oc * H_OUT*W_OUT`) is highly non-coalesced and likely the dominant bottleneck.",
+    "large_guidance": "- Switch from gather-style \"per-phase 2\u00d72 conv\" to a **scatter-add implicit-GEMM**: one program per `(N, OC tile, input-spatial tile)` computes `input[n, :, hi, wi] @ W[:, oc_tile, :, :]` once (a single GEMM over IC) producing a `[BLOCK_OC, 4, 4]` tile, then scatter-adds the 16 taps into the output grid with stride-2 offsets. This issues 1 GEMM per (n,oc,hi,wi) instead of 4 phase passes \u00d7 multiple IC loops, and write-coalescing can be controlled by tiling OC contiguously.\n- Alternatively, run the kernel in **channels-last (NHWC) layout end-to-end**: transpose input + weight once at init, make OC the fastest-varying axis in both x and out, so both the K-loop loads and the epilogue stores are fully coalesced; the current NCHW store with OC as the slowest spatial-adjacent stride is the structural perf ceiling.\n- Make the kernel **persistent over the 4 phases**: one program covers all 4 output sub-grids for its (N, OC tile, HW tile), reusing the loaded input/weight tiles across phases and writing 4\u00d7 as many outputs per launch \u2014 eliminates 3 of the 4 kernel launches and 3\u00d7 the IC-loop redundant loads.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 50,
+    "global_best_node_id": 35,
+    "global_best_score": [
+        1,
+        1,
+        1.9450703075170843
+    ]
+}

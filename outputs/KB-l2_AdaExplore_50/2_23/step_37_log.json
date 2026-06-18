@@ -1,0 +1,30 @@
+{
+    "node_id": 37,
+    "parent_node_id": 19,
+    "context_node_ids": [
+        18,
+        19
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5512767418096126,
+    "max_reward": 0.5512767418096126,
+    "avg_reward": 0.5512767418096126,
+    "score": [
+        1,
+        1,
+        1.348033119929304
+    ],
+    "small_guidance": "- The kernel currently does a Python-level `static_range` over CHANS_PER_GROUP (=3) with an inner `for s_start in range(0, SPATIAL, BLOCK_S)`; collapse to a 2D tile `[BLOCK_C, BLOCK_S]` load (BLOCK_C=CHANS_PER_GROUP padded to 4) so the spatial loop is traversed only once and the channel sums are reduced via `tl.sum(..., axis=0)`.\n- Add autotune configs with larger BLOCK_S (8192, 16384) and num_warps=16; SPATIAL is 22*30*30 = 19800 per group, so a single-pass persistent tile with BLOCK_S=4096/8192 and num_stages=2 should reduce loop overhead.\n- Fold the final `partial.sum(dim=1) * inv_total` into a tiny second kernel (or do the per-group reduction directly into a single scalar via `tl.atomic_add` on a length-N buffer) to remove the trailing torch reduction launch.",
+    "large_guidance": "- The torch `F.conv3d` is almost certainly the runtime dominator now (fast_p=1.35 with the GN+mean already collapsed analytically). Replace it with a custom Triton im2col-GEMM conv3d: one program per `(N, OC tile, output-spatial tile)`, K-dim = `IC*kd*kh*kw = 81`, M-dim = OC=24, output spatial = 19800. With such a tiny K and small OC, a persistent kernel that keeps the weight (24\u00d781 = 1944 fp32 \u2248 7.6 KB) resident in SRAM and streams the input tile is ideal.\n- Better: fuse conv3d directly into the GN+mean reduction. Since the final output is a per-sample scalar that only needs per-group `sum(y)` and `sum(y^2)`, the conv output never needs to be materialized \u2014 each program computes a conv-output tile, accumulates its contribution to the two group statistics in registers, and writes only the group partials. This eliminates the 128\u00d724\u00d719800 fp32 intermediate (\u2248240 MB of traffic).\n- Use channels_last_3d layout for the input and pre-permute the weight to `(kd,kh,kw,IC,OC)` so the GEMM-K reads are coalesced; tile the output spatial axis with BLOCK_S=128\u2013256 and have each program loop over all 24 output channels accumulating two scalars per channel into the group sums.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 38,
+    "global_best_node_id": 37,
+    "global_best_score": [
+        1,
+        1,
+        1.348033119929304
+    ]
+}

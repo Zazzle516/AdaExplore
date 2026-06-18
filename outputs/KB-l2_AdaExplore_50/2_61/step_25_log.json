@@ -1,0 +1,29 @@
+{
+    "node_id": 25,
+    "parent_node_id": 24,
+    "context_node_ids": [
+        24
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.40347713316652767,
+    "max_reward": 0.40347713316652767,
+    "avg_reward": 0.40347713316652767,
+    "score": [
+        1,
+        1,
+        0.1286863486238532
+    ],
+    "small_guidance": "- The conv_transpose3d kernel loops over IC inside three static_range loops over K \u2014 try hoisting the IC loop to the outermost position so each `x_vals` load is reused across all (kd,kh,kw), or alternatively tile IC with a BLOCK_IC and use `tl.dot` on (BLOCK_OC, BLOCK_IC) \u00d7 (BLOCK_IC, BLOCK_S) tiles. Also sweep BLOCK_OC/BLOCK_S in {32,64,128} with num_warps {4,8} via `triton.autotune`.\n- The current scheme is gather-based with masking inside three K-loops; this serializes IC*K^3 = 64*27 \u2248 1728 scalar loads per output point. Reorder so weight is loaded once per (ic, kd, kh, kw) outside the spatial tile and reused across all BLOCK_S \u2014 that's already the case but ensure `oc_offs * K3` uses contiguous OC indexing by transposing weight to (OC, IC, K, K, K) once in __init__.\n- Fold the GroupNorm affine and ReLU into the conv epilogue is hard (needs cross-tile reduction), but at minimum drop the double-load in fused_relu_groupnorm: store ReLU output to a scratch buffer during the stat pass so the second pass reads pre-ReLU'd data.",
+    "large_guidance": "- Rewrite ConvTranspose3d as a scatter-add (input \u00d7 weight outer product scattered into output), or equivalently as an im2col-style GEMM where the output tile is computed via `tl.dot` over a (BLOCK_OC, BLOCK_IC) \u00d7 (BLOCK_IC, BLOCK_S) matmul per (kd,kh,kw). The current scalar-broadcast accumulation wastes tensor-core throughput; with K=3, stride=1, padding=0 the operation is dense and well-suited to a GEMM tiling.\n- Pre-transpose weight to (OC, IC, K, K, K) in __init__ so the GEMM-K axis (IC) is contiguous, enabling vectorized weight loads. Use channels-last layout for the output to make the subsequent GroupNorm reduction contiguous along channel.\n- Fuse the GroupNorm into the conv kernel only if you make the conv persistent per (N, group); otherwise keep them split but make GN single-pass by storing the ReLU'd conv output, then doing one Welford reduction + affine in a second kernel that reads contiguously over (C_per_group, S).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 26,
+    "global_best_node_id": 22,
+    "global_best_score": [
+        1,
+        1,
+        1.3618264077669902
+    ]
+}

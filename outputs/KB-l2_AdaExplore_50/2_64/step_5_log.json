@@ -1,0 +1,29 @@
+{
+    "node_id": 5,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        4
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.41540112142511965,
+    "max_reward": 0.41540112142511965,
+    "avg_reward": 0.41540112142511965,
+    "score": [
+        1,
+        1,
+        0.2270592517572368
+    ],
+    "small_guidance": "- The kernel is GEMM-bound (M=1024, N=8192, K=8192). Current grid is 1D over M only, so each program loops over all N tiles serially \u2014 this serializes the K-loop too. Add a 2D grid `(cdiv(M, BLOCK_M), cdiv(N, BLOCK_N))` doing partial GEMM+local-LSE per tile, then a second small kernel that combines per-row partial (max, sumexp) across N tiles and applies the activations. This unlocks full SM occupancy.\n- Add a `GROUP_M` swizzle (e.g. 8) and bias the autotune toward `BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, num_warps=8, num_stages=4` \u2014 with K=8192 the K-loop benefits from more pipeline stages, and 64\u00d7128 tiles under-utilize the 4090's tensor cores at this size.\n- Load `B` as `[N, K]` (transpose-free view of `weight`) with `tl.dot(a, b.T)` via the `trans_b` pattern, or keep the current pre-transposed `B` but ensure it is cached across calls \u2014 the current `_get_wt` re-checks `_version` each call, which is fine, but make sure it survives across forward calls (it does).",
+    "large_guidance": "- Redesign as a split-K / split-N GEMM: launch a 2D grid over (M tile, N tile), each program computes its full K-loop GEMM tile, applies bias, computes per-tile (max, sumexp) along N, and atomically/temp-stores partials to a `[num_m_tiles, num_n_tiles, 2]` workspace. A tiny second kernel reduces along the N-tile axis using the log-sum-exp combine rule, then applies the fused 2\u00d7LeakyReLU + 2\u00d7GELU epilogue. This is the standard way to make a reduction-fused GEMM scale on a 4090 \u2014 the current single-program-per-row design leaves ~80% of SMs idle (only 16 programs for M=1024 with BLOCK_M=64).\n- Alternatively, since the final output is just `[M, 1]` (M=1024), consider a persistent-kernel approach: launch exactly `num_sms` programs, each iterating over a strip of M rows, where each row's full N=8192 reduction is computed by the whole program cooperating across BLOCK_N tiles. This avoids the cross-program reduction kernel.\n- Ensure the weight transpose happens exactly once in `__init__` (store as a buffer), not lazily in forward \u2014 the lazy cache check adds host overhead and the `.cuda()` call inside forward is wasteful.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 6,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        1.7705215464403583
+    ]
+}

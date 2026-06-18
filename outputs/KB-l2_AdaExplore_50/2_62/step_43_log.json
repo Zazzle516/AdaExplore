@@ -1,0 +1,30 @@
+{
+    "node_id": 43,
+    "parent_node_id": 42,
+    "context_node_ids": [
+        3,
+        42
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing (max diff ~0.005). The GN kernel computes variance as `E[x^2] - E[x]^2` which is numerically unstable; switch to the two-pass form `var = mean((x-mean)^2)` to fix small mismatches. Also ensure `gamma`/`beta` indexing matches PyTorch's GroupNorm: PyTorch applies affine per-channel across the whole hidden dim, not per group-block \u2014 verify `g_ptrs` covers the correct channel offset (it should be `(g_start*CH_PER_G + offs_g[:,None]*CH_PER_G + offs_c[None,:])` which matches, so the bug is most likely the variance formula and/or accumulation in fp32 of a tf32 GEMM output).\n- Re-run GEMM with `input_precision=\"ieee\"` or accept the tf32 error budget; the ~5e-3 max diff is consistent with tf32 matmul on K=8192. Try fp32 accumulation with a fully fp32 dot to see if it tightens correctness under the 5e-2 tolerance (it should already pass \u2014 re-check the correctness harness; the avg diff 2.4e-4 strongly suggests numerical, not logical, error).\n- Add autotune to the GN kernel over `GROUPS_PER_PROG \u2208 {4,8,16,32}` and `num_warps \u2208 {2,4,8}`; with C=8192, num_groups=512, CH_PER_G=16, a single program handling 32 groups (512 elems) at 4 warps should be the sweet spot.",
+    "large_guidance": "- Fuse the leaky-relu + `x+x` epilogue directly into the GEMM kernel's store path when num_groups would allow it; but since GroupNorm needs a cross-channel reduction, keep GEMM\u2192GN as two kernels and fuse leaky+double into GN's epilogue (already done). The real win is eliminating the GEMM output write/read: have the GEMM write into a scratch and immediately launch GN on it \u2014 which is the current structure \u2014 so the redesign should focus on a persistent GN kernel that loads each row once and processes all 512 groups within one program per row using a 2D tile [num_groups_tile, CH_PER_G].\n- For correctness, redesign GN with explicit two-pass reduction (mean, then variance from `(x-mean)^2`) rather than the algebraic `E[x^2]-E[x]^2` form, which loses precision badly when mean^2 \u2248 E[x^2].\n- Consider a split-K GEMM since K=8192 is large and M=N=8192; a streamK or split-K with atomic add into the output could improve SM occupancy on the 4090.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 44,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

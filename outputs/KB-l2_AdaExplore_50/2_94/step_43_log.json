@@ -1,0 +1,31 @@
+{
+    "node_id": 43,
+    "parent_node_id": 24,
+    "context_node_ids": [
+        3,
+        23,
+        24
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM uses `allow_tf32=False`, which forces full fp32 mma and roughly halves throughput on a 4090. Switch to `tl.dot(a, b, allow_tf32=True)` (or out_dtype=tl.float32 with TF32 on); the 5e-2 tolerance easily absorbs TF32 error and this is the single biggest win available.\n- Expand the autotune space with larger K tiles and stages tuned for K=8192: add configs like `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4` and `BLOCK_M=256, BLOCK_N=128, BLOCK_K=64, num_warps=8, num_stages=3`. Cache `gemm.bias + self.bias` once in `__init__`/at parameter-change time instead of recomputing every forward.\n- In the GroupNorm kernel, CG=32 is tiny \u2014 drop `num_warps` to 1 (or 2) so each program isn't wasting threads on a 32-wide reduction, and fuse multiple groups per program (e.g. process 4 or 8 groups in one program along the channel axis) to reduce the M*G=262144 launch count.",
+    "large_guidance": "- The kernel is GEMM-dominated (M=1024, N=8192, K=8192 \u2248 137 GFLOPs). A from-scratch design should use a split-K or persistent-CTA GEMM with TF32 `tl.dot`, fusing bias+hardtanh+mish in the epilogue exactly once. Aim for tile (128,256,64) with `num_stages=4` and a GROUP_M swizzle of 8.\n- Fuse the GroupNorm into the GEMM epilogue: with N=8192 and CG=32, each output tile of BLOCK_N=256 covers 8 full groups along N. By choosing BLOCK_N as a multiple of CG and BLOCK_M=1 (or processing rows independently), the per-(row,group) mean/var reduction can be computed entirely from the in-register accumulator before storing, eliminating the second kernel and the extra global round-trip of the 1024\u00d78192 fp32 activation (\u224832 MB read+write).\n- Alternatively, keep two kernels but make the post-GEMM tensor fp16/bf16 in shared/global memory for the norm pass, and write a persistent GroupNorm that processes an entire row (all G groups) per program so the row stays resident; this cuts launch overhead and L2 traffic for the 256-group case.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 44,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 37,
+    "parent_node_id": 30,
+    "context_node_ids": [
+        30
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4011345122660479,
+    "max_reward": 0.4011345122660479,
+    "avg_reward": 0.4011345122660479,
+    "score": [
+        1,
+        1,
+        0.10935972619489506
+    ],
+    "small_guidance": "- The current kernel computes the full (M,N) GEMM tile then sums \u2014 wasteful. Since the final output reduces over N, fuse the N-reduction directly: maintain a `(BLOCK_M,)` row accumulator and accumulate `tl.sum(tl.dot(x_tile, w_tile.T), axis=1)` per K-tile, avoiding the large (BLOCK_M,BLOCK_N) accumulator and improving register usage.\n- Add larger-M autotune configs (BLOCK_M=64/128 with BLOCK_K=128/256) since M=1024 is small relative to K=N=8192 \u2014 the K-loop dominates and bigger BLOCK_K with num_stages=4 will hide global-load latency better.\n- Pre-transpose W once in `__init__` to shape (K, N) contiguous so inner loads are coalesced along N; cache it as a buffer to avoid per-call transpose cost.",
+    "large_guidance": "- Rewrite as a fused \"matmul-then-rowsum\" kernel that exploits the identity: `sum_j (x @ W.T)[i,j] = x[i,:] \u00b7 (sum_j W[j,:])` is forbidden by the safety contract, so instead do a true (M, N, K) tiled GEMM where each program owns a `(BLOCK_M)` row slice and accumulates a scalar (per row) reduction across N. Inside the K-loop, compute `tl.dot(x_tile, w_tile_T)` producing (BLOCK_M, BLOCK_N), then immediately `tl.sum(axis=1)` into a (BLOCK_M,) register \u2014 never materialize the full (M,N) matmul output.\n- Use a 2D grid over (M tiles, N tiles) with atomic-add into the per-row output for parallelism across N, since M=1024 alone gives only ~16-32 programs (under-utilizing the 4090's 128 SMs). Each program handles a (BLOCK_M, BLOCK_N) slab, fully reducing K internally, then atomically adds its `(BLOCK_M,)` partial sum.\n- Apply the `/2 * scaling_factor` fold (already done) only at the final store, and consider using TF32 (`allow_tf32=True`) since the tolerance is 5e-2 \u2014 currently `allow_tf32=False` is leaving ~2x of tensor-core throughput on the table.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 38,
+    "global_best_node_id": 27,
+    "global_best_score": [
+        1,
+        1,
+        0.8119585150360703
+    ]
+}

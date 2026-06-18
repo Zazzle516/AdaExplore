@@ -1,0 +1,29 @@
+{
+    "node_id": 14,
+    "parent_node_id": 13,
+    "context_node_ids": [
+        13
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5070305327994464,
+    "max_reward": 0.5070305327994464,
+    "avg_reward": 0.5070305327994464,
+    "score": [
+        1,
+        1,
+        0.9830018955954324
+    ],
+    "small_guidance": "- The conv_transpose kernel reloads each input element 8 times (once per pool position) \u2014 instead, gather each unique input position once and broadcast across pool accumulators that need it. Or better: invert the loop to iterate over the 8 pool positions only for the index math, but load each `(id,ih,iw)` exactly once by deduplicating since stride=2 and pool=2 mean adjacent pool offsets map to different input positions; still, you can tile so weight `wv` is reused via `tl.dot` with an input tile.\n- Add more autotune configs varying `BLOCK_OC` (16/32/64) and `num_warps` (1/2/4) \u2014 with OC=16, `BLOCK_OC=32` wastes half the lanes; try `BLOCK_OC=16` with `num_warps=1` to reduce register pressure from 8 accumulators \u00d7 BLOCK_OC.\n- For the softmax kernel, grid is `N*S = 128*8*16*16 = 262144` programs each doing tiny work (C=16); try processing multiple spatial positions per program (`BLOCK_S` tile) to amortize launch overhead, and keep `num_warps=1`.",
+    "large_guidance": "- Restructure conv_transpose as a scatter-add formulation OR a gather-GEMM with proper tiling: one program computes a tile of `(OC, pool_spatial_tile)` outputs using `tl.dot` over the `(IC * KD * KH * KW)` reduction axis. With OC=16 (small) and 8 pool positions per program, prefer tiling multiple `(n, pd, ph, pw)` together so the inner GEMM has BLOCK_M \u2265 32 spatial outputs \u00d7 BLOCK_N=16 channels, letting tensor cores engage.\n- Fuse maxpool inside the conv epilogue by computing the 8 pool-position outputs as columns of a small GEMM tile, then reducing \u2014 but precompute the input-index validity tables on the host (or as constexpr lookup) so the inner loop is just loads + FMA, not modulo arithmetic.\n- Consider fusing everything (conv_transpose + maxpool + softmax + sub + swish + channel-max) into a single kernel: since the final output is `(N, PD, PH, PW)` (channel-reduced), one program per output spatial point can compute all OC=16 pre-softmax values in registers, then do softmax/sub/swish/max in-register without writing the `(N,OC,PD,PH,PW)` intermediate. This eliminates a full HBM round-trip of 4MB.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 15,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.385241751724138
+    ]
+}

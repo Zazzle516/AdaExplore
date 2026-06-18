@@ -1,0 +1,27 @@
+{
+    "node_id": 21,
+    "parent_node_id": 20,
+    "context_node_ids": [],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The training path has a correctness bug: `apply_bn_kernel` is launched with only `Y.stride(0), Y.stride(1)` but the kernel signature expects strides for both `Y` and `Out`. Pass `out` strides too, or simplify by using one set of strides for both contiguous tensors. Also `avg_difference` shows `nan` on trial 0 \u2014 likely from `var_unbiased = var_biased * (m_f / (m_f - 1.0))` when stats are noisy; clamp `var_biased` to `>=0` before sqrt and before unbiased scaling.\n- Add a GROUP_M block-swizzle (e.g. GROUP_M=8) to the GEMM kernels for better L2 reuse on the M=1024, N=8192 problem; include configs with BLOCK_K=64 and num_stages=4 since K=8192 is large.\n- Fuse the `apply_bn_kernel` epilogue directly into `gemm_scale_stats_kernel` is impossible (needs cross-tile mean), but you can skip the intermediate Y store by re-reading Y in apply step \u2014 instead, in eval path keep current single-kernel fusion; in training, consider a two-kernel path where the second kernel re-runs GEMM with normalization (compute-bound enough that recompute may beat memory traffic) or store Y in fp16/bf16 to halve write bandwidth.",
+    "large_guidance": "- The dominant cost is the (1024 \u00d7 8192 \u00d7 8192) GEMM. Redesign as a single persistent split-K-free GEMM with GROUP_M swizzle, BLOCK_M=128/BLOCK_N=128/BLOCK_K=64, num_stages=4, num_warps=8, and fuse bias+scale+(mean/var accumulation via atomics) in the epilogue \u2014 this matches current structure but with proper tile sizing tuned for 4090.\n- For training, an alternative two-pass design: pass-1 is a pure tiled GEMM+scale that writes Y and per-N-tile partial sums/sumsq into a small `[num_m_tiles, N]` scratch (no atomics \u2192 better determinism and throughput); pass-2 is a tiny reduction kernel over `num_m_tiles` to produce mean/invstd; pass-3 applies BN. This avoids global atomics on N=8192 which serialize.\n- Consider keeping Y in bf16 for the intermediate to halve write+read bandwidth between the GEMM and the apply kernel; accumulate stats in fp32 inside the GEMM epilogue before downcast.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 22,
+    "global_best_node_id": 12,
+    "global_best_score": [
+        1,
+        1,
+        0.5658960882834168
+    ]
+}

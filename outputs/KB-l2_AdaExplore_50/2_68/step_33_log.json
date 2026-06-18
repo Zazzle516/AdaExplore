@@ -1,0 +1,30 @@
+{
+    "node_id": 33,
+    "parent_node_id": 32,
+    "context_node_ids": [
+        26,
+        32
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- Drop the split-K + separate reduce kernel: M=128, N=16384, K=16384 has plenty of N tiles to fill the SM grid (128 tiles at BLOCK_N=128), so split-K only adds a partials write/read roundtrip of 128*16384*SPLIT_K fp32. Use SPLIT_K=1 and fuse bias + min + sub directly into the GEMM epilogue.\n- With M=128, prefer BLOCK_M=128 (a single row-tile per N tile) and sweep BLOCK_N\u2208{128,256}, BLOCK_K\u2208{32,64,128}, num_warps\u2208{4,8}, num_stages\u2208{3,4,5}. Transpose W to (K,N) contiguous once in `__init__` so the inner load is a contiguous N-vector instead of a strided weight gather.\n- Remove GROUP_M swizzle when num_pid_m==1 (it becomes a no-op and just wastes index math); pid_m=0, pid_n=pid is simpler and lets the scheduler stream N tiles in order for better L2 reuse of x.",
+    "large_guidance": "- Rewrite as a single fused GEMM+epilogue kernel (no partials buffer). One program per (BLOCK_M, BLOCK_N) output tile, K-loop accumulates in registers, then bias+min(\u00b7,c)-c folded before the store. The current 1.26 ms is dominated by the extra 128\u00b716384\u00b7SPLIT_K fp32 write+read of partials (~tens of MB per call).\n- Pre-permute weight to (K, N) contiguous in `__init__` (store as `self.weight_t`) so the hot loop does `tl.load(w_ptr + k_offs[:,None]*N + n_offs[None,:])` with the contiguous axis on N. Keep bias and constant as 1-D tensors; load constant as a scalar via `tl.load(c_ptr)` once.\n- Consider a persistent / 2D-grid kernel with BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_stages=4, num_warps=8 to overlap K-loop loads; at M=128 there are only 64 tiles, so persistence isn't required but a plain 1D grid over N tiles works. Autotune over a small set of (BLOCK_N, BLOCK_K, num_warps, num_stages).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 34,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

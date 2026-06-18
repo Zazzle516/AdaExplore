@@ -1,0 +1,29 @@
+{
+    "node_id": 5,
+    "parent_node_id": 2,
+    "context_node_ids": [
+        2
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4315665255578802,
+    "max_reward": 0.4315665255578802,
+    "avg_reward": 0.4315665255578802,
+    "score": [
+        1,
+        1,
+        0.36042383585251137
+    ],
+    "small_guidance": "- The conv-transpose kernel iterates K_TOTAL=81 with static_range and accumulates an (OC_C=16, BLOCK_N) tile per program; try larger BLOCK_N (256, 512) with num_warps=8 and num_stages=2-3 to better hide the gather latency, and add configs with BLOCK_N up to 1024 keyed on `spatial=OD*OH*OW` (which is large, ~250K).\n- The fused BN+avgpool kernel uses BLOCK=512 with 1D linearization; sweep BLOCK in {256,1024,2048} and num_warps in {4,8}, and reorganize so each program handles a contiguous tile in W (so the 4\u00d74\u00d74 window reads are coalesced) instead of a flat linearization that makes neighbouring threads read non-adjacent windows.\n- Hoist `scale`/`shift` loads outside the (n,c) computation by tiling per (N,C) row of output spatial \u2014 current kernel reloads per-element c via masked gather; using a 2D grid over (N*C, spatial-tile) lets you load scale/shift once per program.",
+    "large_guidance": "- Replace the gather-based conv-transpose with a scatter-add formulation: one program per (N, IC tile, input-spatial tile) computes the input\u00d7weight outer product and scatter-adds into the OD\u00d7OH\u00d7OW output. With stride=2, padding=1, k=3, each input voxel contributes to a fixed 2\u00d72\u00d72 pattern of output positions per (oc,kd,kh,kw), so the scatter is dense and avoids the divisibility-check waste (~7/8 of current gather iterations are masked out because `(id_num - id_q*SD)==0` fails).\n- Better: fuse the entire pipeline (convT \u2192 BN \u2192 avgpool(2) \u2192 avgpool(2) = avgpool(4)) into a single kernel that, for each output element of the *final* tensor (N, OC, OD/4, OH/4, OW/4 = 64\u00d716\u00d78\u00d78\u00d78), computes the 4\u00d74\u00d74=64 underlying convT outputs on the fly and averages them \u2014 but per the safety contract, each of those 64 positions must still execute its full convT multiply-add count (no sharing input\u00d7weight products across pool-window neighbours). This pushes the output volume down 64\u00d7 and removes the intermediate (64,16,64,64,64) tensor write/read.\n- Use channels_last3d layout and tile (OC) as the inner GEMM-N dimension with BLOCK_M over output spatial, BLOCK_K over IC*KD*KH*KW, BLOCK_N=OC=16; with OC=16 small, a persistent per-(N, spatial-tile) kernel that keeps the OC-vector in registers and streams K is a better match than the current (OC_C, BLOCK_N) layout.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 6,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        0.36042383585251137
+    ]
+}

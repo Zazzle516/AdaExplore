@@ -1,0 +1,30 @@
+{
+    "node_id": 31,
+    "parent_node_id": 29,
+    "context_node_ids": [
+        4,
+        29
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4752266510126543,
+    "max_reward": 0.4752266510126543,
+    "avg_reward": 0.4752266510126543,
+    "score": [
+        1,
+        1,
+        0.720619870854398
+    ],
+    "small_guidance": "- The matmul (1024\u00d78192\u00d78192) dominates runtime; cuBLAS addmm is already near-peak so further tuning of the epilogue kernel yields little. Try fusing the bn-scale/shift/bias/divide/swish epilogue into a tiled Triton GEMM with `tl.dot` (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8, num_warps=8, num_stages=3-4) so the 32MB output is never written then re-read.\n- For the existing fused_bn_swish_kernel, the column index `col = offs % N` causes a modulo per element \u2014 launch as a 2-D grid `(cdiv(M, BM), cdiv(N, BN))` with BM=8, BN=1024 so `scale`/`shift` are loaded once per block from a 1-D vector. Increase BLOCK to 16384 and num_warps=8 if keeping 1-D.\n- col_stats_kernel reads y with stride_yn=1 but indexes one column per program \u2014 this is fully strided/uncoalesced. Either tile across (col_block, row_block) with BLOCK_N=128 contiguous columns per program and reduce along M, or compute mean/var via a single torch.var_mean call which uses a tuned CUDA reduction.",
+    "large_guidance": "- Replace torch.addmm with a custom Triton GEMM that fuses the entire epilogue: bn affine (scale/shift precomputed on host), bias add, divide, and swish (`acc * sigmoid(acc)`) applied to the accumulator before storing. This removes the 32MB intermediate `y` write+read entirely and eliminates the second kernel launch. Use BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8, num_stages=4, num_warps=8, with autotune over a few shapes.\n- Compute batch statistics with a separate two-pass GEMM-output reduction: first launch the GEMM writing y (only in training), then a column-reduction kernel tiled over (BLOCK_M_red=128 rows \u00d7 BLOCK_N_red=128 cols) so loads are coalesced along the contiguous N axis. At eval time skip the reduction entirely and go straight to the fused-epilogue GEMM.\n- Alternatively, since K=8192 is large, consider a split-K GEMM (SPLIT_K=2 or 4) with atomic-add accumulation into the output; this can lift utilization for the skinny 1024\u00d78192\u00d78192 shape on the 4090.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 32,
+    "global_best_node_id": 16,
+    "global_best_score": [
+        1,
+        1,
+        1.306364364810914
+    ]
+}

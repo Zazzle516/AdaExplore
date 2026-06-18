@@ -1,0 +1,31 @@
+{
+    "node_id": 24,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        17,
+        20,
+        23
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM dominates (128\u00d732768\u00d732768 = ~275 GFLOPs). Add larger tile configs to the autotune list: `BLOCK_M=16/32, BLOCK_N=128/256, BLOCK_K=64/128` with `num_stages=4-5, num_warps=8`. M is only 128, so `BLOCK_M=16` with more N-parallelism may give better SM occupancy (currently `BLOCK_M=128` yields only 1 row-tile, killing parallelism).\n- Drop the `m_mask`/`n_mask` on the inner-loop loads when `BATCH` and `OUT_FEATURES` are divisible by the tile (they are: 128 and 32768) \u2014 masked loads inhibit vectorization in the K-loop. Guard only the epilogue store.\n- Bump `num_stages` to 4-5 on the wider-K configs to overlap the long K reduction (IN_FEATURES=32768 \u2192 1024 iters at BLOCK_K=32), and try `BLOCK_K=128` to cut iteration count by 4\u00d7.",
+    "large_guidance": "- With M=128 fixed and N=K=32768, this is essentially a skinny GEMM where N\u00d7K dominates. Consider a split-K design: parallelize across K-chunks with multiple programs accumulating into the same (M,N) tile via `tl.atomic_add` (or a two-pass reduction buffer), to fill the 128 SMs of the 4090 \u2014 a single (M,N) tile per program currently leaves SMs idle since `num_pid_m * num_pid_n = 1 * 256 = 256` is OK but BLOCK_M=128 collapses M parallelism.\n- Fuse the max-pool (kernel_size=2 along N) and the final sum+scale into the GEMM epilogue directly: each program already produces a BLOCK_M\u00d7BLOCK_N tile; reduce it to a BLOCK_M partial-sum scalar per program and `atomic_add` into the final per-row output of size B, eliminating the intermediate pooled buffer (B\u00d716384 fp32 = 8 MB of memory traffic) and stage2 entirely.\n- Cast weight and activations to fp16/bf16 for the `tl.dot` (accumulate in fp32) since the 5e-2 tolerance easily allows it \u2014 doubles tensor-core throughput on the 4090.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 25,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

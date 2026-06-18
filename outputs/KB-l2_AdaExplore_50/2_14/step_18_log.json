@@ -1,0 +1,29 @@
+{
+    "node_id": 18,
+    "parent_node_id": 13,
+    "context_node_ids": [
+        13
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.40005608045149116,
+    "max_reward": 0.40005608045149116,
+    "avg_reward": 0.40005608045149116,
+    "score": [
+        1,
+        1,
+        0.10046266372480192
+    ],
+    "small_guidance": "- The current kernel reduces inside the N loop (accumulating row sums per N tile) but still allocates a full BLOCK_M\u00d7BLOCK_N accumulator and uses `allow_tf32=False`. Switch to `allow_tf32=True` (inputs are fp32 in [0,1), tolerance is 5e-2) and add larger-K configs like `BLOCK_K=64/128` with `num_stages=4` to better overlap K-loop loads on the 8192-deep reduction.\n- Add autotune configs with bigger BLOCK_N (e.g. 256, 512) and smaller BLOCK_M (16, 32) since the output is just a (1024,1) vector \u2014 most parallelism must come from N tiling, not M. Consider a 2D grid `(pid_m, pid_n)` with `tl.atomic_add` onto the per-row sum to expose N-parallelism instead of serializing the N loop in one program.\n- Pre-transpose weight to (K,N) layout once in `__init__` so the inner GEMM loads `w` contiguously along K without the `tl.trans` in the hot loop.",
+    "large_guidance": "- Reformulate as: compute `v = (W.T).sum(dim=0)` equivalent at runtime via a Triton kernel that does `out[m] = scale * sum_k x[m,k] * s[k]` where `s[k] = sum_n W[n,k]`. **This is forbidden by the safety contract** (folds the GEMM into a matvec). Instead, keep the full GEMM but split the N dimension across programs with atomic adds into a (M,) buffer, eliminating the BLOCK_M\u00d7BLOCK_N accumulator entirely and exposing 2D parallelism. Grid = `(cdiv(M,BLOCK_M), cdiv(N,BLOCK_N))`, each program does a BLOCK_M\u00d7BLOCK_K \u00d7 BLOCK_K\u00d7BLOCK_N dot, sums along N within the tile, and atomically adds the BLOCK_M partial row-sums.\n- Alternatively, since each output is a scalar per row, make it a persistent reduction kernel: one program per row-tile, looping over all (n,k) tiles, but use a much larger BLOCK_N (256-512) and BLOCK_K (64-128) with `num_stages=4`, `num_warps=8`, and TF32 enabled to saturate tensor cores on the 1024\u00d78192\u00d78192 workload (~137 GFLOPs).\n- Ensure inputs are cast/used as fp32 with TF32 dots \u2014 the previous kernel disabled TF32, leaving ~3x tensor-core throughput on the table on Ada.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 19,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        0.10046266372480192
+    ]
+}

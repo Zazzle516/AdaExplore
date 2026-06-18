@@ -1,0 +1,30 @@
+{
+    "node_id": 34,
+    "parent_node_id": 33,
+    "context_node_ids": [
+        2,
+        33
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4324329186602871,
+    "max_reward": 0.4324329186602871,
+    "avg_reward": 0.4324329186602871,
+    "score": [
+        1,
+        1,
+        0.3675715789473684
+    ],
+    "small_guidance": "- The conv_transpose dominates runtime here (output is 16\u00d7128\u00d7514\u00d7514 \u2248 2.16 GB); tuning the post-conv fusion further is fruitless. If staying small, at least try larger BLOCK_HW (8192/16384) with num_warps=16 and channels_last layout on `y` to make the HW reduction loads coalesce better.\n- Add a `triton.autotune` over (BLOCK_HW \u2208 {2048,4096,8192,16384}, num_warps \u2208 {4,8,16}, num_stages \u2208 {2,3,4}) keyed on (C, HW).\n- Consider a 2D grid (pid_n, pid_c_tile) doing partial sums to a scratch [N, C] buffer, then a tiny second-pass LSE kernel \u2014 better occupancy than 16 programs total.",
+    "large_guidance": "- Replace `nn.ConvTranspose2d` with a custom Triton scatter-add kernel: one program per (N, OC tile, output-spatial tile), accumulating `input \u00d7 weight` outer products into the (H+2)(W+2) output grid with stride=1, padding=0. This is the dominant cost (~2 GB write + 64\u00d73\u00d73 macs per input element) and the only real headroom.\n- Fuse the mean reduction directly into the conv-transpose epilogue: keep a per-(N, OC) running sum register across the output-spatial tiles in the same program, write only an (N, OC) tensor of size 16\u00d7128 instead of the full 16\u00d7128\u00d7514\u00d7514. Then a tiny second kernel does +bias, LSE over C, \u00d710. This eliminates the 2 GB intermediate read/write entirely without violating the contract (every output element still receives its full multiply-add sum before being added into the mean accumulator).\n- Use channels_last (NHWC) layout for both weight and the output accumulator so the OC tile is contiguous and the K=IC\u00d7kh\u00d7kw GEMM dimension coalesces; tile sizes BLOCK_OC=64, BLOCK_HW=64, BLOCK_K=32, num_warps=4.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 35,
+    "global_best_node_id": 6,
+    "global_best_score": [
+        1,
+        1,
+        1.0270382352941176
+    ]
+}

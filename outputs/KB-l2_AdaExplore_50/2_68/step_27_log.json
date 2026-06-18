@@ -1,0 +1,29 @@
+{
+    "node_id": 27,
+    "parent_node_id": 26,
+    "context_node_ids": [
+        26
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The split-K + separate epilogue writes/reads a full `MAX_SPLIT_K * M * N` fp32 partial buffer (8*128*16384*4 \u2248 64 MB) \u2014 this is pure memory traffic overhead. Drop split-K (M=128 is too small to need it anyway: with BLOCK_M=128 there is only 1 row tile, so all parallelism must come from N and K splits, but K-split forces the partial round-trip). Try non-split-K configs `BLOCK_M=128, BLOCK_N={128,256}, BLOCK_K={32,64}` with `SPLIT_K=1` and fuse the bias + min + sub directly in the GEMM epilogue, eliminating the second kernel entirely.\n- Add a `GROUP_M`/swizzle (or since M=128 fits in one BLOCK_M, just a 1D grid over N) to maximize L2 reuse of `x` across N tiles \u2014 every N-tile reloads the same 128\u00d716384 activation, so a persistent kernel that loads x once per row-tile and streams W is ideal.\n- Sweep `num_warps={4,8}`, `num_stages={3,4,5}` for the K-loop pipeline; with K=16384 the inner loop benefits from deeper pipelining (`num_stages=4` with `BLOCK_K=64`).",
+    "large_guidance": "- Rewrite as a single fused GEMM+epilogue kernel (no split-K, no partial buffer). One program per `(BLOCK_M, BLOCK_N)` tile accumulating the full K dim with `tl.dot`, then bias-add, `min(acc, c)`, subtract `c`, and store fp32 output \u2014 all in registers. This removes the ~64 MB partial round-trip dominating runtime.\n- Since M=128 is small and N=16384 is large, consider a \"persistent-M\" kernel: launch only `cdiv(N, BLOCK_N)` programs, each loading its full `BLOCK_M=128` slice of x once and looping over the K dim against its W tile. This keeps x in L2/SMEM across the whole computation.\n- Pass `constant` as a `tl.constexpr` Python float (read from `self.constant.item()` at forward time) so the `min`/`sub` epilogue bakes it into PTX, instead of loading from a 0-d tensor each tile.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 28,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

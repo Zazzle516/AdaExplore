@@ -1,0 +1,27 @@
+{
+    "node_id": 37,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4009139036590701,
+    "max_reward": 0.4009139036590701,
+    "avg_reward": 0.4009139036590701,
+    "score": [
+        1,
+        1,
+        0.10753970518732812
+    ],
+    "small_guidance": "- The current kernel launches M*P = 1024*512 = 524288 programs, each doing a K=8192 dot product on only BLOCK_N=16 output features \u2014 extremely poor arithmetic intensity and W reuse. At minimum, increase BLOCK_N to process multiple pooled groups per program (e.g. BLOCK_N=64 or 128 covering 4-8 pooled bins), and tile M as well (BLOCK_M=32 or 64) so each program is a real GEMM tile using `tl.dot`.\n- Replace the `tl.sum(w_vals * x_vals[None,:], axis=1)` manual reduction with `tl.dot` on (BLOCK_M, BLOCK_K) x (BLOCK_K, BLOCK_N) tiles \u2014 this is the single biggest win since K=8192 needs tensor-core throughput.\n- Add autotune configs over (BLOCK_M, BLOCK_N, BLOCK_K) like (64,128,32), (128,128,32), (64,64,64) with GROUP_M=8 swizzle for L2 reuse on the shared W.",
+    "large_guidance": "- Redesign as a tiled GEMM with `tl.dot`: each program computes a (BLOCK_M, BLOCK_N) tile of the post-bias matmul output where BLOCK_N is a multiple of POOL (e.g. 128 = 8 pooled bins). In the epilogue, reshape the BLOCK_N accumulator to (BLOCK_M, BLOCK_N/POOL, POOL), reduce-mean over the POOL axis, apply GELU and scale, then do a partial max-reduce over the pooled-bin axis within the tile. Atomically max-reduce across N-tiles into a per-row output, or do a tiny second-pass max kernel over (M, num_N_tiles).\n- Alternative single-pass design: split-K is unnecessary since K=8192 fits one program's loop; instead split-N across programs and use one program per row group of BLOCK_M rows that walks all N tiles persistently, keeping a per-row running max in registers and writing the final max once \u2014 eliminates the intermediate (M, P) buffer entirely.\n- Keep weight layout as (N, K) contiguous on K (matches current stride_wk=1), and load X tiles once per K-chunk shared across the BLOCK_N output features via `tl.dot`; this is where the >20x gap to baseline lives.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 38,
+    "global_best_node_id": 15,
+    "global_best_score": [
+        1,
+        1,
+        1.7535136642010192
+    ]
+}

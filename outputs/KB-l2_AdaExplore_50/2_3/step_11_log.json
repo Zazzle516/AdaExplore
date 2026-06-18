@@ -1,0 +1,29 @@
+{
+    "node_id": 11,
+    "parent_node_id": 7,
+    "context_node_ids": [
+        7
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.44298347828615103,
+    "max_reward": 0.44298347828615103,
+    "avg_reward": 0.44298347828615103,
+    "score": [
+        1,
+        1,
+        0.4546136958607456
+    ],
+    "small_guidance": "- The conv_transpose3d is now the dominant cost (fast_p\u22480.45 means ~19ms vs 8.7ms baseline; the post-fusion kernel is fine but torch's ConvTranspose3d dominates). Tuning the existing fused_post_kernel further (block sizes / warps) will not move fast_p meaningfully \u2014 at most try BLOCK_W=32 with num_warps=1 since W=64 (so BLOCK_W=64 fits exactly, BLOCK_W=128/256 wastes lanes).\n- Drop the BLOCK_W=128/256 autotune configs (W=64 always) and add a BLOCK_W=64, num_warps=2, num_stages=3 config; also collapse the static_range 2x2 into one program-per-output-cell to expose more parallelism (currently grid=N*C*OD*OH=32*64*8*16=262K which is fine, but each program does 4 LN reductions serially).\n- Consider issuing multiple (od,oh) tiles per program to amortize gamma/beta loads, or precompute gamma/beta once across the full grid via shared memory broadcast.",
+    "large_guidance": "- Replace torch's ConvTranspose3d with a custom Triton scatter-add kernel: for each input element x[n,ic,d,h,w], scatter-add the outer product with weight[ic,oc,kd,kh,kw] into the output grid at strided positions. This is the high-headroom move since the conv-transpose now dominates runtime.\n- Alternatively implement ConvTranspose3d as a gather-style GEMM: one program per (N, OC tile, output-spatial tile), gather contributing input positions (only those where (out+pad-kk) is divisible by stride and in range), and accumulate. Use channels_last_3d layout so IC is the contiguous GEMM-K axis. Start with safe tiles BM=32,BN=32,BK=16,num_warps=4,num_stages=2.\n- Fuse the entire pipeline: conv-transpose epilogue writes directly the (sum + LayerNorm + AvgPool + GELU) output. Since LN reduces along W (=64) and pool is 2x2x2, structure programs per (N, C, OD, OH) and have each program produce the full output row by accumulating conv-transpose contributions for its 2x2x2 input window, then applying LN+pool+GELU in registers \u2014 eliminating the intermediate (N,C,D,H,W) tensor entirely.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 12,
+    "global_best_node_id": 6,
+    "global_best_score": [
+        1,
+        1,
+        0.4546136958607456
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 45,
+    "parent_node_id": 2,
+    "context_node_ids": [
+        1,
+        2
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Fix GroupNorm weight/bias indexing: `weight_ptr` and `bias_ptr` are per-channel of length C (out_features), so use `group * CG + offs` is correct only if shape matches \u2014 verify; but the real bug is likely that `weight`/`bias` indexing combined with masking is fine. The actual correctness issue is more likely a numerical/strides issue \u2014 double-check `W.stride(1), W.stride(0)` ordering: weight is (N, K), and we want B logically of shape (K, N), so `stride_bk = W.stride(1) = 1` and `stride_bn = W.stride(0) = K`. That looks right. Investigate whether `out` from GEMM kernel matches reference within tolerance independently before chaining GN.\n- Tighten autotune: drop the largest 128x256/256x128 configs (M=32768, N=4096 favor 128x128x32 with num_warps=4, stages=3) to reduce tuning noise; add `BLOCK_M=128, BLOCK_N=64, BLOCK_K=32` variant.\n- For GN, CG=64 fits exactly in BLOCK=64; use `num_warps=2` and consider loading weight/bias once per group via `group * CG + offs` (already done) \u2014 but ensure eps is passed as a tensor or constexpr-safe Python float (it is fine as a runtime arg, but consider making it `tl.constexpr`).",
+    "large_guidance": "- Rewrite GroupNorm with one program per (row, group) using a persistent kernel: since CG=64 is tiny, pack multiple groups per program (e.g. 4 groups \u00d7 64 channels = 256 elements) and do parallel reductions per group via `tl.reshape` + `tl.sum(axis=1)`. This reduces launch count from 32768*64=2M to ~512K.\n- Consider fusing Swish+bias+GroupNorm into the GEMM epilogue: after the GEMM tile produces a (BLOCK_M, BLOCK_N) block, if BLOCK_N is a multiple of CG (64), each row contains BLOCK_N/CG complete groups \u2014 compute group stats inline and write the normalized output, eliminating the intermediate `out` tensor entirely (huge bandwidth savings on a 32768x4096 fp32 tensor = 512MB write+read).\n- Alternative: split-K GEMM is unnecessary here (K=1024 is moderate); instead prioritize a persistent GEMM with epilogue fusion of Swish+bias, and a separate well-tuned GN kernel that uses warp-level reductions for the small CG=64 case (one warp per group, 32 lanes covering 64 elements with 2 elements per lane).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 46,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

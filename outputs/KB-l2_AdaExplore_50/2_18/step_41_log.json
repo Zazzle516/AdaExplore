@@ -1,0 +1,29 @@
+{
+    "node_id": 41,
+    "parent_node_id": 13,
+    "context_node_ids": [
+        11
+    ],
+    "depth": 5,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness issue stems from atomic_add accumulating bias multiple times: each (pid_m, pid_n) program adds b_sum for its tile to row_partial, but bias should only be added once per row total. Fix: only add bias when pid_n==0 (add the full bias sum once), or remove bias from inner kernel and add it via a post-pass.\n- Also verify the GEMM math itself \u2014 with atomic_add accumulation across N tiles, the partial sums per row should match the full row sum. Use float32 accumulator and ensure mask handling on K boundary (currently no K mask \u2014 fine if K is multiple of BLOCK_K=32, which 8192 is).\n- Once correct, try autotune over (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32/64, num_warps=4/8, num_stages=3/4). Atomic contention on a small (M,) output is acceptable since M=1024 and only n_tiles=64 atomics per row.",
+    "large_guidance": "- Restructure as a \"GEMM-then-reduce\" with a single program per M-tile that loops over the full N dimension internally, accumulating row sums in registers \u2014 eliminates atomic_add entirely. Grid = (cdiv(M, BLOCK_M),), each program computes acc[BLOCK_M, BLOCK_N] tiles across N, sums into a [BLOCK_M] vector, then adds the precomputed total bias sum (scalar) once at the end before storing.\n- Fuse the entire tail (sum\u2192max\u2192mean\u2192logsumexp\u2192logsumexp) into the epilogue: since after sum each row is a scalar s, max/mean over dim=1 of a (M,1) tensor is identity, and logsumexp of a singleton is also identity. So the final output is just the per-row sum (linear+bias). The kernel only needs to produce row sums; no extra kernels needed.\n- Consider a split-K design only if N-loop latency dominates; otherwise keep one-program-per-M-tile with BLOCK_M=64 or 128, BLOCK_N=128, BLOCK_K=32, num_warps=8, num_stages=3, and store directly to out[M] without atomics.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 42,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        0.8826896197781255
+    ]
+}

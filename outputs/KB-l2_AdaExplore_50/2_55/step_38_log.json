@@ -1,0 +1,29 @@
+{
+    "node_id": 38,
+    "parent_node_id": 37,
+    "context_node_ids": [
+        9
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The atomic_add reduction is the correctness bug: multiple N-tiles write to the same `Out_ptr + offs_m`, but `out` is initialized to zeros only once \u2014 that's actually fine, except `tl.atomic_add` on fp32 should work. The real issue is likely that `BLOCK_N` must be divisible by `KERNEL_SIZE` AND the pooling must align with the global N axis (pool windows of size 2 starting at even global offsets). Since `pid_n * BLOCK_N` is always a multiple of `BLOCK_N` (even), and `KERNEL_SIZE=2`, alignment is fine \u2014 but verify `BLOCK_N % KERNEL_SIZE == 0` in all autotune configs (256/128 are fine).\n- More likely bug: `tl.reshape(acc, (BLOCK_M, POOLED, KERNEL_SIZE))` interprets the last dim as the innermost stride. Since `offs_n` is contiguous in N and pooling groups adjacent N elements, this is correct. However, the test runs 5 trials with fresh inputs (`torch.seed()`), and `out` is allocated fresh per forward \u2014 so accumulation across trials isn't the issue. Double-check that the `wt_ptrs` load is masked on the K boundary when K isn't a multiple of BLOCK_K (K=32768 is divisible, so OK) and on N boundary (N=32768 divisible by 256, OK).\n- The actual bug: `tl.atomic_add` with a 1-D tensor and mask should work, but adding many partial sums across N-tiles in fp32 atomics introduces non-determinism and accumulation error. With N=32768 and BLOCK_N=128, that's 256 atomic adds per row \u2014 fp32 atomic ordering causes the ~242k error. **Fix: use a 2D grid over M only, with each program looping over the full N dimension and accumulating in registers**, eliminating atomics entirely.",
+    "large_guidance": "- Restructure as one program per M-tile (grid = `cdiv(M, BLOCK_M)`), where each program loops over all N tiles internally, accumulating the pooled+summed scalar per row in a register. This eliminates the fp32 atomic_add (source of the correctness failure and a perf hit) and yields a deterministic single store per row.\n- Since the output is a single scalar per row, the GEMM's N dimension is fully reduced \u2014 consider a split-K-style strategy where each program owns a small M-tile (e.g. BLOCK_M=16 or 32) and streams through N in BLOCK_N chunks of 128\u2013256, doing tl.dot, bias-add, pool, sum-reduce, and accumulating into a `(BLOCK_M,)` register vector. Final store is a single `tl.store` per row.\n- With M=128 only, parallelism is limited \u2014 use a 2D grid `(cdiv(M, BLOCK_M), SPLIT_N)` where each program reduces a slice of N into a partial sum, then a tiny second kernel (or atomic_add with far fewer contributors, e.g. 4\u20138) finalizes. Tune SPLIT_N to balance SM occupancy (4090 has 128 SMs) vs. atomic contention.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 39,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

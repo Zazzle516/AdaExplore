@@ -1,0 +1,29 @@
+{
+    "node_id": 37,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5132067428049338,
+    "max_reward": 0.5132067428049338,
+    "avg_reward": 0.5132067428049338,
+    "score": [
+        1,
+        1,
+        1.0339556281407036
+    ],
+    "small_guidance": "- Add a `triton.autotune` over (BLOCK_OC, BLOCK_SP, num_warps, num_stages) for the conv-transpose kernel \u2014 sweep BLOCK_OC \u2208 {16, 32}, BLOCK_SP \u2208 {64, 128, 256}, num_warps \u2208 {4, 8}, num_stages \u2208 {2, 3}. With OC=16 and KD*KH*KW=27, the inner IC loop is tiny so larger BLOCK_SP with num_warps=8 likely wins.\n- Hoist the weight loads out of the spatial loop: for each (kd,kh,kw,ic), `w_val` depends only on (oc_offs, kd,kh,kw,ic) and is reused across all BLOCK_SP \u2014 current code already does this, but consider precomputing `w[ic, :, kd, kh, kw]` once per (kd,kh,kw) by loading `[BLOCK_OC, IC]` tile and doing `tl.dot` against an `[IC, BLOCK_SP]` x-tile to use tensor cores.\n- In group_norm_hardswish, group_elems = 4*32*32*33 \u2248 135k \u2192 set BLOCK_SIZE=2048 with num_warps=8, num_stages=3 to reduce loop iterations and increase bandwidth utilization.",
+    "large_guidance": "- Reformulate the conv-transpose as a scatter-add GEMM: one program per (N, input-spatial tile, IC tile) computes `input[n, :, id, ih, iw] @ weight[:, :, kd, kh, kw]` for all (kd,kh,kw) and scatters into output. With stride=2, each input voxel contributes to 27 output voxels \u2014 scatter avoids the modulo-stride masking overhead currently dominating the gather kernel and yields denser arithmetic.\n- Alternatively, treat it as an im2col-style GEMM where K = IC*KD*KH*KW=81 and M = OC=16, with one program per (N, output-spatial tile). Use `tl.dot` with BLOCK_M=16, BLOCK_N=64, BLOCK_K=32 to engage tensor cores; current scalar FMA loop leaves ~10x perf on the table.\n- Fuse the Swish epilogue into the GEMM accumulator (already done) and consider also fusing GroupNorm's first-pass reduction by writing per-group partial sums to a scratch buffer in the conv epilogue, eliminating one full read of the activation tensor in the norm kernel.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 38,
+    "global_best_node_id": 29,
+    "global_best_score": [
+        1,
+        1,
+        2.2462573144104803
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 30,
+    "parent_node_id": 26,
+    "context_node_ids": [
+        26
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4207638894815953,
+    "max_reward": 0.4207638894815953,
+    "avg_reward": 0.4207638894815953,
+    "score": [
+        1,
+        1,
+        0.27130208822316104
+    ],
+    "small_guidance": "- The scatter-add approach is fundamentally bottlenecked by atomic_add contention on the output tensor; tuning block sizes alone won't close the gap. If staying with scatter, try much larger BLOCK_OC (128) with BLOCK_SP=32 to reduce atomic traffic per input element, and add configs with num_stages=3 once SMEM allows. Also fuse the bias initialization into the kernel epilogue rather than expanding bias via a separate kernel call.\n- For the BN+sub-mean kernel, S = OD*OH*OW \u2248 31*63*63 \u2248 123K which is large; tile BLOCK_S=4096 with num_warps=16, or split the per-(N,C) reduction across multiple programs and combine via a second pass to expose more parallelism (currently only N*C = 512 programs).\n- Switch the conv-transpose output and input layouts to channels-last so OC-contiguous accumulations coalesce; the current NCDHW layout makes the inner OC axis strided across atomics.",
+    "large_guidance": "- Rewrite the conv-transpose as a **gather-based GEMM** (one program per output tile), not scatter-add with atomics. For each output voxel (n, oc, od, oh, ow), iterate over (ic, kd, kh, kw) and gather from input at the valid pre-stride positions ((od+pD-kd)/sD when divisible). This eliminates all atomics, turns the inner loop into a clean K=IC*KD*KH*KW reduction, and maps cleanly onto tl.dot. Tile (BLOCK_M=output-spatial, BLOCK_N=OC) with BLOCK_K=16 or 32; start at (32,32,16) num_warps=4 num_stages=2 to fit SMEM.\n- Fuse the BN affine (scale, shift), the bias add, and the spatial-mean accumulator directly into the conv-transpose epilogue: as each program produces its output tile, apply scale*x+shift and atomically accumulate the partial sum into a per-(N,C) mean buffer. Then a tiny second kernel does the final `x - mean/S` subtraction. This collapses three kernel launches into ~1.5.\n- Use channels-last (NDHWC) storage for both input and output so the K-dim (ic) and N-dim (oc) loads/stores coalesce; reshape weight to (OC, IC*KD*KH*KW) once at init for direct GEMM-style loads. Keys for autotune should be (OC, OD*OH*OW, IC*KD*KH*KW).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 31,
+    "global_best_node_id": 29,
+    "global_best_score": [
+        1,
+        1,
+        0.3246729908244386
+    ]
+}

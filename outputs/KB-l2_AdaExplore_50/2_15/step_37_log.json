@@ -1,0 +1,29 @@
+{
+    "node_id": 37,
+    "parent_node_id": 24,
+    "context_node_ids": [
+        24
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4207638894815953,
+    "max_reward": 0.4207638894815953,
+    "avg_reward": 0.4207638894815953,
+    "score": [
+        1,
+        1,
+        0.27130208822316104
+    ],
+    "small_guidance": "- The BN+sub-mean kernel is already cheap; the dominant cost is `nn.ConvTranspose3d`. Tuning BLOCK_S / num_warps here will not move fast_p meaningfully. If staying small, at least add `@triton.autotune` over `BLOCK_S \u2208 {512, 1024, 2048, 4096}` and `num_warps \u2208 {4, 8}` keyed on `S`, and switch to a single-pass Welford-style accumulation (running sum across all chunks, then a second store pass that reloads \u2014 already done \u2014 but use vectorized 4-wide loads via `tl.multiple_of` / `tl.max_contiguous` hints).\n- The eval branch assumes `self.training==False`; ensure the model is put in eval before measurement, otherwise the slow PyTorch path runs. Also fold the scale/bias precompute into a tiny one-time cache rather than recomputing every forward.\n- Keep current kernel as the epilogue but co-design with a new conv-transpose kernel so the BN+mean-subtract is fused directly into the conv epilogue (no intermediate write).",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add (or, better, gather-form) kernel: for each output voxel `(n, oc, od, oh, ow)`, gather contributions from input positions `(n, ic, id, ih, iw)` where `id*stride - pad + kd == od`, etc. Implement as an im2col-style GEMM with one program per `(N, OC tile, output-spatial tile)`, K-dim = `IC*KD*KH*KW`. Tile sizes `(BM,BN,BK)=(32,64,16)` or `(64,32,16)`, num_warps=4, num_stages=2 \u2014 verified to fit SMEM.\n- Fuse the BN affine (folded scale/bias at eval) and the spatial-mean subtraction into the conv epilogue. Since mean subtraction needs the full per-(n,c) spatial sum, do it in two passes over the conv kernel: pass-1 writes conv+BN output and atomically accumulates per-(n,c) sums into a small `[N,C]` buffer; pass-2 subtracts `sum/S` in place. Alternatively, run the conv kernel once writing to a buffer, then run a lightweight reduce+subtract (current BN kernel) \u2014 keeps the conv kernel simple.\n- Use `channels_last_3d` layout for the conv output so the OC dim is contiguous for both the GEMM store and the subsequent reduction; this makes the BN epilogue coalesce naturally.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 38,
+    "global_best_node_id": 29,
+    "global_best_score": [
+        1,
+        1,
+        0.3246729908244386
+    ]
+}

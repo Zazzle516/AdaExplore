@@ -1,0 +1,30 @@
+{
+    "node_id": 26,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        22,
+        25
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.6077218180354622,
+    "max_reward": 0.6077218180354622,
+    "avg_reward": 0.6077218180354622,
+    "score": [
+        1,
+        1,
+        1.8137049987925624
+    ],
+    "small_guidance": "- Add larger-tile autotune configs targeting the M=1024, N=8192, K=8192 shape: try BLOCK_M=256, BLOCK_N=256, BLOCK_K=32/64 with num_warps=8, num_stages=3, and BLOCK_M=128, BLOCK_N=256, BLOCK_K=128 num_stages=4 \u2014 K=8192 has plenty of room to overlap loads.\n- Pre-transpose weight once in __init__ (already done) but also store it in a layout where the inner-N stride is 1 (i.e. ensure B is row-major with N contiguous) and use `tl.multiple_of`/`tl.max_contiguous` hints on the K offsets too, so the K-loop loads become fully vectorized 128-bit.\n- For the LSE kernel with N=8192, BLOCK_N=8192 forces a very wide single-program reduction; split the row across 2-4 programs doing a partial max/sum and a second small kernel for the final combine + activations, or use num_warps=16 with num_stages=1 \u2014 the current single-pass at BLOCK_N=8192 is likely register-spilling.",
+    "large_guidance": "- The GEMM dominates (1024\u00d78192\u00d78192 fp32 \u2248 137 GFLOPs); on a 4090 fp32 tl.dot peaks around ~40 TFLOPs with TF32, so this should run in ~3-4 ms but cuBLAS hits ~1.5 ms. Consider a split-K GEMM: partition K=8192 into 2-4 chunks, each program accumulates a partial tile, then a tiny epilogue kernel sums partials and fuses the LSE row reduction in the same pass \u2014 this gives more parallelism for the small M=1024 dimension (only 8 row-tiles at BLOCK_M=128).\n- Alternatively, fuse the LSE reduction directly into the GEMM epilogue: since LSE reduces along N (the output column dim), have each program compute its (BLOCK_M, BLOCK_N) tile, then do an intra-tile max+sum-exp, atomically combine per-row partial (max, sum) into a global buffer using the log-sum-exp merge formula, eliminating the second kernel launch and the full N\u00d7M write/read of z.\n- Switch to a persistent-CTA GEMM (one program per SM looping over output tiles) to reduce launch/scheduling overhead and improve L2 reuse of the B matrix across multiple M-tiles in the same SM.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 27,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        1.9190169019482592
+    ]
+}

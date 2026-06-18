@@ -1,0 +1,27 @@
+{
+    "node_id": 6,
+    "parent_node_id": 3,
+    "context_node_ids": [],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The kernel failed at the C launcher compile stage (gcc non-zero exit) \u2014 this is often caused by passing a Python float (`inv_scale`) as a kernel scalar argument without an explicit dtype. Convert `inv_scale` to a 0-dim `torch.tensor(inv_scale, dtype=torch.float32, device=x.device)` or pass it as `tl.constexpr`/cast inside kernel. Also try removing `num_warps`/`num_stages` kwargs to confirm it's not the launcher build.\n- Once compiling, autotune over `BLOCK_OC \u2208 {32,64}`, `BLOCK_SP \u2208 {64,128,256}`, `num_warps \u2208 {4,8}`, `num_stages \u2208 {2,3}` keyed on `(OC, OH*OW)`.\n- Hoist the `oc_offs` weight stride math out of the `kh,kw` loops; preload `w[ic,oc,:,:]` per-IC tile and reuse across spatial; and fuse the bias+double-clamp+rescale as already done (good).",
+    "large_guidance": "- Switch from a per-output gather to a scatter-add formulation: one program per `(N, IC tile, input-spatial tile)` computes the `input \u00d7 kernel` outer product and `tl.atomic_add`s into the output grid at `(oh = ih*S - P + kh, ow = iw*S - P + kw)`. This matches the natural ConvTranspose2d data-flow, removes the `(oh+P-kh) % S == 0` divisibility branch, and gives perfectly contiguous input loads.\n- Alternatively, reformulate as an explicit GEMM: reshape weight to `[IC, OC*KH*KW]`, do `x_flat @ W` to produce a `[N, IH*IW, OC*KH*KW]` patch buffer, then a fused col2im+epilogue Triton kernel that scatter-adds into output with bias + double-clamp + rescale. This isolates the heavy math into a well-tuned matmul (use Triton matmul template or cuBLAS) and leaves only a light scatter for Triton.\n- Use `channels_last` (NHWC) layout end-to-end so the IC reduction dimension is contiguous; this dramatically improves the GEMM-K loads vs the current NCHW gather.\n- Fuse the entire epilogue (bias + clamp + scale + clamp + /scale) into a single `min(max(acc+b, 0), min(1, 1/s))` expression \u2014 already partially done; keep it.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 7,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.16350795546558702
+    ]
+}

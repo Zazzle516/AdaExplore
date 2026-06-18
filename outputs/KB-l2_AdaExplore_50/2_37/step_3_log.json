@@ -1,0 +1,27 @@
+{
+    "node_id": 3,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing with avg diff ~9e-5 and max ~1.6e-3, likely due to the GroupNorm reduction using `tl.sum` over a padded `BLOCK_CPG` where masked-out lanes still affect mean (the `tl.where` mask handles xc but mean divides by CPG=64 which is fine \u2014 actual issue is that `tl.load(..., other=0.0)` for masked lanes contributes 0 to sum, so mean is correct). Re-examine: with CPG=64 and BLOCK_CPG=64 there's no padding. The diff is small and uniform \u2014 likely fp32 accumulation differences. Try computing mean/var in fp32 explicitly and using a more numerically stable two-pass (already two-pass). Also ensure `acc` from GEMM matches torch's fp32 path \u2014 tl.dot on fp32 inputs uses TF32 by default on Ampere; pass `allow_tf32=False` to `tl.dot` to match torch default for nn.Linear precision.\n- Add `tl.dot(x, w, allow_tf32=False)` or set the input_precision=\"ieee\" \u2014 this is almost certainly the source of the ~1e-3 max error and the correctness failure.\n- Once correct, expand autotune configs with BLOCK_M=256/BLOCK_N=128 and try num_stages=4 for the K=1024 loop.",
+    "large_guidance": "- Consider fusing the GroupNorm directly into the GEMM epilogue when BLOCK_N is a multiple of CPG (64): each program computes a row tile of N, can do in-warp reduction per group of CPG=64 lanes, eliminating the separate kernel launch and the intermediate `y` tensor read/write (saves ~512MB of memory traffic).\n- Alternatively, persistent GroupNorm kernel: one program per row processes all 64 groups, keeping the full row of 4096 elements in SRAM/registers, fusing with reading the GEMM output. With M=32768 rows, this gives a large grid with high occupancy.\n- Use split-K or stream-K GEMM only if K=1024 proves too small per program; with BLOCK_K=32 and 32 iterations, the current loop is fine \u2014 focus on epilogue fusion rather than GEMM restructure.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 4,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

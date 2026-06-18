@@ -1,0 +1,29 @@
+{
+    "node_id": 40,
+    "parent_node_id": 39,
+    "context_node_ids": [
+        39
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The current kernel uses a single program per M-tile and loops over all N tiles serially \u2014 this serializes the GEMM and kills parallelism. Switch to a 2D grid `(cdiv(M, BLOCK_M), cdiv(N, BLOCK_N))` with a partial-result tensor `[grid_n, M]` (or `[M, grid_n]`) that holds per-N-tile pooled+summed contributions, then do a tiny second-kernel reduction across the N-tile axis and apply scale. This exposes ~256\u00d7 more parallelism on N=32768.\n- Narrow the autotune space: with K=32768 and N=32768, prefer `BLOCK_M=64/128, BLOCK_N=128, BLOCK_K=64, num_warps=8, num_stages=3-4`. The current sweep includes many tiny configs that waste autotune time and likely choose suboptimal shapes.\n- Drop the `m_mask`/`k_mask`/`n_mask` on inner loads since M=128, N=32768, K=32768 are all divisible by reasonable tiles \u2014 use a `EVEN_K`/`EVEN_N` constexpr path to remove masked loads in the hot loop.",
+    "large_guidance": "- Redesign as a standard 2D tiled GEMM grid `(pid_m, pid_n)` with `GROUP_M=8` swizzling for L2 reuse. Each program computes its `[BLOCK_M, BLOCK_N]` tile of `acc = x @ W_t + b`, then does the kernel_size=2 maxpool reduction along N within the tile (`acc.reshape(BM, BN//2, 2).max(axis=2)`), sums along the pooled-N axis to a `[BLOCK_M]` partial, and `tl.atomic_add`s into a `[M]` output buffer. Final scale can be applied in a tiny epilogue kernel or fused via a second pass.\n- Alternative (no atomics): two-kernel design. Kernel 1 is the 2D GEMM that writes per-tile partial sums into `partials[grid_n, M]`. Kernel 2 reduces `partials` along grid_n and multiplies by `scale_factor`. This avoids atomic contention and keeps the GEMM clean.\n- With M=128 only, consider `BLOCK_M=128` (single M-tile) so the grid is purely `(grid_n,)` with ~256 programs \u2014 each does one `[128, BN] = [128, K] @ [K, BN]` GEMM, pools, sums to `[128]`, and atomic-adds (or writes to `partials[grid_n, 128]`). This maps perfectly to the 4090's SM count and gives full occupancy, which the current serialized-over-N kernel completely lacks.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 41,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

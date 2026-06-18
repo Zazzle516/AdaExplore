@@ -1,0 +1,27 @@
+{
+    "node_id": 3,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4743292966806595,
+    "max_reward": 0.4743292966806595,
+    "avg_reward": 0.4743292966806595,
+    "score": [
+        1,
+        1,
+        0.7132166976154405
+    ],
+    "small_guidance": "- The atomic_max across POOLED_LEN=512 programs per row is the bottleneck \u2014 try a 2D tile where each program handles multiple pooled indices (e.g. BLOCK_P=4 or 8 pooled groups), reducing them locally before a single atomic_max per (row, pool-tile). This cuts atomic contention by 4-8x.\n- Add larger BLOCK_M configs (128, 256) with BLOCK_K=32/64 to autotune; with K=8192 and POOL_K=16 the dot is small (M\u00d716\u00d7K), so larger M tiles amortize the weight loads. Also try num_stages=4 to better pipeline the long K loop.\n- Pre-transpose / pre-load weights into a layout where the POOL_K rows are contiguous along K (already are), but consider tl.dot with allow_tf32=False vs True \u2014 fp32 inputs default to TF32 on Ampere; verify and tune.",
+    "large_guidance": "- Eliminate atomic_max entirely: make the kernel persistent per-row (one program per batch row or per BLOCK_M rows), looping over all POOLED_LEN pooled indices internally and keeping a running max in registers, with a single non-atomic store at the end. With OUT_FEATURES=8192 and POOL_K=16, each row needs 8192*K flops which is fine to do in one program; this removes both the global -inf init and the atomic contention.\n- Inside the persistent kernel, structure the loop as: outer over pooled-group tiles (BLOCK_P pooled indices = BLOCK_P*POOL_K consecutive output features), inner over K with BLOCK_K. Reuse the loaded x_tile across all pooled groups within a K-chunk by hoisting the K loop outside the pooled-group loop \u2014 i.e. accumulate a [BLOCK_M, BLOCK_N] tile where BLOCK_N = BLOCK_P*POOL_K (e.g. 128), then apply bias+avg+gelu+scale+max-reduce in the epilogue. This is a standard GEMM with a fused reduction epilogue.\n- Consider a split-K or two-stage approach if a single program's register pressure is too high: stage 1 computes the full matmul+bias+avg+gelu+scale into a [B, POOLED_LEN] buffer with a tiled GEMM kernel (tl.dot, 128\u00d7128\u00d732), stage 2 is a fast row-wise max reduction. This trades one extra write for much better GEMM tile efficiency vs the current POOL_K=16 narrow-N dot.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 4,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.8909438358561813
+    ]
+}

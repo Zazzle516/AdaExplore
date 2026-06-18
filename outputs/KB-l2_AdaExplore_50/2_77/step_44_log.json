@@ -1,0 +1,29 @@
+{
+    "node_id": 44,
+    "parent_node_id": 43,
+    "context_node_ids": [
+        43
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5818177902097902,
+    "max_reward": 0.5818177902097902,
+    "avg_reward": 0.5818177902097902,
+    "score": [
+        1,
+        1,
+        1.599996769230769
+    ],
+    "small_guidance": "- The ConvTranspose3d now dominates runtime (BN+scale+GAP fused into a tiny epilogue kernel). Further tuning of `_gap_affine_kernel` (BLOCK_S sweeps, num_warps) will not move the needle \u2014 the per-(N,C) reduction over S=20*36*36\u224825920 floats is already memory-bound and trivial relative to the conv.\n- If staying small, try persistent grid `(N*C,)` with BLOCK_S=32768 single-pass (covers S in one iter), num_warps=8, num_stages=2; and pre-fuse the conv bias into B at init so the conv can be called with `bias=None` (saves one elementwise pass inside cuDNN's epilogue is negligible, but removes a redundant add).\n- Verify cuDNN is actually picking a fast algo: set `torch.backends.cudnn.benchmark=True` (already done) and ensure inputs are `channels_last_3d` \u2014 convert `x` and weight to `memory_format=torch.channels_last_3d` before the conv to enable faster cuDNN kernels on Ampere/Ada.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)`, loading an `input \u00d7 weight` outer product (weight shape `[IC, OC, kD, kH, kW]`) and atomically adding into the output grid at the strided/padded positions. With stride=1, padding=0, kernel=5, output is `(16,128,20,36,36)` \u2248 53M elements; input is `(16,64,16,32,32)` \u2248 8.4M; the scatter has good reuse on the kernel tensor.\n- Alternatively, implement as an im2col-style gather GEMM: for each output voxel `(od,oh,ow)`, gather the `IC*kD*kH*kW=8000`-wide K vector and do a tiled matmul against `W` reshaped to `[OC, IC*kD*kH*kW]`. Fuse the BN-folded affine `A*x+B` and the global-average reduction directly into the GEMM epilogue \u2014 accumulate the per-(N,OC) sum across spatial tiles in a second-stage atomic-add or via a persistent reduction, then divide by S=25920 at the end. This removes the entire 53M-element intermediate write/read.\n- Fusion target: never materialize the full conv output. The final result is only `(N, OC)` = 2048 floats. The ideal kernel streams each output voxel through registers, applies `A*x+B`, accumulates into a per-(N,OC) running sum, and writes only the reduced result \u2014 turning a memory-bound 53M-write pipeline into a compute-bound kernel.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 45,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        1.599996769230769
+    ]
+}

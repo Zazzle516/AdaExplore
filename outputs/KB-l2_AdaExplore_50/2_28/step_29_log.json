@@ -1,0 +1,31 @@
+{
+    "node_id": 29,
+    "parent_node_id": 17,
+    "context_node_ids": [
+        19,
+        14,
+        17
+    ],
+    "depth": 6,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4850477793455068,
+    "max_reward": 0.4850477793455068,
+    "avg_reward": 0.4850477793455068,
+    "score": [
+        1,
+        1,
+        0.801644179600431
+    ],
+    "small_guidance": "- The bottleneck is the `addmm` (1024\u00d78192\u00d78192 GEMM), not the norm-residual kernel. Tuning BLOCK_N/num_warps on the norm kernel will yield <5% gains. If staying small, try `BLOCK_N=8192, num_warps=8, num_stages=4` and load x/y once with `tl.multiple_of`/`tl.max_contiguous` hints, but expect minimal impact.\n- Consider keeping `addmm` but launching the norm kernel asynchronously with larger `num_stages=3` to overlap with any tail; also drop the redundant `Out = torch.empty_like(C)` in favor of in-place store into C to save an allocation.",
+    "large_guidance": "- Replace `torch.addmm` with a custom tiled Triton GEMM (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8, num_warps=8, num_stages=3-4) that fuses the bias add. This is where ~95% of the runtime lives \u2014 the current 3.42 ms vs 2.74 ms baseline gap will only close by attacking the GEMM.\n- Better: fuse the entire pipeline into a single GEMM-epilogue kernel. After the K-loop, the (BLOCK_M, BLOCK_N) tile holds the linear output; per row, instance-norm over the N=out_features axis requires a full-row reduction. Since each row's full N=8192 must be reduced, use a split-K-style two-pass or a persistent kernel where one program owns an entire row tile (BLOCK_M rows \u00d7 full N) \u2014 compute mean/var via tl.sum across the N dimension in registers, then apply `(x-mean)*rsqrt(var+eps)`, add y, multiply y, all in the epilogue before storing. This eliminates the second kernel launch and the C materialization (saves a full read+write of 1024\u00d78192 fp32 = 32 MB).\n- Alternative: split-K GEMM writing partial sums, then a fused norm+residual kernel that reads partials, completes reduction, and writes output \u2014 only worthwhile if the persistent fused approach hits register/SMEM limits.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 30,
+    "global_best_node_id": 28,
+    "global_best_score": [
+        1,
+        1,
+        0.8257900886245404
+    ]
+}

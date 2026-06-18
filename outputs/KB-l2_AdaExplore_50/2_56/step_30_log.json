@@ -1,0 +1,32 @@
+{
+    "node_id": 30,
+    "parent_node_id": 27,
+    "context_node_ids": [
+        8,
+        19,
+        26,
+        27
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The atomic_add accumulation across N-tile programs is the correctness bug: multiple programs writing to `out_ptr + offs_m` race on float32 atomics, but more importantly `out` should be initialized to 0 (it is) and the partial sums should accumulate correctly \u2014 verify that `tl.sum(sig, axis=1)` returns the right shape and that `mask=mask_m` is applied. Also ensure `out` dtype matches kernel store (float32 \u2713). Try switching to a 2D grid `(num_pid_m, num_pid_n)` with explicit atomic_add and double-check by initially testing a single-tile N (BLOCK_N >= N) configuration to isolate the reduction logic.\n- Cast accumulator partial to the output dtype explicitly (`partial.to(tl.float32)`) before atomic_add, and verify `out` is `float32` contiguous; mismatch between linear's default fp32 and any half-precision path could explain the ~500k error magnitude (which looks like *unmasked* garbage being summed).\n- Re-examine the masking: `sig = tl.where(mask_m[:, None] & mask_n[None, :], sig, 0.0)` \u2014 but `tl.sigmoid(0.0) = 0.5`, so unmasked tail lanes contribute 0.5 each before the where. Confirm the where zeros them \u2014 it does \u2014 but double-check that `acc` for out-of-bounds rows isn't being added to `out` via the atomic since `mask_m` gates the store. This should be fine; the bug is more likely the partial dtype or the bias broadcast. Add a debug config with BLOCK_N=N (single N-tile) to remove the atomic entirely.",
+    "large_guidance": "- Split into a two-stage design: (1) a tiled GEMM+bias+sigmoid that writes the full `[M, N]` activation tile to a scratch buffer fused with a *per-tile* partial-sum write to a `[M, num_n_tiles]` buffer, then (2) a small reduction kernel that sums across `num_n_tiles`. This eliminates atomics entirely and is deterministic.\n- Alternatively, since M=128 is small and N=K=32768, use a **persistent per-row kernel**: one program per row of M, looping over N in BLOCK_N chunks, and within each chunk doing a K-loop dot-product (or a sequence of `tl.dot` with BLOCK_M=16/32 grouping rows). Each program accumulates `sum(sigmoid(x @ W[:, n:n+BN] + b[n:n+BN]))` into a single scalar register, then writes once \u2014 no atomics, no race.\n- Given K=N=32768 and M=128, the GEMM is 128\u00d732768\u00d732768 \u2248 275 GFLOPs; the row-persistent layout with `BLOCK_M=16, BLOCK_N=128, BLOCK_K=64` and an outer N-loop fused with the reduction is likely the cleanest and fastest path. Make sure the reduction axis (N) is the outer loop so each row's scalar accumulator stays in a register.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 31,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

@@ -1,0 +1,27 @@
+{
+    "node_id": 17,
+    "parent_node_id": 6,
+    "context_node_ids": [],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The atomic_add accumulator is fp32 but multiple H-tile programs race on the same `out[offs_b]` slot \u2014 correctness is failing (max diff ~2e6) likely because `out` is created with `torch.zeros` but the kernel autotune re-runs the kernel on the same buffer during tuning, doubling/tripling the accumulation. Fix by either (a) zero-initializing inside a separate launch or (b) better: making the grid 1-D over B only and looping over the full K dimension per program, eliminating atomics entirely.\n- If keeping the 2-D grid, reduce H-tile splits to 1 (BLOCK_H >= H is impossible at H=8192, but you can have each program own a full row by setting grid=(cdiv(B,BLOCK_B), 1) and looping over H inside the kernel) \u2014 this also removes the atomic.\n- Add configs with BLOCK_B=16/BLOCK_K=256 since H=K=8192 is large and the K-loop dominates; bump num_stages to 4 for better pipelining.",
+    "large_guidance": "- Redesign as a 1-program-per-row-tile reduction kernel: each program handles BLOCK_B rows, loops over K in BLOCK_K chunks and over H in BLOCK_H chunks, accumulating the scalar `sum_h(x @ w.T)` directly into a register per row. Since the output is just `(B,1)`, no atomics or H-grid are needed. This also enables a key algebraic simplification *at runtime*: `sum_h(x_b \u00b7 w_h)` = `x_b \u00b7 (sum_h w_h)` \u2014 but per the safety contract this must NOT be precomputed; instead compute `w_col_sum = tl.sum(w_tile, axis=0)` inside the kernel for each K chunk, then dot with x. This keeps every reference op executing at runtime while collapsing the (B,H,K) work to (B,K).\n- Alternative compliant design: full tiled GEMM producing (B,H) in registers, then in-kernel row-reduce + scale + store to (B,1). Use persistent kernel with one program per BLOCK_B row group, looping H tiles and K tiles, never materializing the (B,H) matrix to HBM.\n- Drop the `tl.trans(w)` in the hot loop \u2014 store W as (K,H) layout (transpose once at init or in the wrapper) so the inner `tl.dot` consumes contiguous K-major A and K-major B without a per-iteration transpose.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 18,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

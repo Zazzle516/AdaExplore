@@ -1,0 +1,29 @@
+{
+    "node_id": 21,
+    "parent_node_id": 8,
+    "context_node_ids": [
+        8
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness bug is in the residual: reference computes `gelu(logsumexp(mean(...)))` which yields a (B,1) tensor broadcast-added to original_x. But `logsumexp` of a single element equals the element itself, so the scalar value is `mean_j(W@x+b-s)`. The current rowsum divides by N \u2014 that's correct for mean. However, atomic_add on float32 across many CTAs introduces non-determinism and float ordering error; switch to a two-stage reduction (write per-(pid_m, pid_n) partial sums to a (num_pid_m, num_pid_n) buffer, then a second kernel reduces along pid_n) to avoid atomics and improve numerical stability.\n- Verify the bias fusion: `bs = bias - subtract` is added once per output column, but in the rowsum it gets summed `BLOCK_M` times per tile via `tl.sum(acc, axis=1)` \u2014 ensure each column's bias contributes exactly once across all N tiles (it does, since each column belongs to exactly one N tile). The likely correctness issue is atomic-add float nondeterminism crossing the 5e-2 tolerance for K=8192; deterministic reduction will fix it.\n- Once correct, drop autotune overhead by pinning `BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, num_warps=8, num_stages=3` for this M=N=K=8192 shape, and increase finalize `BLOCK_K` to 2048 with num_warps=8.",
+    "large_guidance": "- The reference reduces (B, out_features) to (B, 1) \u2014 only B=2048 scalars are needed from the GEMM. A from-scratch design should make one program per batch row that streams the K dimension once: load `x[m, :]` into SRAM, and for each chunk of K compute `dot(x_chunk, colsum_W_chunk_at_runtime)` \u2014 but the safety contract forbids precomputing colsum(W). Instead, have each program iterate over N in tiles, accumulating `sum_j (W[j,:] @ x[m,:])` by doing a small `BLOCK_N x BLOCK_K` GEMV per tile and reducing along j inside the kernel. This avoids atomics entirely and keeps M=2048 programs each doing N*K FMAs.\n- Alternative: persistent kernel with grid = (M,), each program loops over all (n_tile, k_tile) pairs, accumulating a single scalar per row. With M=2048 programs and num_warps=8, this gives full occupancy on a 4090 (128 SMs \u00d7 2 waves) and zero cross-program synchronization.\n- Fuse the `(bias - subtract)` sum into the same kernel as a constant scalar `S = sum(bias - subtract)` computed once at runtime via a tiny Triton reduction (this is allowed \u2014 it's a runtime reduction of a parameter, not a weight rewrite that eliminates the GEMM). Then output_scalar[m] = (rowsum[m] + S) / N, then GELU, then broadcast-add to original_x in the finalize kernel.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 22,
+    "global_best_node_id": 10,
+    "global_best_score": [
+        1,
+        1,
+        1.5925164056531704
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 41,
+    "parent_node_id": 38,
+    "context_node_ids": [
+        37,
+        39
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.7793473757799233,
+    "max_reward": 0.7793473757799233,
+    "avg_reward": 0.7793473757799233,
+    "score": [
+        1,
+        1,
+        3.229615850184367
+    ],
+    "small_guidance": "- The GEMM (1024\u00d78192\u00d78192 in bf16) dominates runtime; cuBLAS via `F.linear` is already very strong, but try removing the bf16 conversion overhead \u2014 keep the weight cached in bf16 (already done) and avoid the per-call `x.to(bfloat16).contiguous()` by fusing the cast into a tiny Triton prologue, or test whether fp16 weights yield better cuBLAS throughput on Ada.\n- Tune `fused_lse_act_kernel`: BLOCK_N=8192 with `num_warps=16` and `num_stages=2` to better hide the single big row load; also try a two-stage reduction (split the row across 2-4 programs writing partial max/sum to a small workspace, then combine) since one program per row of 8192 elements underutilizes SMs (only 1024 programs for 128 SMs is fine, but each does a huge load).\n- Consider reviving the fused GEMM+LSE kernel but with autotune over (BLOCK_M=64/128, BLOCK_N=128/256, BLOCK_K=32/64, num_warps=8, num_stages=3-4) and a GROUP_M swizzle \u2014 the prior version was slower likely due to suboptimal tile shape, not the strategy.",
+    "large_guidance": "- Rewrite as a single persistent fused GEMM+LSE kernel: one program per row-tile holds the BLOCK_M output rows resident, streams the entire K=8192 of A once into SMEM/registers, and for each N-tile recomputes a partial GEMM tile and folds it into the online LSE state \u2014 this halves DRAM traffic vs. materializing the full 1024\u00d78192 GEMM output that cuBLAS produces (32 MB write + 32 MB read for LSE).\n- Alternatively, do a split-N two-pass approach: pass 1 computes per-row-per-N-chunk (max, sum-of-exp) using `tl.dot` GEMM tiles, writes a tiny [M, num_chunks\u00d72] workspace; pass 2 combines chunks. This keeps GEMM throughput close to cuBLAS while still avoiding the full output materialization.\n- Use bf16 inputs with fp32 accumulation in `tl.dot`, transpose W once at init to [K, N] layout for contiguous inner-K loads on B, and pick BLOCK_M=128/BLOCK_N=128/BLOCK_K=32 with num_warps=8 \u2014 the matmul shape is square-large so standard high-throughput tiles apply.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 42,
+    "global_best_node_id": 40,
+    "global_best_score": [
+        1,
+        1,
+        3.2794665909810385
+    ]
+}

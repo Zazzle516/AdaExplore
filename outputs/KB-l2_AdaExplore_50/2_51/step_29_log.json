@@ -1,0 +1,30 @@
+{
+    "node_id": 29,
+    "parent_node_id": 10,
+    "context_node_ids": [
+        7,
+        10
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness bug is in the reduction: after LogSumExp on a keepdim=1 tensor, the result is just the value itself (logsumexp of a single element = that element), so the pipeline reduces to `gelu(mean(gemm(x) - subtract, dim=1))` broadcast-added to `original_x`. The current kernel computes that scalar correctly per row, but `tl.atomic_add` accumulates partial sums from multiple N-tiles into `rowsum`, and `tl.where(mask_n[None,:], acc, 0.0)` is applied \u2014 verify that `bs_vals` masked load with `other=0.0` plus the mask on acc is consistent; also ensure `rowsum` is zero-initialized before each call (it is). The likely issue: when running multiple trials, `self._cached_bs` is unused but `bs` recomputed each call is fine \u2014 however `self.subtract` uses `torch.randn` at init and the reference uses the same parameter, so that's fine. Check that fp32 atomic_add ordering produces deterministic results \u2014 it should for sum. Real bug: the GELU/residual kernel uses `INV_N=1.0/OUT_F` but mean is over dim=1 of the gemm output which has OUT_F elements \u2014 correct. Re-examine: max diff 1.57 \u2248 \u03c0/2, suggesting a sign/scale error. Double-check sign of `bs = bias - subtract`: gemm output is `x@W^T + bias`, then `- subtract`, so `(x@W^T) + (bias - subtract)` \u2713.\n- Suspect: `tl.where(mask_n[None,:], acc, 0.0)` is correct, but `bs_vals` is loaded with `mask_n` and `other=0.0`, then added to acc *before* the where \u2014 so out-of-range N columns get `acc + 0` then zeroed, fine. But `tl.dot` may produce non-zero for masked-out k positions? No, x and w are zeroed. The actual likely bug: atomic_add across N-tile programs racing \u2014 they all write to same `rowsum[offs_m]` simultaneously. Atomics are correct but slow; switch to a two-stage approach: write per-tile partials to `(num_n_tiles, M)` then reduce, avoiding atomics entirely.\n- Tune: try `BLOCK_N=64` with non-atomic single-N-tile-per-row strategy (one program per row reduces all N), eliminating atomics.",
+    "large_guidance": "- Redesign: since the entire pipeline collapses to one scalar per row (mean over OUT_F of `xW^T + (bias - subtract)`, then GELU), structure as a **fused GEMV-style reduction kernel**: one program per row of x, looping over K in BLOCK_K chunks and over N in BLOCK_N chunks, computing `sum_n (sum_k x[m,k] * W[n,k] + bs[n])` and accumulating directly into a scalar per row. This avoids atomics entirely and stages the GEMM output through registers only. Then a second kernel does GELU(scalar/OUT_F) and the residual add broadcast over IN_F.\n- Alternative: precompute `w_col_sum = W.sum(dim=0)` (shape K) and `bs_sum = bs.sum()` **at forward time each call** (still executes the operators \u2014 it's a legitimate reordering of `mean(x@W^T + bs) = (x @ w_col_sum + bs_sum) / OUT_F`). However, this is a graph-level algebraic shortcut that collapses the GEMM into a matvec \u2014 **forbidden by the safety contract**. Do NOT do this.\n- Therefore the legitimate redesign keeps the full GEMM running: tile the GEMM normally, write the full `(B, OUT_F)` intermediate to global memory, then run a standard row-mean reduction kernel, then a small kernel for GELU + broadcast residual add. The fusion savings are limited because the GEMM dominates; focus on a high-throughput GEMM (cutlass-like tile sizes 128x128x32, num_warps=8, num_stages=3-4) and accept the intermediate.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 30,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        1.6320820306383421
+    ]
+}

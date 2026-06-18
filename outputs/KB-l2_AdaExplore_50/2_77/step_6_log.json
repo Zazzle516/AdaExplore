@@ -1,0 +1,30 @@
+{
+    "node_id": 6,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        3,
+        4
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4519772717000514,
+    "max_reward": 0.4519772717000514,
+    "avg_reward": 0.4519772717000514,
+    "score": [
+        1,
+        1,
+        0.5288124915254238
+    ],
+    "small_guidance": "- The conv_transpose3d dominates runtime (output is 16\u00d7128\u00d720\u00d736\u00d736 \u2248 12M elements per batch sample, computed via cuDNN). Tuning the GAP/BN epilogue further is low-leverage; nothing to gain from larger BLOCK_S since S=25920 already fits in 2-3 iterations.\n- If staying with this structure, try precomputing A,B once per eval (cache them when running_mean/var unchanged) instead of re-deriving every forward, and pass them as bf16 to reduce bandwidth on the epilogue (already trivial).\n- Add num_warps=4 small-S configs and key on `S` alone; current autotune space is over-warped for a 25k reduction.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)` computing the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and atomically scattering into the output grid at `(d+kd, h+kh, w+kw)`. With kernel_size=5, stride=1, padding=0 the output is just input padded by 4 on each side \u2014 straightforward index math, no output_padding.\n- Better yet: fuse the entire forward into a single kernel that, per `(N, OC)` pair, accumulates `sum over output spatial of (convT(x)[n,oc,*] * scale)` directly via the gather form: `sum_{d,h,w,kd,kh,kw} x[n,ic,d,h,w] * W[ic,oc,kd,kh,kw]` summed over all output positions = `(sum_{d,h,w} x[n,ic,d,h,w]) * (sum_{kd,kh,kw} W[ic,oc,kd,kh,kw])` \u2014 wait, this IS an algebraic shortcut and violates the contract. Instead, materialize convT output via a proper scatter-add Triton kernel, then fuse the `*scale + BN_affine + GAP` reduction into a second kernel (already done).\n- Use channels_last_3d layout for the conv input/weight so the IC axis is contiguous for the GEMM-K dimension of the scatter outer product; tile BLOCK_OC=32 or 64, BLOCK_IC=16, with num_warps=4.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 7,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.5342454965753425
+    ]
+}

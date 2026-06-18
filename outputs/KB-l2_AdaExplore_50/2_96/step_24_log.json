@@ -1,0 +1,27 @@
+{
+    "node_id": 24,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.44328491483515986,
+    "max_reward": 0.44328491483515986,
+    "avg_reward": 0.44328491483515986,
+    "score": [
+        1,
+        1,
+        0.45710054739006833
+    ],
+    "small_guidance": "- The final reduce kernel is trivial (~5% of runtime); the ConvTranspose3d dominates. Tuning BLOCK/num_warps here will not move fast_p meaningfully. If tuning, try BLOCK=2048, num_warps=8, num_stages=2 and fold maxpool into the reduce by reading from the pre-pool tensor with a strided window gather.\n- Consider channels_last_3d memory layout for the conv output to coalesce the (N,C) reduction; but this is still a tail optimization.\n- The real headroom: replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel \u2014 current implementation leaves the heaviest op untouched.",
+    "large_guidance": "- Replace ConvTranspose3d with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile) computing the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and atomically scattering into the output grid at `(d*stride+kd-pad, h*stride+kh-pad, w*stride+kw-pad)`. Or use the gather formulation: one program per (N, OC, output-tile) iterating over (kd,kh,kw) and reading input at fractional positions, masking out non-aligned strides \u2014 this avoids atomics.\n- Fuse the entire pipeline: gather-style convT3d \u2192 multiply by scale \u2192 max over 2\u00d72\u00d72 maxpool window \u2192 accumulate into a per-(N,C) global sum \u2192 final divide+clamp. Since maxpool output is only 8\u00d716\u00d716=2048 elements per (N,C), and global avg reduces to 1, the whole tail can be a single persistent kernel keeping intermediates in registers/SMEM, avoiding writing the conv output (128\u00d716\u00d731\u00d763\u00d763 \u2248 1GB) to HBM at all.\n- Fold scale into the conv weight at init (weight *= scale) so the multiply disappears; then the epilogue is just maxpool\u2192avg\u2192clamp. This is a legal weight transform, not a graph shortcut, since the scale is a constant.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 25,
+    "global_best_node_id": 20,
+    "global_best_score": [
+        1,
+        1,
+        16.336806567370672
+    ]
+}

@@ -1,0 +1,212 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import triton
+import triton.language as tl
+
+
+@triton.autotune(
+    configs=[
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 128, 'BLOCK_K': 32, 'GROUP_M': 8}, num_warps=4, num_stages=3),
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 256, 'BLOCK_K': 32, 'GROUP_M': 8}, num_warps=8, num_stages=3),
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 256, 'BLOCK_K': 32, 'GROUP_M': 8}, num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 256, 'BLOCK_K': 32, 'GROUP_M': 8}, num_warps=8, num_stages=5),
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 256, 'BLOCK_K': 64, 'GROUP_M': 8}, num_warps=8, num_stages=3),
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 256, 'BLOCK_K': 64, 'GROUP_M': 8}, num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_M': 256, 'BLOCK_N': 128, 'BLOCK_K': 32, 'GROUP_M': 8}, num_warps=8, num_stages=3),
+        triton.Config({'BLOCK_M': 256, 'BLOCK_N': 128, 'BLOCK_K': 32, 'GROUP_M': 8}, num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_M': 256, 'BLOCK_N': 128, 'BLOCK_K': 64, 'GROUP_M': 8}, num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_M': 64, 'BLOCK_N': 256, 'BLOCK_K': 32, 'GROUP_M': 8}, num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 128, 'BLOCK_K': 64, 'GROUP_M': 8}, num_warps=8, num_stages=4),
+    ],
+    key=['M', 'N', 'K'],
+)
+@triton.jit
+def gemm_sigmoid_kernel(
+    A_ptr, B_ptr, Bias_ptr, C_ptr,
+    M, N, K,
+    stride_am, stride_ak,
+    stride_bk, stride_bn,
+    stride_cm, stride_cn,
+    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
+    GROUP_M: tl.constexpr,
+    K_DIVISIBLE: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    num_pid_m = tl.cdiv(M, BLOCK_M)
+    num_pid_n = tl.cdiv(N, BLOCK_N)
+    num_pid_in_group = GROUP_M * num_pid_n
+    group_id = pid // num_pid_in_group
+    first_pid_m = group_id * GROUP_M
+    group_size_m = min(num_pid_m - first_pid_m, GROUP_M)
+    pid_m = first_pid_m + ((pid % num_pid_in_group) % group_size_m)
+    pid_n = (pid % num_pid_in_group) // group_size_m
+
+    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    offs_k = tl.arange(0, BLOCK_K)
+
+    a_ptrs = A_ptr + offs_m[:, None] * stride_am + offs_k[None, :] * stride_ak
+    b_ptrs = B_ptr + offs_k[:, None] * stride_bk + offs_n[None, :] * stride_bn
+
+    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+
+    mask_m = offs_m < M
+    mask_n = offs_n < N
+
+    num_k = tl.cdiv(K, BLOCK_K)
+    if K_DIVISIBLE:
+        for k in range(0, num_k):
+            a = tl.load(a_ptrs, mask=mask_m[:, None], other=0.0)
+            b = tl.load(b_ptrs, mask=mask_n[None, :], other=0.0)
+            acc += tl.dot(a, b, allow_tf32=True)
+            a_ptrs += BLOCK_K * stride_ak
+            b_ptrs += BLOCK_K * stride_bk
+    else:
+        for k in range(0, num_k):
+            k_offs = k * BLOCK_K + offs_k
+            a = tl.load(a_ptrs, mask=(mask_m[:, None]) & (k_offs[None, :] < K), other=0.0)
+            b = tl.load(b_ptrs, mask=(k_offs[:, None] < K) & (mask_n[None, :]), other=0.0)
+            acc += tl.dot(a, b, allow_tf32=True)
+            a_ptrs += BLOCK_K * stride_ak
+            b_ptrs += BLOCK_K * stride_bk
+
+    bias = tl.load(Bias_ptr + offs_n, mask=mask_n, other=0.0)
+    acc = acc + bias[None, :]
+    acc = tl.sigmoid(acc)
+
+    c_ptrs = C_ptr + offs_m[:, None] * stride_cm + offs_n[None, :] * stride_cn
+    tl.store(c_ptrs, acc, mask=mask_m[:, None] & mask_n[None, :])
+
+
+@triton.autotune(
+    configs=[
+        triton.Config({'BLOCK_M': 32, 'BLOCK_N': 1024, 'BLOCK_K': 64}, num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_M': 64, 'BLOCK_N': 1024, 'BLOCK_K': 64}, num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 1024, 'BLOCK_K': 64}, num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_M': 64, 'BLOCK_N': 1024, 'BLOCK_K': 32}, num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 1024, 'BLOCK_K': 32}, num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_M': 32, 'BLOCK_N': 1024, 'BLOCK_K': 128}, num_warps=8, num_stages=3),
+        triton.Config({'BLOCK_M': 64, 'BLOCK_N': 1024, 'BLOCK_K': 128}, num_warps=8, num_stages=3),
+    ],
+    key=['M', 'N', 'K'],
+)
+@triton.jit
+def gemm_lse_kernel(
+    A_ptr, B_ptr, Bias_ptr, Out_ptr,
+    M, N, K,
+    stride_am, stride_ak,
+    stride_bk, stride_bn,
+    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
+    N_FULL: tl.constexpr,
+    K_DIVISIBLE: tl.constexpr,
+):
+    pid_m = tl.program_id(0)
+
+    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_k = tl.arange(0, BLOCK_K)
+    mask_m = offs_m < M
+
+    running_max = tl.full((BLOCK_M,), -float('inf'), dtype=tl.float32)
+    running_sum = tl.zeros((BLOCK_M,), dtype=tl.float32)
+
+    num_n = tl.cdiv(N, BLOCK_N)
+
+    for n_idx in range(0, num_n):
+        offs_n = n_idx * BLOCK_N + tl.arange(0, BLOCK_N)
+
+        a_ptrs = A_ptr + offs_m[:, None] * stride_am + offs_k[None, :] * stride_ak
+        b_ptrs = B_ptr + offs_k[:, None] * stride_bk + offs_n[None, :] * stride_bn
+
+        acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+        num_k = tl.cdiv(K, BLOCK_K)
+        if K_DIVISIBLE:
+            for k in range(0, num_k):
+                a = tl.load(a_ptrs, mask=mask_m[:, None], other=0.0)
+                b = tl.load(b_ptrs)
+                acc += tl.dot(a, b, allow_tf32=True)
+                a_ptrs += BLOCK_K * stride_ak
+                b_ptrs += BLOCK_K * stride_bk
+        else:
+            for k in range(0, num_k):
+                k_offs = k * BLOCK_K + offs_k
+                a = tl.load(a_ptrs, mask=mask_m[:, None] & (k_offs[None, :] < K), other=0.0)
+                b = tl.load(b_ptrs, mask=(k_offs[:, None] < K), other=0.0)
+                acc += tl.dot(a, b, allow_tf32=True)
+                a_ptrs += BLOCK_K * stride_ak
+                b_ptrs += BLOCK_K * stride_bk
+
+        if N_FULL:
+            bias = tl.load(Bias_ptr + offs_n)
+            acc = acc + bias[None, :]
+        else:
+            mask_n = offs_n < N
+            bias = tl.load(Bias_ptr + offs_n, mask=mask_n, other=0.0)
+            acc = acc + bias[None, :]
+            acc = tl.where(mask_n[None, :], acc, -float('inf'))
+
+        tile_max = tl.max(acc, axis=1)
+        new_max = tl.maximum(running_max, tile_max)
+        scale = tl.exp(running_max - new_max)
+        tile_sum = tl.sum(tl.exp(acc - new_max[:, None]), axis=1)
+        running_sum = running_sum * scale + tile_sum
+        running_max = new_max
+
+    lse = running_max + tl.log(running_sum)
+    tl.store(Out_ptr + offs_m, lse, mask=mask_m)
+
+
+def gemm_sigmoid(x, wt, b):
+    # wt: [K, N] contiguous (transposed weight)
+    M, K = x.shape
+    K2, N = wt.shape
+    out = torch.empty((M, N), device=x.device, dtype=x.dtype)
+    def grid(meta):
+        return (triton.cdiv(M, meta['BLOCK_M']) * triton.cdiv(N, meta['BLOCK_N']),)
+    gemm_sigmoid_kernel[grid](
+        x, wt, b, out,
+        M, N, K,
+        x.stride(0), x.stride(1),
+        wt.stride(0), wt.stride(1),
+        out.stride(0), out.stride(1),
+        K_DIVISIBLE=(K % 32 == 0 and K % 64 == 0) or (K % 32 == 0),
+    )
+    return out
+
+
+def gemm_lse(x, wt, b):
+    # wt: [K, N] contiguous (transposed weight)
+    M, K = x.shape
+    K2, N = wt.shape
+    out = torch.empty((M,), device=x.device, dtype=x.dtype)
+    def grid(meta):
+        return (triton.cdiv(M, meta['BLOCK_M']),)
+    n_full = (N % 1024 == 0)
+    gemm_lse_kernel[grid](
+        x, wt, b, out,
+        M, N, K,
+        x.stride(0), x.stride(1),
+        wt.stride(0), wt.stride(1),
+        N_FULL=n_full,
+        K_DIVISIBLE=(K % 32 == 0),
+    )
+    return out
+
+
+class ModelNew(nn.Module):
+    def __init__(self, input_size, hidden_size, output_size):
+        super().__init__()
+        self.linear1 = nn.Linear(input_size, hidden_size)
+        self.linear2 = nn.Linear(hidden_size, output_size)
+        # Pre-transpose weights: nn.Linear weight is [out, in]; we want [in, out] contiguous.
+        with torch.no_grad():
+            w1t = self.linear1.weight.detach().t().contiguous()
+            w2t = self.linear2.weight.detach().t().contiguous()
+        self.register_buffer('w1t', w1t)
+        self.register_buffer('w2t', w2t)
+
+    def forward(self, x):
+        x = x.contiguous()
+        h = gemm_sigmoid(x, self.w1t, self.linear1.bias)
+        out = gemm_lse(h, self.w2t, self.linear2.bias)
+        return out

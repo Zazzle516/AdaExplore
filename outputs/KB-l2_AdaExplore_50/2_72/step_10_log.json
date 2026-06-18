@@ -1,0 +1,27 @@
+{
+    "node_id": 10,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.014187833147250448
+    ],
+    "small_guidance": "- The scatter conv-transpose is the bottleneck (409 ms vs 5.8 ms baseline). Atomic adds across all OC for every input element kill throughput. Even within the current structure, reorder the loop so the OC dim is the GEMM-N tile (BLOCK_OC=16 exactly matches OC=16) and use `num_warps=1` since BLOCK_OC=16 is tiny; also hoist the `id_*SD-PD` / `ih*SH-PH` computations and skip programs early when the input is at a boundary.\n- For the fused BN+pool kernel, the two avg-pools collapse to a 4\u00d74\u00d74 window \u2014 current code is fine but use `BLOCK=256`, `num_warps=4`, and load `scale`/`shift` once per program (only one `c` per offs would require per-element gather; better to tile so one program == one `(n,c,od,oh,ow)` row of `ow` values sharing the same `c`).\n- Wrap both kernels in `@triton.autotune` keyed on `(N*OC*OD*OH*OW)` with configs over `BLOCK \u2208 {128,256,512}` and `num_warps \u2208 {2,4,8}`.",
+    "large_guidance": "- Replace the scatter-add ConvTranspose3d with a **gather-based GEMM** formulation: one program per `(N, OC tile, output-spatial tile)`, gather contributions from the (sparse) set of input positions that map to each output voxel \u2014 this removes all atomics and turns the op into a standard tiled matmul over `K = IC*KD*KH*KW` with masking for stride alignment. Output shape (N=64, OC=16, OD=63, OH=63, OW=63) \u2192 ~256M outputs, but each only sums over `IC * ceil(KD/SD) * ceil(KH/SH) * ceil(KW/SW) = 3*2*2*2 = 24` MACs, so this is tractable as a direct gather.\n- Fuse the BN affine and both avg-pools (a 4\u00d74\u00d74 window) directly into the conv-transpose epilogue: each program writes the pooled output voxel by accumulating the 64 contributing pre-pool conv outputs, applies `scale*x+shift`, divides by 64. This eliminates the entire intermediate `(64,16,63,63,63)` tensor (~64 MB) and its memory traffic, and is the single biggest win available.\n- Use `channels_last_3d` layout so OC is the contiguous axis for both the weight gather and the output store, enabling coalesced vector loads across the GEMM-N dimension.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 11,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        0.36042383585251137
+    ]
+}

@@ -1,0 +1,27 @@
+{
+    "node_id": 8,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- Add `triton.autotune` to `gemm_kernel` over configs like (BLOCK_M=128, BLOCK_N=256, BLOCK_K=32/64, num_warps=8, num_stages=3/4), (128,128,32,8,3), (64,128,64,4,3); current 64\u00d7128\u00d732 with 4 warps is far below RTX-4090 peak for an 1024\u00d78192\u00d78192 GEMM.\n- Add a GROUP_M=8 swizzle to `gemm_kernel` to reuse L2 across N tiles within a row group, and pre-transpose W to a (K, N) contiguous layout once in `__init__` so the inner B load is a contiguous row stride.\n- Drop the atomic-min in `gn_min_kernel`: launch one program per row with BLOCK_C = next_pow2(C=8192) and reduce across all groups in-register (compute per-group mean/var via segmented reduction or just loop over groups inside the program), eliminating M\u00d7num_groups atomics into a single tl.min.",
+    "large_guidance": "- Fuse GroupNorm + min + bias-add into a single persistent per-row kernel: load the full row (8192 fp32 = 32KB, fits in regs/SRAM with tiling) once, compute per-group mean/var with a 2-pass reduction over C with CPG=16 lanes, apply affine, take a running min across the row, then add bias[c=0,*,0,0]\u2026 wait \u2014 note the output of min is (M,1) and bias is (1,C,1,1), so the final result is (M,C,1,1); fuse the broadcast-add into the same kernel writing M\u00d7C output directly.\n- For the GEMM, since M=1024, N=8192, K=8192 is a large square-ish problem, consider a split-K or stream-K Triton GEMM, or simply a well-tuned tiled GEMM with BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3 \u2014 current kernel is the dominant cost and is severely under-tuned.\n- Pre-transpose and store `gemm.weight` as (K,N) contiguous in `__init__` to avoid the strided B access pattern; combine with a Stream-K scheduler if M tiles are few (only 8 row tiles at BLOCK_M=128) to keep all 128 SMs busy.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 9,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

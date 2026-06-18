@@ -1,0 +1,30 @@
+{
+    "node_id": 26,
+    "parent_node_id": 20,
+    "context_node_ids": [
+        19,
+        20
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.43664469226243013,
+    "max_reward": 0.43664469226243013,
+    "avg_reward": 0.43664469226243013,
+    "score": [
+        1,
+        1,
+        0.4023187111650485
+    ],
+    "small_guidance": "- The fused epilogue is already cheap; the 20.6 ms runtime is dominated by `nn.ConvTranspose3d`. Tuning BLOCK_SIZE/num_warps of the elementwise kernel will not move fast_p past ~0.5. If staying small, at least also fold the `self.bias` add into the epilogue (currently `bias` is created but never used) and switch to channels_last_3d so the conv path uses cuDNN's NHWC kernels.\n- Add `triton.autotune` over BLOCK_SIZE \u2208 {1024, 2048, 4096, 8192}, num_warps \u2208 {4, 8} for the elementwise kernel \u2014 minor, but free.\n- Note the hardswish formula: reference computes `v * (v * hardswish_relu6(v+3)/6)` = `v * hardswish(v)`, double-check the epilogue matches (it does: `out = v * hs` where `hs = v*relu6(v+3)/6`).",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, OC_tile, in_spatial_tile)`, compute the `input \u00d7 weight` outer product and scatter-add into the output grid using stride=2/padding=1/output_padding=1 index math. This is the dominant op (input 128\u00d732\u00d716\u00b3, output 128\u00d764\u00d732\u00b3 = 268M elements, kernel 3\u00b3); it's where all the headroom is.\n- Fuse the bias add, `add_input` add, and `v*hardswish(v)` activation directly into the scatter kernel's epilogue (write final activated value, not raw conv output) to eliminate the second pass over 268M elements entirely.\n- Use channels_last_3d layout (NDHWC) so the OC axis is the GEMM-N dimension and IC*kD*kH*kW is contiguous along GEMM-K; tile BLOCK_M=64 over output spatial, BLOCK_N=64 over OC, BLOCK_K=32 over IC, autotune num_warps\u2208{4,8}, num_stages\u2208{2,3}. Alternatively, since stride=2 with output_padding=1 makes the output exactly 2\u00d7 per dim, an explicit gather-style direct kernel (each output voxel gathers from the up-to-one matching input voxel per kernel offset) is also viable and avoids atomics.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 27,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        0.7818646650943397
+    ]
+}

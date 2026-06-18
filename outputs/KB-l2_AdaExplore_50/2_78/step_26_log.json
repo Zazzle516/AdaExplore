@@ -1,0 +1,30 @@
+{
+    "node_id": 26,
+    "parent_node_id": 16,
+    "context_node_ids": [
+        6,
+        16
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4845184554149019,
+    "max_reward": 0.4845184554149019,
+    "avg_reward": 0.4845184554149019,
+    "score": [
+        1,
+        1,
+        0.7972772571729403
+    ],
+    "small_guidance": "- The conv_transpose3d call dominates runtime now (~13ms vs 10.4ms baseline); the fused pool+sum kernel is fine but tuning it further won't close the gap. If staying small, try increasing `num_warps=2` and adding `num_stages=2`, and consider processing multiple (oh, ow) per program to amortize index math.\n- Fold the conv_transpose3d bias into the kernel epilogue (add bias before the maxpool reduction) to avoid the extra bias kernel launch from cuDNN.\n- Try `channels_last_3d` memory format on the conv_transpose output so the C-axis gather in the pool+sum kernel becomes contiguous (currently `c_offs * stride_xc` is strided by D*H*W).",
+    "large_guidance": "- The heavy operator is `nn.ConvTranspose3d` (in=32, out=64, k=5, stride=2, D=H=W=32 \u2192 output 64\u00d764\u00d764). Replace it with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile), compute `input \u00d7 weight` outer product and scatter-add into the output grid with stride/padding index math. This is the high-headroom move per the skill guide.\n- Better: fuse the entire pipeline \u2014 ConvTranspose3d \u2192 maxpool(2) \u2192 maxpool(3) \u2192 sum(C) collapses to a stride-6 maxpool over a 6\u00b3 window on the conv-transpose output, followed by channel sum. Since output spatial is only 5\u00d75\u00d75 per batch after pooling (16\u00d7125=2000 output elements), a gather-style kernel that, for each output element, directly computes the 6\u00b3 window of conv-transpose outputs on-the-fly (summing over OC inside) avoids ever materializing the 64\u00d764\u00d764\u00d764 intermediate.\n- Alternatively, since the final reduction sums over OC, swap the order: precompute `weight.sum(0)` is forbidden (algebraic shortcut), so instead structure the kernel so OC is the innermost reduction axis with a small BLOCK_OC tile, keeping the conv-transpose work intact but fusing the OC sum with maxpool reduction in registers.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 27,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.9494847335423198
+    ]
+}

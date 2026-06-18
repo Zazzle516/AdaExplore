@@ -1,0 +1,29 @@
+{
+    "node_id": 5,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        4
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness bug: in `fused_bn_subtract_mean`, the epilogue computes `scale*(x - m_nc)` which omits BN's per-channel mean centering and the affine bias. It should compute `gamma * (x - mu_c) / sqrt(var_c + eps) + beta - mean_over_spatial(that)`. Combine: `y = scale_c*(x - mu_c) + beta`, then subtract per-(N,C) spatial mean of `y`, which equals `scale_c*(m_nc - mu_c) + beta`. So output = `scale_c * (x - m_nc)` only if beta cancels \u2014 it does \u2014 but you must use `mu_c` (per-channel global mean) in the BN normalize step. Actually since both `y` and `mean(y)` share `beta` and `scale_c*mu_c`, those cancel and result simplifies to `scale_c*(x - m_nc)`. The real bug is likely using training-mode stats while reference uses `bn.training` default True but eval semantics differ; verify by switching to eval-mode stats (running_mean/var) or correctly computing unbiased var. Also check `scale_c` dtype/broadcast.\n- Add `@triton.autotune` to `_convt3d_gather_kernel_nb` over `{(BLOCK_OC,BLOCK_SP,BLOCK_IC)} \u2208 {(32,32,16),(64,32,16),(32,64,16),(64,64,16)}`, `num_warps\u2208{4,8}`, `num_stages=2`, keyed on `(OC, OD*OH*OW, IC*KD*KH*KW)`.\n- Fuse the conv-transpose bias add into the gather kernel epilogue (drop the separate `out + bias.view(...)`), and consider writing output in NHWDC (channels-last) so the BN reduction reads contiguous channel vectors.",
+    "large_guidance": "- Switch ConvTranspose3d to a scatter-add formulation: one program per `(N, IC tile, input-spatial tile)` computes `x[n,ic,d,h,w] * W[ic,:,kd,kh,kw]` outer products and atomically adds into the output grid at `(d*SD - PD + kd, ...)`. With `KD*KH*KW=27` and stride 2, this avoids the divisibility checks per output and keeps a tighter inner GEMM-K loop along OC.\n- Alternatively, use an im2col-style implicit-GEMM where the K dimension is `IC*KD*KH*KW` collapsed into one loop (currently the kernel has 3 nested kd/kh/kw loops \u00d7 an inner IC loop, hurting pipelining). Flatten to a single K loop with precomputed gather offsets so `tl.dot` operates on `[BLOCK_SP, BLOCK_K] x [BLOCK_K, BLOCK_OC]` tiles with `BLOCK_K=32`.\n- Fuse BN + mean-subtract into a single two-pass kernel over `(N,C)` rows: pass 1 computes per-(N,C) sum/sumsq plus per-C accumulators via atomics or a separate small reduction; pass 2 applies `scale_c*(x - mean_nc)` (since beta cancels under mean-subtract). This removes the intermediate `sum_nc`/`sumsq_nc` materialization and the extra launch.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 6,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.32290846370039283
+    ]
+}

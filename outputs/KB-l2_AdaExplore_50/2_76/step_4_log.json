@@ -1,0 +1,30 @@
+{
+    "node_id": 4,
+    "parent_node_id": 2,
+    "context_node_ids": [
+        1,
+        2
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness failed with avg_diff ~1e-4 and max_diff ~1e-3, which is suspicious for a pure GEMM+bias+ReLU. The issue is the `% M` / `% N` wrap on `offs_am`/`offs_bn` combined with unmasked `tl.load` of A and B: out-of-bounds rows/cols get aliased to in-bounds data, polluting the dot product when M or N is not a multiple of BLOCK. For M=N=8192 with BLOCK_M/N up to 256, 8192 is divisible by all configs, so this shouldn't trigger \u2014 but autotune may select a config whose BLOCK_K doesn't divide K=8192 cleanly (all do here too). More likely culprit: TF32 (`allow_tf32=True`) accumulation is producing ~1e-4 error vs the cuBLAS fp32 reference. Try `allow_tf32=False` first to confirm correctness, then re-enable with tighter tolerance, or accept TF32 if the harness allows.\n- Add proper K-tail masking: `tl.load(a_ptrs, mask=(offs_k[None,:] + k*BLOCK_K) < K, other=0.0)` and same for B, instead of relying on K being a multiple of BLOCK_K.\n- Once correct, prune autotune configs to the 2-3 best for (1024, 8192, 8192) \u2014 likely BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3/4.",
+    "large_guidance": "- The overall structure (tiled GEMM with fused bias+ReLU epilogue, B = W.T via stride trick) is correct and competitive; no redesign needed. If a rewrite is done, consider a split-K or persistent kernel variant for the (1024, 8192) M-dimension which is short relative to N=8192.\n- Alternative: use `tl.dot` with explicit `out_dtype=tl.float32` and disable TF32 to match the reference's fp32 cuBLAS path exactly, since the harness's tolerance appears to reject ~1e-3 max error.\n- Consider preloading bias once per program into registers (already done) and ensure the epilogue mask uses the real M/N rather than the wrapped indices.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 5,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.5421241501920068
+    ]
+}

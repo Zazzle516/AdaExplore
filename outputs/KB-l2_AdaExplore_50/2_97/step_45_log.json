@@ -1,0 +1,31 @@
+{
+    "node_id": 45,
+    "parent_node_id": 42,
+    "context_node_ids": [
+        27,
+        33,
+        42
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.47600654264777814,
+    "max_reward": 0.47600654264777814,
+    "avg_reward": 0.47600654264777814,
+    "score": [
+        1,
+        1,
+        0.7270539768441695
+    ],
+    "small_guidance": "- The training path currently runs three kernels (cuBLAS addmm \u2192 bn_stats \u2192 bn_apply). Fuse the bn_stats reduction into a single-pass Welford or sum/sum_sq Triton kernel that loads `y` once and writes mean/var; then the bn_apply elementwise pass dominates. Tune `bn_apply_kernel_1d` with BLOCK=8192, num_warps=8, num_stages=2 (or BLOCK=2048 num_warps=4) \u2014 the current BLOCK=4096 may underutilize; sweep these.\n- In `bn_stats_kernel`, increase BLOCK_M to 512 or 1024 and lower BLOCK_N to 64 or 128 so each program does a deeper reduction with fewer outer programs; with M=1024 this lets a single iteration cover the whole column. Use num_warps=4 for BLOCK_N=64 and num_stages=2.\n- Replace `torch.addmm` + separate stats with a persistent fused GEMM-and-reduce: each `(BLOCK_M, BLOCK_N)` GEMM tile writes y and atomically/locally contributes column sum and sum_sq partials, removing one full read of y.",
+    "large_guidance": "- The reference uses BatchNorm1d which in training mode requires reducing over the batch dimension after the matmul \u2014 so the GEMM result must be materialized before the affine. A from-scratch design should do a split-K-style fused GEMM that, per N-tile, accumulates the full M\u00d7K matmul across all M-tiles within one persistent program (since M=1024 fits in a few tiles), then computes column mean/var in-register, then re-applies the affine + swish, writing y only once. This collapses 3 passes over the M\u00d7N=8M-element tensor into 1.\n- Alternatively, since M=1024 and N=8192, design a kernel where each program owns a full column (or BLOCK_N=8\u201332 columns) and loops over the K dimension internally with `tl.dot` against an A-row tile; accumulate to a register tile sized (M, BLOCK_N), then immediately reduce for mean/var, then apply scale/shift/swish and store. This is feasible because BLOCK_N=8, M=1024 \u2192 8192 floats register pressure is heavy; consider BLOCK_M=128, persistent over M within a program, with shared partials.\n- Given baseline is 2.44 ms and the kernel is 3.36 ms, the bottleneck is the K=8192 GEMM (\u2248137 GFLOPs at ~40 TF/s on a 4090 \u2192 ~3.4 ms \u2014 matches). The matmul is already at cuBLAS efficiency; the real wins come from removing the extra y-read/writes in BN. Target a single fused pass: GEMM \u2192 in-kernel column reduce \u2192 affine+swish, eliminating two full N\u00d7M traversals (~64 MB of traffic).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 46,
+    "global_best_node_id": 43,
+    "global_best_score": [
+        1,
+        1,
+        1.3204872228088698
+    ]
+}

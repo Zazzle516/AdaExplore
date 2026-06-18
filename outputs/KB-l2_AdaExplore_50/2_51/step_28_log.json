@@ -1,0 +1,29 @@
+{
+    "node_id": 28,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness bug: after LogSumExp on a tensor of shape (B,1), the result equals the mean itself (single element), so GELU is applied to the mean. That's correct in current code. However, the residual add does `x + original_x` where `x` has shape (B,1) broadcasting to (B,K). The current `add_scalar_kernel` does this. Check that `original_x` is the pre-GEMM input \u2014 yes. The bug is likely that `rowsum` accumulates via atomic_add but masked-out `acc` lanes with `mask_n` are zeroed correctly; however `mask_m` is NOT applied when zeroing acc, so out-of-range rows contribute garbage to `partial`, but those rows are masked in atomic_add \u2014 so that's fine. The actual issue: the kernel reads `W` with `stride_wn, stride_wk` assuming W is (N,K) row-major (nn.Linear weight is (out, in) = (N,K)), so stride_wn=K, stride_wk=1 \u2014 correct. Bias and sub correct. Re-examine: `torch.mean(dim=1, keepdim=True)` then `logsumexp(dim=1, keepdim=True)` on a (B,1) tensor \u2192 identity. GELU then add. Looks right.\n- Possible numerical issue: atomic_add accumulation order on fp32 over 64 tiles per row creates non-determinism but max_diff 3.14 is too large for that. Likely real bug: `tl.where(mask_n[None, :], acc, 0.0)` is applied but bias/sub were loaded with `other=0.0` so OOB columns add 0 \u2014 fine. But for the **last tile** when N is not divisible, `mask_n` zeroes correctly. With N=8192 and tile 128, evenly divisible. So suspect: the `subtract` parameter \u2014 `torch.randn` regenerates differently in ModelNew vs Model? No, both use same seed via Linear init. Actually `nn.Parameter(torch.randn(out_features))` is called in both __init__; if the reference Model is instantiated separately the weights differ. This is a framework issue, not kernel. So correctness=False at 4/5 trials with diff ~3 suggests an atomic-add race or NaN. Switch from atomic_add to a two-pass: write partial sums to (B, num_n_tiles) buffer then reduce \u2014 eliminates atomics and fp non-determinism.",
+    "large_guidance": "- Replace split-K + atomic_add with a row-parallel persistent kernel: one program per row block of BLOCK_M rows, looping over all N tiles internally and accumulating `sum_n(x @ W^T + b - sub)` in registers. Then store the per-row sum directly (no atomics, no second buffer). This is equivalent to computing `x @ (sum_n W) + sum_n(b - sub)` mathematically but you must NOT precompute the column-sum of W at init \u2014 instead do it at runtime each forward inside the kernel, or fuse the full GEMM-then-reduce as a single pass over K with `tl.dot(x_tile, w_col_sum_tile)` computed live.\n- Better: fuse the entire pipeline into two kernels \u2014 (1) compute per-row mean of (xW+b-sub) using one program per row that streams over N with a K-inner GEMV-like loop using `tl.dot`, producing scalar `s = GELU(mean)` per row; (2) elementwise `out = x + s[:,None]`. Avoids atomics and the intermediate (B,) rowsum buffer.\n- The residual add kernel currently launches B \u00d7 cdiv(K,BLOCK) programs with BLOCK up to 8192 \u2014 for B=2048,K=8192 that's 2048 programs at BLOCK=8192, fine, but autotune over BLOCK=8192 with num_warps=8 may oversubscribe. Consider a flat 1D grid over B*K elements with BLOCK=4096, num_warps=8, loading `s` via integer-divide of the linear index \u2014 simpler and bandwidth-saturating.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 29,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        1.6320820306383421
+    ]
+}

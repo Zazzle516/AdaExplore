@@ -1,0 +1,29 @@
+{
+    "node_id": 33,
+    "parent_node_id": 30,
+    "context_node_ids": [
+        30
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.43736188928243475,
+    "max_reward": 0.43736188928243475,
+    "avg_reward": 0.43736188928243475,
+    "score": [
+        1,
+        1,
+        0.4082355865800866
+    ],
+    "small_guidance": "- The current forward still calls torch's `conv_transpose3d` (the fused Triton convt kernel is defined but unused). The tail fusion alone leaves the conv as the dominant cost \u2014 wire up `_convt_pool_fused_kernel` (or a tuned variant) into `forward` so the heavy op actually runs in Triton.\n- For the tail kernel, S = OD*OH*OW = 32*64*64 = 131072 per (B,C) row. BLOCK=1024 means 128 iterations per row. Try BLOCK=2048 / num_warps=8 (or BLOCK=4096) and `num_stages=2` to cut loop overhead; also collapse the three passes into a two-pass online softmax to halve global reads.\n- Persist the row max + sum in registers and reuse the clamped values across the max/sum/store passes by caching loads in a smaller blocked sweep, or use an online (max,sum) update so only two sweeps over S are needed instead of three.",
+    "large_guidance": "- Replace torch `ConvTranspose3d` with a scatter-add Triton kernel: one program per (B, IC-tile, pooled-spatial-tile), compute the pooled input value once (8-tap average from raw x), then scatter `input \u00d7 weight[ic,:,kd,kh,kw]` into the (OC, OD, OH, OW) output grid handling stride=2 / pad=1 / output_padding=1 in the index math. This removes the cuDNN call which is the runtime dominator.\n- Alternatively, gather-form: one program per (B, OC-tile, output-spatial-tile) implementing the transposed conv as a GEMM over (IC*KD*KH*KW) with implicit im2col indices that incorporate the avg-pool (each \"input\" load is the mean of 8 raw voxels). Fuse avg_pool + convt + bias + clamp in this kernel's epilogue; write to a temp, then run the softmax+scale kernel.\n- Push the fusion boundary further: after the conv produces a tile, keep it in registers and stream into an online-softmax kernel that processes one (B,C) row at a time \u2014 but since softmax is over spatial dims (per channel) while conv tiles over output spatial, a clean split is (conv+clamp) fused, then (softmax+scale) fused, which is the structure to target with a tuned two-kernel pipeline.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 34,
+    "global_best_node_id": 29,
+    "global_best_score": [
+        1,
+        1,
+        0.8572947318181818
+    ]
+}

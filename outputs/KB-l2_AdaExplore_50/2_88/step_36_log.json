@@ -1,0 +1,27 @@
+{
+    "node_id": 36,
+    "parent_node_id": 20,
+    "context_node_ids": [],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing because `multiply_weight` is registered as `nn.Parameter(torch.randn(...))` in `ModelNew.__init__` and is not seeded the same way as `Model`'s parameters; more importantly, the GroupNorm weight/bias are captured from a freshly-constructed `nn.GroupNorm` rather than from a module that mirrors the reference. Use `nn.Linear` / `nn.GroupNorm` as submodules (or copy from a reference `Model` instance) so initialization matches; alternatively store gn_weight/gn_bias as `nn.Parameter` and let the test harness load_state_dict into them.\n- The fused GN kernel's masking is suspicious: when `BLOCK_CPG > CPG`, the `tl.sum` over `x` includes the masked-out lanes (loaded as 0.0) which is fine for sum, but `mean = sum_x / CPG` is correct. However, with `CPG = 8192/256 = 32` and `BLOCK_CPG = 32`, mask is fully valid, so this isn't the bug \u2014 focus on the init mismatch above.\n- Once correctness is fixed, raise `num_warps` for the fused GN kernel to 4 and drop `GROUPS_PER_BLOCK` to 1 (CPG=32 is tiny; one warp per group is enough), and add an autotune over `(GROUPS_PER_BLOCK \u2208 {1,4,8}, num_warps \u2208 {2,4})`.",
+    "large_guidance": "- Restructure `ModelNew` to hold real `nn.Linear` and `nn.GroupNorm` submodules (so state_dict loading from the reference works), and read `.weight`/`.bias` at forward time \u2014 pre-transpose the linear weight lazily and cache it. This eliminates the init-mismatch correctness failure root cause.\n- For the GEMM (M=1024, N=8192, K=8192), this is large enough that a split-K or a well-tuned 128\u00d7256\u00d732 / 256\u00d7128\u00d732 tile with `GROUP_M=8` swizzle and num_stages=4 will be much closer to cuBLAS; consider also using `tl.dot(..., out_dtype=tl.float32)` and ensuring B is loaded contiguous along N (already done via pre-transpose).\n- Consider fusing the second swish's sigmoid using the math identity `y*sig(y) = y / (1+exp(-y))` and computing `exp` once; minor but reduces register pressure. The GN kernel is already memory-bound on the 1024\u00d78192 output (32 MB), so the main wins are in the GEMM.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 37,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 13,
+    "parent_node_id": 10,
+    "context_node_ids": [
+        10
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4328278968855219,
+    "max_reward": 0.4328278968855219,
+    "avg_reward": 0.4328278968855219,
+    "score": [
+        1,
+        1,
+        0.3708301493055555
+    ],
+    "small_guidance": "- The fused softmax+sigmoid is already cheap; the dominant cost is `nn.ConvTranspose3d`. Tuning BLOCK_C / num_warps on the softmax kernel cannot close a 2.7\u00d7 gap. If keeping the current structure, at least try `num_warps=4` with `BLOCK_C=64` and ensure `channels_last_3d` layout so the C axis is contiguous for coalesced loads.\n- Consider folding the conv-transpose bias into the kernel epilogue and absorbing it before the softmax pass, but this is a marginal win compared to replacing the conv.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)` reads the input, multiplies by the (OC, KD, KH, KW) weight slice, and `tl.atomic_add`s into the output grid at positions `(d*stride - pad + kd, h*stride - pad + kh, w*stride - pad + kw)`. Handle `output_padding` in the index math. This is where the headroom is \u2014 the conv-transpose dominates 14.4 ms.\n- Alternative gather formulation: one program per `(N, OC tile, output-spatial tile)` iterating over `(IC, KD, KH, KW)`, computing which input voxel contributes (only when `(out + pad - kk) % stride == 0` and in range). This avoids atomics and is usually faster on Ampere; tile `BLOCK_OC=32, BLOCK_S=64, BLOCK_IC=16` with `num_warps=4, num_stages=2` to stay within SMEM.\n- Fuse the bias add, channel-softmax, and sigmoid into the conv-transpose epilogue: after producing the full `(N, OC, D, H, W)` tile, do the softmax-over-C reduction in a second persistent pass that keeps the `OC=64` vector resident per spatial position (one program per `(N, spatial)`, OC fits in registers). Autotune over `(BLOCK_OC, BLOCK_S, BLOCK_IC)` with safe starting tiles `(32,32,16), (64,32,16), (32,64,16)`.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 14,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.5287083316831683
+    ]
+}

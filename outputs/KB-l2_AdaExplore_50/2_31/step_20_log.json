@@ -1,0 +1,30 @@
+{
+    "node_id": 20,
+    "parent_node_id": 12,
+    "context_node_ids": [
+        11,
+        12
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4451850618686869,
+    "max_reward": 0.4451850618686869,
+    "avg_reward": 0.4451850618686869,
+    "score": [
+        1,
+        1,
+        0.47277676041666666
+    ],
+    "small_guidance": "- The kernel loads `x` as `[BLOCK_K, BLOCK_N]` and `w` as `[BLOCK_M, BLOCK_K]`, then calls `tl.dot(w, x)` \u2014 that's fine, but the x gather indexes `ih`/`iw` as `[BLOCK_K, BLOCK_N]` per K-iter, which is expensive. Add configs with smaller `BLOCK_N` (32/64) and larger `BLOCK_M` (128) since `OHW=15876` is large but per-tile reuse on M is what amortizes the gather; try `(BLOCK_M=128, BLOCK_N=64, BLOCK_K=64, num_warps=8, stages=3)` and `(64,64,64,4,3)`.\n- Enable TF32 (`allow_tf32=True`) in `tl.dot` \u2014 current `allow_tf32=False` forces full fp32 MAC and roughly halves throughput on Ada; verify tolerance still passes.\n- Swap the program-id mapping so `pid_oc` is the fast-varying axis (better L2 reuse of `x` across OC tiles for the same spatial tile); also add `num_stages=3` configs now that small tiles compile.",
+    "large_guidance": "- Rewrite as an implicit-GEMM where the inner reduction axis is just `IC` (channels-last contiguous) and the `KH*KW` loop is the outer loop. With `IC=64` and channels-last, each K-step is a clean coalesced `[BLOCK_N, IC]` load \u2014 no gather pattern across the reduction axis \u2014 and `tl.dot` operates on `[BLOCK_M, IC] x [IC, BLOCK_N]` per (kh,kw) step. This dramatically improves load coalescing vs. the current `[KH*KW*IC]` flattened K.\n- Use channels-last output too (write NHWC, then permute once) so the store is also coalesced; alternatively keep NCHW output but pre-stage into shared memory by row.\n- Consider a persistent-CTA design with one program per (N, OC-tile) sweeping spatial tiles, so weight tiles for that OC group are loaded once and reused across all output pixels in the batch \u2014 this is the largest reuse axis given `OHW=15876` and `OC=128`.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 21,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.686288845766129
+    ]
+}

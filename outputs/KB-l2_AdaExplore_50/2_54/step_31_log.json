@@ -1,0 +1,29 @@
+{
+    "node_id": 31,
+    "parent_node_id": 30,
+    "context_node_ids": [
+        30
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4958750490932194,
+    "max_reward": 0.4958750490932194,
+    "avg_reward": 0.4958750490932194,
+    "score": [
+        1,
+        1,
+        0.8909691550190597
+    ],
+    "small_guidance": "- Swap the GEMM mapping: make BLOCK_N tile the OC dimension fully (OC=64 fits one tile) and let BLOCK_M tile spatial; try BLOCK_M=64/128, BLOCK_N=64, BLOCK_K=64 with num_warps=4, removing the pid_oc grid dim. This eliminates redundant weight loads across OC tiles.\n- Store output directly in NHWC (skip the NCHW scatter at the end) and have the forward return a view/permute, or fuse the layout transform \u2014 the current strided per-channel store (`offs_n * OH*OW + offs_m`) is non-coalesced and likely a real cost.\n- Add autotune configs with BLOCK_K=IC=64 (single K iteration, drop the inner k0 loop) and try num_stages=3-4; also try BLOCK_M=32 with num_warps=2 to reduce register pressure since KH*KW*IC/BLOCK_K = 9 inner iters already.",
+    "large_guidance": "- Rewrite as an implicit-GEMM conv with a persistent kernel: one program per (N, OC-tile, spatial-tile), keep accumulator resident, and load the entire weight (OC\u00d7KH\u00d7KW\u00d7IC = 64\u00b79\u00b764\u00b74B = 144KB \u2014 too big for SMEM, but OC-tile\u00d7K fits) reused across the spatial tile. Output directly in NCHW by computing the right store offsets, no NHWC permute on input either \u2014 gather from NCHW with channel as the K axis using vectorized loads.\n- Skip the input NHWC permute entirely (it's a full extra read+write of a 64\u00b764\u00b7256\u00b7256 fp32 = 256MB tensor each forward). Instead, index NCHW directly: for a given (n, oh, ow) tile and OC tile, loop kh,kw and load a (BLOCK_M, BLOCK_K) block where K spans IC contiguously per (n,c,ih,iw) \u2014 IC=64 is contiguous in NCHW only along H/W, so restructure K to iterate (kh,kw) outer and IC as the contiguous gather inside; or pre-pack weight once and accept NHWC but cache the permuted input across calls when shape repeats.\n- Consider a split-K / Cooperative variant: with OH*OW=64516 and OC=64, the M dimension dominates; use a 2D grid (N*spatial_tiles, 1) with OC fully unrolled in registers (BLOCK_N=64 constexpr) and KH,KW as tl.static_range \u2014 this exposes more ILP and removes the OC tile dim entirely.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 32,
+    "global_best_node_id": 12,
+    "global_best_score": [
+        1,
+        1,
+        1.1094821598101265
+    ]
+}

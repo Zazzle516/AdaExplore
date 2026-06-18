@@ -1,0 +1,29 @@
+{
+    "node_id": 24,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        20
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5321046865203762,
+    "max_reward": 0.5321046865203762,
+    "avg_reward": 0.5321046865203762,
+    "score": [
+        1,
+        1,
+        1.1898636637931037
+    ],
+    "small_guidance": "- Add a `triton.autotune` over `BLOCK_M \u2208 {64,128}`, `BLOCK_N \u2208 {64,128}`, `BLOCK_K \u2208 {32,64}`, `num_warps \u2208 {4,8}`, `num_stages \u2208 {2,3}` keyed on `(OC, OH*OW, IC*KH*KW)` \u2014 current 64/64/32 with 4 warps is likely leaving compute on the table for OC=128, M=64516, K=576.\n- Replace `tl.log(1+tl.exp(x))` with a numerically stable softplus (`tl.where(x>20, x, tl.log1p(tl.exp(-tl.abs(x))) + tl.maximum(x,0))`) \u2014 current form overflows on large activations and the `2*sigmoid(2*sp)-1` trick can be simplified to `tl.tanh` via the identity if available, saving ops.\n- Precompute `K=IC*KH*KW` and pass `KH*KW` as a constexpr; hoist `ih*W+iw` index math by computing `oh*W+ow` once per program and reusing the base offset across the K loop to reduce integer arithmetic in the inner loop.",
+    "large_guidance": "- Switch input layout to channels-last (NHWC) so the GEMM-K dimension (IC*KH*KW) is contiguous in memory; the current NCHW gather inside the K loop generates strided loads that hurt L2 reuse. Stage weight as (IC*KH*KW, OC) so both operands feed `tl.dot` directly without transposes.\n- Tile along output spatial as a 2D (OH_tile, OW_tile) block (e.g. 8x16 or 16x16) instead of flattened M \u2014 this lets `kh,kw` shifts reuse the same input rows across BLOCK_K iterations (halo reuse), cutting redundant gathers by a factor of KH*KW.\n- Consider a persistent kernel that loops over (N, oc_tile, sp_tile) on a fixed grid sized to SM count \u2014 at N=64, OC=128, M=64516 there are ~16K tiles; persistence amortizes launch/index-setup and improves L2 hit rate on the weight tensor (only 128*576*4 \u2248 288KB, fits L2 once).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 25,
+    "global_best_node_id": 24,
+    "global_best_score": [
+        1,
+        1,
+        1.1898636637931037
+    ]
+}

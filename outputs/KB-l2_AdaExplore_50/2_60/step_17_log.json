@@ -1,0 +1,29 @@
+{
+    "node_id": 17,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4528273895202021,
+    "max_reward": 0.4528273895202021,
+    "avg_reward": 0.4528273895202021,
+    "score": [
+        1,
+        1,
+        0.5358259635416667
+    ],
+    "small_guidance": "- The conv_transpose kernel launches `N*OD*OH*OW = 128*31*63*63 \u2248 15.7M` programs with only BLOCK_OC=16/32 output channels each \u2014 far too granular. Tile multiple output spatial positions per program (e.g. BLOCK_OW=8 or BLOCK_SPATIAL=16) so one program produces a contiguous output tile, and increase BLOCK_OC to 16 (=OC) so the full OC fits in one program. Bump `num_warps=4`.\n- Add `triton.autotune` over `{BLOCK_OC: [16], BLOCK_OW: [4,8,16], num_warps: [2,4,8], num_stages: [2,3]}` for the conv kernel; the current num_warps=2 with tiny accumulator (16 lanes) under-utilizes the SM.\n- For group_norm, fuse the two passes via online Welford and persist the row in registers/shared when `group_elems = 4*31*63*63 \u2248 492K` \u2014 too big to persist; instead, increase BLOCK_SIZE to 2048 and `num_warps=8` to halve loop iterations.",
+    "large_guidance": "- Reformulate ConvTranspose3d as a **scatter-add via input-centric GEMM**: one program per `(N, input-spatial tile)` loads `x[n, :, id, ih, iw]` (IC=3 values) into registers and computes the outer product with the full weight `W[IC, OC, KD, KH, KW]` (only 3\u00b716\u00b727=1296 floats \u2014 fits easily in SRAM as constant), then atomically/scatters into the OD\u00d7OH\u00d7OW output positions. With IC=3, OC=16, this transforms the kernel into a tiny dense matmul per input voxel and eliminates the 15M-program gather overhead plus the modulo-stride validity checks.\n- Alternatively, since `OD*OH*OW \u2248 123K` per (N,OC) and IC=3 is tiny, use a **gather-style im2col GEMM** with one program per `(N, OC_tile, output-spatial-tile=64)`: precompute the (kd,kh,kw,ic)\u2192input-offset map once, accumulate over the K=IC*KD*KH*KW=81 reduction dim with BLOCK_K=81 fully unrolled. This collapses the launch grid by ~64\u00d7.\n- Fuse Swish into the conv epilogue (already done) and consider fusing GroupNorm's first-pass reduction by having the conv kernel atomically accumulate per-group sum/sum_sq into a small auxiliary buffer, so the GN kernel only does the normalization pass + HardSwish \u2014 saves one full read of the 16MB activation tensor.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 18,
+    "global_best_node_id": 15,
+    "global_best_score": [
+        1,
+        1,
+        1.2350370348139257
+    ]
+}

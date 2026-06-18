@@ -1,0 +1,29 @@
+{
+    "node_id": 21,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        4
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4447203067252213,
+    "max_reward": 0.4447203067252213,
+    "avg_reward": 0.4447203067252213,
+    "score": [
+        1,
+        1,
+        0.46894253048307527
+    ],
+    "small_guidance": "- The fused_pool tail is already cheap; the 19.3 ms runtime is dominated by `self.conv_transpose` (cuDNN). Tuning BLOCK/C_TILE/num_warps on the pool kernel will not move fast_p meaningfully \u2014 skip further pool tuning.\n- If staying small: at least try `channels_last_3d` memory format on the conv input/weight and `torch.backends.cudnn.benchmark = True` in `__init__` so cuDNN picks a faster algo for this (N=128, OC=16) shape.\n- Drop the unused `convt3d_scatter_kernel` (dead code) and ensure the pool kernel uses `num_warps=4` for C_TILE=4, BLOCK=128 to reduce register pressure \u2014 current 8 warps \u00d7 3 stages is over-provisioned for this tiny tail.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, ID, IH, IW)`; load one input voxel, multiply by the full `(OC, KD, KH, KW)` weight tile, and `tl.atomic_add` into the output grid with stride/padding index math. This is the dominant cost and the existing scatter kernel is a starting skeleton but needs to actually be wired into forward.\n- Better: fuse the entire pipeline. Since the final output is `(N, OC, 1, 1, 1)` (global avg over a maxpool over scale*convT), make one program per `(N, OC tile)` that gathers the relevant input contributions, computes convT outputs on the fly per maxpool window, takes max within each `MK^3` block, and accumulates the sum for global average \u2014 avoiding ever materializing the `(N, 16, 31, 63, 63)` convT output (\u2248250 MB), which is likely the real bottleneck (memory traffic, not compute).\n- Alternatively, gather formulation: for each output spatial pooled cell `(pd, ph, pw)`, the set of input voxels contributing is small and statically known from stride/kernel. Precompute per-output-cell input index lists at `__init__` and run a Triton gemm-like kernel that reads input + weight and produces directly the maxpooled tensor, then a tiny second kernel does global avg + clamp.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 22,
+    "global_best_node_id": 20,
+    "global_best_score": [
+        1,
+        1,
+        16.336806567370672
+    ]
+}

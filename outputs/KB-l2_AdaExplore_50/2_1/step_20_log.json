@@ -1,0 +1,29 @@
+{
+    "node_id": 20,
+    "parent_node_id": 19,
+    "context_node_ids": [
+        19
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4671778047785548,
+    "max_reward": 0.4671778047785548,
+    "avg_reward": 0.4671778047785548,
+    "score": [
+        1,
+        1,
+        0.6542168894230769
+    ],
+    "small_guidance": "- The kernel computes `tl.dot(w_vals, x_vals)` where `w_vals` is [BLOCK_M, BLOCK_K] and `x_vals` is [BLOCK_K, BLOCK_N] \u2014 the x_vals load layout uses `ic[:, None]` and `kh[:, None]` indexed against `oh[None, :]`, which gathers non-contiguous strided memory along BLOCK_N (output spatial). Add a `channels_last` (NHWC) layout transpose for `x` and `out` so the gather becomes contiguous along the spatial dim, dramatically improving L1/L2 hit rate.\n- Add larger autotune configs now that small ones compile: `BLOCK_M=128, BLOCK_N=128, BLOCK_K=16, num_warps=8, num_stages=2` (SMEM = (128\u00b716+16\u00b7128)\u00b74\u00b72 = 32 KB, fits) and `BLOCK_M=64, BLOCK_N=256, BLOCK_K=16, num_warps=8`. Larger BLOCK_N maps better to the OH\u00b7OW=15876 GEMM-N dimension.\n- Drop `k_mask` entirely: `KH*KW=9` and `IC=64` so `K=576` is divisible by `BLOCK_K=16/32`. Removing the mask lets the inner loop be fully unrolled / branch-free.",
+    "large_guidance": "- Switch to an explicit im2col-style direct conv where the kernel is rewritten as a GEMM with N=OH\u00b7OW being the contiguous axis, and reorganize input/output to **NHWC (channels_last)** layout. Currently the K-dim gather along input height/width with `ic` as outer stride causes uncoalesced loads; with NHWC, each `(ih,iw)` row of K=IC elements is contiguous and a `tl.load` of [BLOCK_K, BLOCK_N] across spatial positions becomes one stride-1 read per kh,kw pair.\n- Make the `(KH, KW)` loop the outer loop and the `IC` reduction the inner BLOCK_K loop. With KH=KW=3, you get 9 iterations of a clean tiled GEMM where `w_vals` is `[BLOCK_M, IC]` (or BLOCK_K chunk of IC) and `x_vals` is `[IC, BLOCK_N]` taken from a fixed `(kh, kw)` shifted spatial window \u2014 eliminates per-iteration division/modulo of `k` into `(ic, kh, kw)`.\n- Persist one program per `(N, OC tile)` and march along the spatial dimension in the kernel body to amortize weight loads (weights stay resident across spatial tiles); fuse conv-bias + ReLU + extra-bias in the epilogue exactly as today.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 21,
+    "global_best_node_id": 6,
+    "global_best_score": [
+        1,
+        1,
+        1.328878056640625
+    ]
+}

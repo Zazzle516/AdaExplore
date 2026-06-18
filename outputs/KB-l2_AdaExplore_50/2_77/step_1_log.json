@@ -1,0 +1,27 @@
+{
+    "node_id": 1,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4521952937538652,
+    "max_reward": 0.4521952937538652,
+    "avg_reward": 0.4521952937538652,
+    "score": [
+        1,
+        1,
+        0.5306111734693878
+    ],
+    "small_guidance": "- The global avg pool kernel is fine but trivial relative to runtime; the dominant cost is `conv_transpose3d` + BN. Tuning pool BLOCK to 2048 with num_warps=8 may shave \u00b5s but won't move fast_p meaningfully.\n- Fuse the `* scale_factor` and BN affine into a single elementwise epilogue kernel applied to the conv_transpose output (fold BN running stats at eval into combined scale/bias: `s = scale_factor * gamma / sqrt(var+eps)`, `b = beta - mean * gamma / sqrt(var+eps)`), then feed directly into the global avg pool. Even better: fuse the scale+BN+global-avg-pool into one pass that reduces over D*H*W per (N,C) \u2014 avoids reading the post-conv tensor twice.\n- Ensure eval mode (`self.eval()` or check `self.training`) so BN uses running stats; otherwise the fold is incorrect.",
+    "large_guidance": "- The conv_transpose3d dominates (~95% of runtime). Replace it with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)`, computing the outer product `input[n, ic, d, h, w] * weight[ic, oc, kd, kh, kw]` and scatter-adding into output positions `(d+kd, h+kh, w+kw)` across the OC dimension. Handle padding=0, stride=1 (kernel_size=5) \u2014 output shape is `(D+4, H+4, W+4)`.\n- Alternative: implement as a gather-based GEMM where each output position `(od, oh, ow)` gathers contributions from input positions `(od-kd, oh-kh, ow-kw)` valid in input bounds; this is a standard im2col-on-output formulation and maps cleanly to a tiled GEMM over `(OC, output-spatial)` with K = `IC * kd * kh * kw = 64*125 = 8000`. Tile BLOCK_M=64 (OC), BLOCK_N=64 (spatial), BLOCK_K=32, num_warps=4.\n- Fuse the full epilogue: after the GEMM accumulates an output tile in registers, apply `(acc + bias_oc) * scale * bn_scale + bn_bias` and then reduce-add the tile's spatial values into a per-(N,OC) accumulator (atomic add to a small `(N,OC)` buffer), eliminating the post-conv materialization entirely. Final divide by `D_out*H_out*W_out` happens in a tiny epilogue kernel.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 2,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.5306111734693878
+    ]
+}

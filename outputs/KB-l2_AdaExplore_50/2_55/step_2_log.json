@@ -1,0 +1,27 @@
+{
+    "node_id": 2,
+    "parent_node_id": 1,
+    "context_node_ids": [],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- Current kernel uses one program per row doing a full GEMV \u2014 this leaves N=32768 reduction serialized per row and wastes parallelism. At minimum, split the N dimension across programs (2D grid: M \u00d7 N_tiles), write partial pooled+summed contributions to a `(M, N_tiles)` scratch, then do a tiny second reduction kernel. This alone should give ~10-50\u00d7 speedup.\n- Increase `BLOCK_K` to 128 or 256 and use `tl.dot` with a 2D x tile (load x once per K-chunk, reuse across all N tiles in the program) instead of broadcasting a 1D x vector against W rows; tune `(BLOCK_N, BLOCK_K) \u2208 {(128,128),(64,256),(256,64)}`, `num_warps=4 or 8`, `num_stages=3-4`.\n- Transpose/preload W layout so that W is accessed `[K, N]`-contiguous on N (the inner axis of `tl.dot`); keep bias add, `-inf` masking, pair-max, and partial-sum all fused in the epilogue as today.",
+    "large_guidance": "- Redesign as a tiled GEMM: grid = `(cdiv(M, BLOCK_M), cdiv(N, BLOCK_N))`, each program computes a `[BLOCK_M, BLOCK_N]` tile of `x @ W.T + b` via `tl.dot` over `BLOCK_K` chunks. In the epilogue, reshape the tile to `[BLOCK_M, BLOCK_N//2, 2]`, take max over the last axis, sum over the pooled axis, and `atomic_add` (or write to a `(M, N_tiles)` partials buffer) into the output `[M]`. This exposes both M and N parallelism \u2014 current kernel only parallelizes over M=128, which severely underutilizes the 4090.\n- Use a two-stage reduction: stage 1 produces partials `[M, num_N_tiles]` with the fused matmul+bias+pool+partial-sum; stage 2 is a trivial row-reduction kernel multiplying by `scale_factor`. Avoids atomics and keeps stage 1 a clean GEMM-shaped kernel that can use `tl.dot` efficiently.\n- Pre-transpose `W` to `[K, N]` once at init (store as a buffer) so the hot loop reads W with N contiguous, matching `tl.dot`'s preferred layout; bias is loaded once per N-tile in the epilogue.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 3,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

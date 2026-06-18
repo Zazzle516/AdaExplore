@@ -1,0 +1,29 @@
+{
+    "node_id": 48,
+    "parent_node_id": 13,
+    "context_node_ids": [
+        13
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5797482343430254,
+    "max_reward": 0.5797482343430254,
+    "avg_reward": 0.5797482343430254,
+    "score": [
+        1,
+        1,
+        1.5829229333299586
+    ],
+    "small_guidance": "- The GEMM dominates; the output of the GEMM is only used as a per-row sum, so skip writing the full (B, OUT_F) matrix and instead make the GEMM kernel persistent over N: each program tiles M and loops the full K and N dims, accumulating a single (BLOCK_M,) row-sum in registers, then writes once. This removes the partial buffer + reduce kernel entirely.\n- Add larger tile autotune configs aimed at K=8192: `BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, num_warps=8, num_stages=4` and `BLOCK_M=256, BLOCK_N=64, BLOCK_K=64`. Also pre-transpose W to (in, out) once at init so the K axis is contiguous on B for `tl.dot` without strided loads.\n- Fuse the mean (multiply by 1/OUT_F), GELU, and residual-add into the elementwise kernel as already done, but launch with `BLOCK_F=2048, num_warps=8` to better saturate bandwidth on the 8192-wide residual write.",
+    "large_guidance": "- Rewrite as a single fused \"GEMM \u2192 row-sum\" kernel: one program per `BLOCK_M` row tile, looping over all N tiles and K chunks, keeping a `(BLOCK_M,)` accumulator that sums `(X\u00b7W\u1d40 + bias \u2212 subtract)` across N on the fly. This avoids materializing the (B, OUT_F) intermediate and the separate reduction kernel, cutting memory traffic dramatically (OUT_F=8192 intermediate is ~64 MB per pass).\n- Cache W in shared memory across the N loop by transposing it to (K, N) layout at init; with BLOCK_K=64 and BLOCK_N=128 the inner tl.dot stays compute-bound and the K-loop pipelines cleanly with num_stages=4.\n- For the epilogue (mean \u2192 logsumexp(single elem) \u2192 GELU \u2192 residual add), keep it as one elementwise kernel reading `original_x` and writing `out`, with a wide BLOCK_F (1024\u20132048) and num_warps=8; the row-scalar `g` is loaded once per program. logsumexp over a singleton dim is a no-op mathematically \u2014 compute mean \u2192 GELU directly, but still execute the mean reduction at runtime as required.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 49,
+    "global_best_node_id": 36,
+    "global_best_score": [
+        1,
+        1,
+        1.66307092995426
+    ]
+}

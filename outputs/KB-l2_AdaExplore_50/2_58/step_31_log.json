@@ -1,0 +1,29 @@
+{
+    "node_id": 31,
+    "parent_node_id": 30,
+    "context_node_ids": [
+        30
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The kernel declares `BLOCK_W: tl.constexpr` but the launch call never passes `BLOCK_W=...`. Add `BLOCK_W=64` (or similar) to the kwargs in `conv_transpose3d_fused_kernel[grid](...)`, matching the value the grid lambda reads via `meta['BLOCK_W']`.\n- Wrap the kernel in `@triton.autotune` over `BLOCK_W \u2208 {32, 64, 128}`, `num_warps \u2208 {4, 8}`, `num_stages \u2208 {2, 3}` keyed on `(OW,)`; this removes the manual-arg foot-gun and finds a good tile.\n- Hoist `id_*IH*IW + ih_*IW` and `ic*ID*IH*IW` outside the inner `ic`/`kw` loops; precompute `oc_offs * (KD*KH*KW)` once before the loop nest.",
+    "large_guidance": "- The current gather formulation does a 4-deep loop (`kd, kh, kw, ic`) with per-element divisibility tests for every output tile \u2014 for `stride=2`, only 1/8 of `(kd,kh,kw)` combinations contribute per output, wasting most iterations. Restructure as a scatter-add: one program per `(N, ic, id, ih, iw-tile)` reads `x` once, then scatters `x * w[ic, :, kd, kh, kw]` outer-products into the output grid via `tl.atomic_add`. But since we need LSE across OC afterward, prefer a two-stage design: stage-1 writes the full `[N, OC, OD, OH, OW]` conv-T output (scatter or im2col-GEMM), stage-2 fuses LSE + HardSwish + sub + clamp in a tiny reduction kernel.\n- Alternatively, keep a single fused kernel but switch to the **stride-aware gather**: precompute, per `(od, oh, ow)`, the valid `(kd, kh, kw)` triplet (there is exactly one when divisible, else the output is empty) \u2014 `od + PD` mod `SD` picks `kd`, etc. Then the inner loop collapses from `KD*KH*KW*IC` to just `IC` iterations, an 8-27\u00d7 reduction in work.\n- Use `channels_last`-style layout for the weight (`[OC, IC, KD, KH, KW]` flattened so OC is contiguous), and tile OC \u00d7 OW as a small GEMM (BLOCK_OC=16, BLOCK_W=32-64) with `tl.dot` on the IC reduction \u2014 this gets tensor-core throughput on the dominant op.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 32,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.3267919485553208
+    ]
+}

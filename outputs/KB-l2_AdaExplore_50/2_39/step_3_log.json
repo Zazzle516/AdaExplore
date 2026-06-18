@@ -1,0 +1,27 @@
+{
+    "node_id": 3,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure is in training-mode BN: `bn_stats_kernel` computes mean/invstd from the pre-BN tensor, but `bn_apply_kernel` is then called using `self.bn.weight` and `self.bn.bias` which are fine \u2014 however the running stats update uses the *biased* var via `1/invstd^2 - eps`, which is correct, but the apply path uses `invstd` (biased) which matches reference. The actual bug is more likely numerical: `bn_stats_kernel` computes `var = E[x^2] - E[x]^2` in fp32 with M=16384 large values, suffering catastrophic cancellation. Switch to a two-pass algorithm: first pass accumulates mean, second pass accumulates `(x-mean)^2`, then `invstd = rsqrt(var+eps)`.\n- Increase `BLOCK_M` in `bn_stats_kernel` and add autotune over `{512, 1024, 2048, 4096}` with `num_warps\u2208{4,8}`; also parallelize across N with more than one program per column by using a 2-stage reduction (partial sums per (col, m-tile) into a scratch, then finalize), since N=4096 columns \u00d7 single-thread reduction over M=16384 is already fine but the two-pass version doubles loads \u2014 consider caching x in a tiled persistent kernel that reuses loaded tiles for both passes.\n- For `gemm_scale_kernel`, add a `BLOCK_K=64` config and a `(128,128,64)` variant with `num_stages=4` since K=4096 is large; also avoid the `Wt = W.t().contiguous()` copy each forward by caching the transposed weight on first call (or just pass W with swapped strides).",
+    "large_guidance": "- Replace the three-kernel pipeline with a two-kernel design: (1) a fused GEMM+scale that writes `gemm_out` and simultaneously accumulates per-column partial `sum` and `sum_of_squares` into a `(num_pid_m, N)` scratch via atomic adds or a separate reduction tile output; (2) a finalize+apply kernel that reduces the partial stats to mean/invstd and applies BN affine in the same launch. This cuts the extra full-tensor read in the stats pass.\n- Use a numerically stable Welford-style two-pass where pass-1 (mean) and pass-2 (variance) both stream through `gemm_out` with identical tiling; or compute mean inside the GEMM epilogue by atomically adding column sums, then a second kernel computes variance and applies BN. This avoids the `E[x\u00b2]\u2212E[x]\u00b2` cancellation that is causing the ~2.5e-3 max diff.\n- Consider channels-last persistent kernel for BN apply where each program owns a column tile and streams M, fusing the affine with the previous GEMM's store entirely (write BN output directly from the GEMM kernel in eval mode, since running stats are constant).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 4,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

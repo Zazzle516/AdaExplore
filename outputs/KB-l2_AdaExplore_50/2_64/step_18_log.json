@@ -1,0 +1,31 @@
+{
+    "node_id": 18,
+    "parent_node_id": 17,
+    "context_node_ids": [
+        9,
+        11,
+        17
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.6204868972058496,
+    "max_reward": 0.6204868972058496,
+    "avg_reward": 0.6204868972058496,
+    "score": [
+        1,
+        1,
+        1.9190169019482592
+    ],
+    "small_guidance": "- The GEMM dominates at M=1024, N=K=8192. Add larger-K configs (BLOCK_K=128) and try BLOCK_M=128/BLOCK_N=64 with num_stages=4 to better overlap K-loop loads; also try num_warps=8 with BLOCK_M=64,BLOCK_N=128,BLOCK_K=64.\n- The W load uses `offs_n[None,:]*stride_wn + offs_k[:,None]*stride_wk` where stride_wn=K (rows of W are out_features\u00d7in_features). That makes the inner-K axis strided by K \u2014 transpose W once at init (store W^T contiguous so K is contiguous along the load axis) to make the hot loop's B loads coalesce.\n- Replace the two-pass partial/finalize design with a single-pass kernel: since N=8192 is fixed and modest, use BLOCK_N that spans the whole N (or split-K only along K) so each row's LSE is computed in one program \u2014 this removes the second kernel launch and the partial buffers.",
+    "large_guidance": "- Redesign as a row-parallel fused GEMM+LSE+activations kernel: one program per row tile (BLOCK_M rows), iterate the full N in BLOCK_N chunks while maintaining online-logsumexp state (running max m and running sum s with rescaling). K-loop is inside the N-loop chunk computing a BLOCK_M\u00d7BLOCK_N tile via tl.dot. This eliminates the partials tensor and the finalize kernel entirely, applying LeakyReLU/LeakyReLU/GELU/GELU in registers before the single store.\n- Pre-transpose the weight to a contiguous (in_features, out_features) layout at __init__ so the inner-K dimension is the contiguous one for tl.dot's B operand; keep bias as-is and add it in the epilogue of each N-chunk before the online-LSE update.\n- Consider split-K parallelism with atomics only if K=8192 isn't enough work per row tile; otherwise persistent row-tile programs (grid = cdiv(M, BLOCK_M)) with BLOCK_M=32 or 64, BLOCK_N=128, BLOCK_K=64-128, num_warps=8, num_stages=3-4 should be the sweet spot on the 4090.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 19,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        1.9190169019482592
+    ]
+}

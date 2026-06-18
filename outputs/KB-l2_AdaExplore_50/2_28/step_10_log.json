@@ -1,0 +1,29 @@
+{
+    "node_id": 10,
+    "parent_node_id": 5,
+    "context_node_ids": [
+        5
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The InstanceNorm2d is applied to a tensor shaped (B, C, 1, 1) where C=out_features=8192; normalization is *per (n,c)* over a single spatial element, so normed=0 is actually correct \u2014 BUT the kernel was likely judged incorrect because `x.unsqueeze(1).unsqueeze(1)` makes shape (B, 1, 1, out_features), so InstanceNorm2d treats dim=1 as channel (C=1) and normalizes over the H=1, W=out_features spatial axes per (n, c=0). That means each row of length N=out_features gets mean/var computed across N elements. Fix the fused kernel to do a proper per-row reduction: two-pass (sum, then sum-of-squares) over N, then `(x - mean) * rsqrt(var + eps)`, then `+ y`, then `* y`.\n- Use one program per row with BLOCK_N tiling the reduction; tune BLOCK_N (2048/4096), num_warps=8, num_stages=3. Keep accumulators in fp32.\n- Keep the GEMM autotune as-is; it looks reasonable. Consider adding a (128,256,64) config and ensure w_t is stored once at init (already done).",
+    "large_guidance": "- Rewrite the post-GEMM fused kernel as a proper per-row InstanceNorm + residual + multiply: program per row of length N=8192, two-pass reduction (sum and sum_sq) across BLOCK_N tiles, compute mean=sum/N and invstd=rsqrt(sum_sq/N - mean^2 + eps), then a second pass writing `((x-mean)*invstd + y) * y`.\n- Alternatively, do a single-pass Welford reduction with tl.reduce, keeping the row resident in registers/SRAM if N fits (8192 floats = 32KB per row \u2014 feasible with multiple warps cooperating but tight; two-pass is safer).\n- Consider fusing the normalization epilogue directly into the GEMM only if M tile spans the full row (it does not here, since N=8192 > BLOCK_N), so keep it as a separate kernel but make it correct first.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 11,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.8111310929684835
+    ]
+}

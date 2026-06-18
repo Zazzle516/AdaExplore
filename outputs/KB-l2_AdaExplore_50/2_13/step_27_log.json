@@ -1,0 +1,27 @@
+{
+    "node_id": 27,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4609787543069176,
+    "max_reward": 0.4609787543069176,
+    "avg_reward": 0.4609787543069176,
+    "score": [
+        1,
+        1,
+        0.60307472303207
+    ],
+    "small_guidance": "- The fused post-kernel is tiny (B*H*W=262144 programs, 64 channels each) and already memory-bound; further tuning of it won't help. If kept, try num_warps=2 and vectorize across (h,w) tiles per program (BLOCK_HW=4 or 8) so each program handles multiple spatial points and amortizes index math.\n- Ensure the mean-over-depth is also fused: replace `x.mean(dim=2)` + bias/softmax/tanh/scale into one Triton kernel that reads the conv output once, reduces D, and emits the final tensor \u2014 avoids one full read/write of the (B,64,32,128,128) tensor.\n- Verify ConvTranspose3d is using channels_last_3d / cuDNN benchmark; an `eval()` mode + `torch.backends.cudnn.benchmark=True` may pick a faster algorithm.",
+    "large_guidance": "- The ConvTranspose3d dominates runtime (output tensor is B*64*32*128*128 \u2248 1.07G elements, kernel 3\u00b3, stride 1, padding 1 \u2192 essentially a regular 3D conv in disguise). Replace it with a custom Triton im2col-style GEMM kernel: stride=1,padding=1,kernel=3 means input and output spatial dims match, so it's equivalent to a Conv3d with flipped weights. One program per (N, OC tile, output-spatial tile), gather 27*IC inputs implicitly.\n- Fuse the depth-mean directly into the conv-transpose epilogue: accumulate over output D inside the kernel (loop over kd and d_out positions that contribute to a fixed (h,w)) and divide by D before writing \u2014 eliminates materializing the (B,64,32,128,128) intermediate (~4GB read+write) entirely. Output is only (B,64,1,128,128).\n- After the fused conv+mean produces (B,64,H,W), apply bias+softmax+tanh+scale either in the same kernel (if channels fit in registers per spatial tile) or in a second small kernel. Use channels_last memory layout so the 64-channel softmax reduction is a contiguous load.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 28,
+    "global_best_node_id": 24,
+    "global_best_score": [
+        1,
+        1,
+        2.8571081491712707
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 39,
+    "parent_node_id": 35,
+    "context_node_ids": [
+        18
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (max_diff ~0.004, avg ~5e-5) suggests the GroupNorm reduction is in fp32 but the subtle issue is likely the GEMM bias kernel writing tf32 results. Try `allow_tf32=False` in `tl.dot` or upcast inputs to fp32 before dot for tighter accuracy; alternatively verify the bias path. The numerical drift is consistent with tf32 accumulation in the GEMM.\n- For GroupNorm with NUM_GROUPS=256, GROUP_SIZE=32, the 2D layout `[256, 32]` = 8192 elements per program is fine, but try `num_warps=8` fixed and `num_stages=3`. Also consider precomputing `1/GROUP_SIZE` as constexpr to avoid runtime division.\n- Add `tl.multiple_of` / `tl.max_contiguous` hints on the row pointers in the norm kernel and ensure contiguous loads to improve memory throughput.",
+    "large_guidance": "- Replace the autotuned generic GEMM with a Split-K or persistent GEMM tuned specifically for M=1024, N=8192, K=8192 (square-ish, large). A persistent kernel with `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4` and tight L2 swizzle should approach cuBLAS. Ensure fp32 accumulation with tf32 dot is acceptable (loose tolerance 5e-2 means it should pass \u2014 investigate why correctness failed; possibly a stride bug rather than precision).\n- Consider fusing the GEMM epilogue with GroupNorm's first-pass partial sum: each GEMM tile of shape (BLOCK_M, BLOCK_N) where BLOCK_N is a multiple of GROUP_SIZE can emit per-group partial sums to a scratch buffer, then a tiny second kernel finalizes mean/var and applies norm+swish+mul+swish. This avoids a separate read of the GEMM output.\n- Alternatively, since N is large (8192) and per-row work is heavy, try a 1D layout for the norm kernel where each program handles one (row, group) pair \u2014 grid = (M, NUM_GROUPS) \u2014 to increase parallelism beyond M=1024 programs (currently underutilizing the GPU at only 1024 programs).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 40,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

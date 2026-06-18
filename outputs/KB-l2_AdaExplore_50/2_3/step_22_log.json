@@ -1,0 +1,30 @@
+{
+    "node_id": 22,
+    "parent_node_id": 21,
+    "context_node_ids": [
+        19,
+        21
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.04692786537917374
+    ],
+    "small_guidance": "- The conv_transpose gather kernel is the bottleneck (186ms vs 8.7ms baseline \u2248 21x slower). The inner `for ic in range(0, IC)` with IC=32 issues 32 separate scalar weight loads and 32 separate masked vector loads per (kd,kh,kw) \u2014 vectorize over IC with a `BLOCK_IC` tile (e.g. 16 or 32) and use `tl.dot` against a `[BLOCK_IC, BLOCK_W]` tile of x and `[BLOCK_IC]` weight broadcast, or at minimum hoist the mask computation out of the IC loop.\n- Increase BLOCK_W to 128 (W_out=32, so a single tile covers the whole row; eliminates the pid_w_tile dimension and the w_mask). Drop the `triton.cdiv(W_out, meta['BLOCK_W'])` grid dim and fold the W_out tile into the program.\n- Add autotune configs with larger output tiles fusing multiple (d_out, h_out) per program so weight loads amortize across more output pixels.",
+    "large_guidance": "- Reformulate ConvTranspose3d as an **im2col-style GEMM**: tile output as `(N*D_out*H_out*W_out)` rows \u00d7 `OC` cols, with reduction over `IC*KD*KH*KW`. One program computes a `[BLOCK_M, BLOCK_N]` output tile using `tl.dot` on a `[BLOCK_M, BLOCK_K] \u00d7 [BLOCK_K, BLOCK_N]` matmul; the K loop walks (ic, kd, kh, kw) and the M-side gather computes input indices with the standard transposed-conv index math (`(out+P-k) % S == 0`, divide by S, bounds check). This replaces the current scalar-per-IC inner loop with tensor-core-friendly dot products and is the standard fix for a 20x-slow conv-transpose.\n- Fuse bias + sum_weight in the GEMM epilogue (already done), and consider fusing the LayerNorm+pool+GELU directly into the GEMM epilogue only when the output tile aligns with a pool window; otherwise keep the post-kernel separate as today.\n- Use a contiguous weight layout `[IC, OC, KD, KH, KW]` reshaped to `[IC*KD*KH*KW, OC]` so the inner GEMM K-stride on the weight side is unit-stride along OC, making `tl.dot` loads coalesced. Pre-permute once at init (eval) or per-forward via `.permute().contiguous()` cached.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 23,
+    "global_best_node_id": 6,
+    "global_best_score": [
+        1,
+        1,
+        0.4546136958607456
+    ]
+}

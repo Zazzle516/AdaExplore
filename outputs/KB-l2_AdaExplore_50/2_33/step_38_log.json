@@ -1,0 +1,27 @@
+{
+    "node_id": 38,
+    "parent_node_id": 37,
+    "context_node_ids": [],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure likely stems from the training-mode running_var update: BatchNorm1d's running_var uses *unbiased* variance with Bessel's correction. The code computes `var_unbiased` correctly but only uses it; double-check shapes \u2014 `invstd` is fp32 but z may be fp32 too, so that's fine. More importantly, ensure `mean` and `invstd` match the same precision the reference uses (PyTorch BN computes stats in fp32). The avg diff of 3.5e-4 across all trials suggests a small systematic error \u2014 verify the `col_stats_kernel` reduces correctly when M (1024) is not a multiple of BLOCK_M=256 (it is, so OK), and that scale is applied *before* BN as in reference.\n- Add autotune to `bn_apply_kernel` and `bn_eval_kernel` with BLOCK_M/BLOCK_N sweeps (e.g., 64x256, 128x128) and num_warps=4/8.\n- For `col_stats_kernel`, use a larger BLOCK_M (1024 = full M) to do a single-pass reduction with num_warps=8, eliminating the loop.",
+    "large_guidance": "- Fuse the BN-apply epilogue directly into the GEMM kernel for eval mode: after computing `acc + bias) * scale`, apply `(x - running_mean) * invstd * weight + bn_bias` in the same epilogue, eliminating an entire pass over the MxN output (64MB). Precompute `invstd = 1/sqrt(running_var+eps)` once on CPU/GPU at forward start.\n- For training mode, restructure as: (1) fused GEMM+scale+bias writing z, (2) column-reduction kernel computing mean/var per output column with one program per column and a persistent in-register reduction over M=1024 (fits easily), (3) fused apply kernel. The current 3-kernel structure is correct; focus on making the GEMM dominate by tuning it (try BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3) since K=8192 is large.\n- Consider using `tl.dot` with `out_dtype=tl.float32` explicitly and ensure the weight transpose is done once and cached as a buffer (currently re-transposed every forward call \u2014 move `weight.t().contiguous()` into `__init__` or cache it).",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 39,
+    "global_best_node_id": 24,
+    "global_best_score": [
+        1,
+        1,
+        0.5932781570713239
+    ]
+}

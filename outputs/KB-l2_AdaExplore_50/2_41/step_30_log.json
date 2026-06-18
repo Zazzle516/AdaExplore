@@ -1,0 +1,29 @@
+{
+    "node_id": 30,
+    "parent_node_id": 29,
+    "context_node_ids": [
+        29
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4773938452088452,
+    "max_reward": 0.4773938452088452,
+    "avg_reward": 0.4773938452088452,
+    "score": [
+        1,
+        1,
+        0.7384992229729729
+    ],
+    "small_guidance": "- The kernel currently references `EVEN_K` inside the JIT body but it is not declared as a `tl.constexpr` parameter \u2014 add `EVEN_K: tl.constexpr` to the kernel signature so the autotuner can specialize on it (the kwarg is already passed at launch). Also pass `M, N, K` as non-constexpr but the inner-loop EVEN_K branch will eliminate masking overhead for K=4096.\n- For (M,N,K) = (16384, 4096, 4096), add larger tile configs that fit on RTX 4090: `BLOCK_M=128, BLOCK_N=256, BLOCK_K=32, num_warps=8, num_stages=4` and `BLOCK_M=256, BLOCK_N=128, BLOCK_K=32, num_warps=8, num_stages=4`. Drop the small 64x* tiles \u2014 they are never optimal here. Try `GROUP_M=4` and `GROUP_M=16` to improve L2 reuse for 128-row groups.\n- Cast the accumulator store to `x.dtype` (`out = out.to(tl.float32)` is already fp32, fine), and ensure `W` is loaded with the contiguous axis on the inner dim \u2014 currently `stride_bk = W.stride(1)` means K is along W's last (contiguous) dim and N is the outer; load tile is `[BLOCK_K, BLOCK_N]` so the inner contiguous dim is N which is strided. Transpose W once at first call (`W.t().contiguous()`) cached on the module so B-tile loads are fully coalesced along N.",
+    "large_guidance": "- Rewrite as a split-K or persistent GEMM with the BN affine + GELU + ReLU epilogue fused exactly as now, but with W pre-transposed and stored channels-last so both A and B inner-dim loads are contiguous. The 14.8 ms vs 10.9 ms baseline gap is almost entirely from suboptimal B-tile striding and tile shape.\n- Consider a persistent kernel: launch `num_SMs * k` programs, each iterating over a queue of (pid_m, pid_n) tiles. This amortizes prologue cost and improves L2 reuse across tiles for this 16384\u00d74096\u00d74096 shape (cuBLAS/PyTorch's matmul is the reference here, hard to beat without persistence).\n- Keep training-mode path also fused \u2014 currently training falls back to PyTorch eager which will dominate any benchmark that runs in train mode; if the harness uses eval, the current structure is fine, but verify.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 31,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.7537785172413792
+    ]
+}

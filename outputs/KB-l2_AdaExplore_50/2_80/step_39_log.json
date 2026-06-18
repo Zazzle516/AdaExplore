@@ -1,0 +1,30 @@
+{
+    "node_id": 39,
+    "parent_node_id": 38,
+    "context_node_ids": [
+        18,
+        38
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Reduce BLOCK_N from 256 to 128 and BLOCK_K from 64 to 32, with num_stages=3; the current 128\u00d7256\u00d764 fp32 tile with stages=4 blows past the 4090's 101 KB shared memory budget.\n- Use triton.autotune with a small set of safe configs (e.g. 128/128/32 @ warps=8 stages=3, 64/128/32 @ warps=4 stages=3, 128/64/32 @ warps=4 stages=3) and key on (M,N,K) so the launcher picks a config that fits shared memory.\n- Store W transposed once (K, N) up front so the inner loop loads contiguous K rows for both X and W without `tl.trans` on every iteration.",
+    "large_guidance": "- The current design also violates the safety contract: when max_dim==1 it short-circuits to `torch.zeros`, observing that subtracting the row-wise mean of a (M,1) tensor is identically 0 and gelu(0)=0. That collapses the GEMM + max away from runtime. A redesign must actually run the GEMM, compute the per-row max, then run the (trivial) subtract+gelu \u2014 even though the result is zero, the heavy ops must execute on the input.\n- Rewrite as a single fused \"GEMM + row-max\" kernel: tile (BLOCK_M \u00d7 BLOCK_N) over the full K, accumulate with tl.dot, fuse bias add in the epilogue, take a row-wise max over BLOCK_N, and atomically `atomic_max` (or two-pass: write partial maxes then reduce) into a per-row buffer of shape (M,). Then a tiny finalize kernel computes `gelu(v - v) = 0` and writes to (M,1). Keep BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, num_warps=8, num_stages=3 to stay within 101 KB smem.\n- Add GROUP_M swizzle (=8) for L2 reuse across N tiles in a row group, and pre-transpose W to (K,N) contiguous so both operands' inner axis is K \u2014 this removes the per-iteration tl.trans and halves register pressure.",
+    "evaluator_direction": "large",
+    "evaluator_valid": false,
+    "total_nodes": 40,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        1.7954388916792234
+    ]
+}

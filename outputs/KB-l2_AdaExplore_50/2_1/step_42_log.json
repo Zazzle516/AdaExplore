@@ -1,0 +1,29 @@
+{
+    "node_id": 42,
+    "parent_node_id": 19,
+    "context_node_ids": [
+        19
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4747818200977105,
+    "max_reward": 0.4747818200977105,
+    "avg_reward": 0.4747818200977105,
+    "score": [
+        1,
+        1,
+        0.7169500158061117
+    ],
+    "small_guidance": "- The output spatial domain is OH*OW = 126*126 = 15876 with OC=128; current configs that put BLOCK_M=128 cover all OC in one tile \u2014 sweep larger BLOCK_N (128, 256) with BLOCK_M=128, BLOCK_K=16 at num_warps=8, num_stages=2 to amortize the weight load across more output pixels. Verify SMEM: 128\u00b716+16\u00b7256 = 6144 floats = 24KB, well within budget.\n- The inner K loop is small (IC*KH*KW = 64*9 = 576); try num_stages=3 on the smaller-tile configs (BLOCK_K=32) to better overlap the gather with the dot, and add a config with BLOCK_K=64 so the loop only iterates 9 times.\n- Fold the conv bias and extra bias together once on the host (`cb_total = cb + eb.view(-1)`) and load a single bias vector in the epilogue \u2014 removes one tl.load per program.",
+    "large_guidance": "- Switch the data layout to NHWC (channels-last). With IC=64 contiguous along K, each tl.load along the K dimension becomes a single coalesced 64-wide vector load instead of strided gathers across stride_xc=IH*IW=16384, which is the dominant bottleneck of the current gather-im2col. Permute x to NHWC and weight to (OC, KH, KW, IC) once at init/forward entry; output can be written NHWC then permuted back, or written directly NCHW in the epilogue.\n- Make the K-loop structure explicit over (kh, kw) with the full IC contracted per step (BLOCK_K = IC = 64). This collapses the 9-iteration loop and lets each step issue one contiguous 64-wide load per output pixel \u2014 far friendlier to the L2/L1 than the current ic/kh/kw decomposition done with integer division inside the loop.\n- Consider a persistent-CTA scheme over (N, OC_tile) with the spatial tile streamed inside, so weights stay resident in registers/SMEM across all 15876 output positions for a given (n, oc_tile). That reuse pattern is the high-headroom win for this small-weight, large-spatial conv.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 43,
+    "global_best_node_id": 6,
+    "global_best_score": [
+        1,
+        1,
+        1.328878056640625
+    ]
+}

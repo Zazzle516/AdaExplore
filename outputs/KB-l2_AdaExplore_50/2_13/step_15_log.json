@@ -1,0 +1,30 @@
+{
+    "node_id": 15,
+    "parent_node_id": 14,
+    "context_node_ids": [
+        13,
+        14
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.46250167027417033,
+    "max_reward": 0.46250167027417033,
+    "avg_reward": 0.46250167027417033,
+    "score": [
+        1,
+        1,
+        0.6156387797619047
+    ],
+    "small_guidance": "- The `_post_kernel` is fine, but the dominant cost is the unfused `nn.ConvTranspose3d`. Quick win: keep `_post_kernel` but add an autotune over `BLOCK_HW \u2208 {64,128,256}`, `num_warps \u2208 {4,8}`, `num_stages \u2208 {2,3}`. With `C=64` you can set `BLOCK_C=64` exactly (constexpr) and drop the mask on the C axis.\n- Reorder the post kernel to process the contiguous (H*W) axis with larger tiles and load D-strided slices with `tl.multiple_of`/`tl.max_contiguous` hints; this should marginally improve the mean reduction but won't move `fast_p` much because conv_transpose dominates.\n- Pre-fold `self.bias` into `conv_transpose.bias` once at init (bias + bias broadcast addition) so the post kernel only loads one bias \u2014 minor but free.",
+    "large_guidance": "- The big headroom is replacing `nn.ConvTranspose3d` itself. With stride=1, padding=1, kernel=3, the output spatial shape equals the input shape (D=32, H=W=128). Implement it as a direct **gather-style** Triton kernel: one program per `(B, OC tile, HW tile)`, accumulate over `(IC, KD, KH, KW, D)` and **fuse the depth-mean** inline (divide accumulator by D at the end, never materialize the (B,C,D,H,W) tensor). Then fuse bias-add + softmax-over-C + tanh + scale in the same kernel epilogue, tiling C so all OC fits in registers (OC=64 fits in a single tile).\n- Use a `(BLOCK_OC=64, BLOCK_HW=64 or 128)` register tile; loop `kd, kh, kw, ic, d_in` with `tl.static_range` over the kernel dims. For ConvTranspose with stride=1: `id_in = id_out + kd - pad`, etc. Since we immediately reduce over `d_out`, swap the loop nest: sum over `(d_out, kd)` collapses to summing over `d_in` (each `d_in` contributes to KD output depths, all averaged) \u2014 this is a legitimate fusion of the mean with the conv-transpose depth loop, NOT a weight pre-reduction, because the multiply-accumulate count is preserved per (ic, kh, kw, d_in, h_out, w_out). Be careful: the weight summed across kd is still applied per-input-element multiply, so the FLOP count matches the reference asymptotically only if you keep the kd loop explicit; safer to keep `kd` explicit and only fuse the `d_out` mean by accumulating into a single (OC,HW) tile.\n- Memory layout: keep input as (B, IC, D, H, W) contiguous; load weight as (IC, OC, KD, KH, KW) and broadcast across HW. Use `num_warps=8`, `num_stages=2-3`, and shared-memory weight prefetch via `tl.load` reuse across the HW tile.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 16,
+    "global_best_node_id": 10,
+    "global_best_score": [
+        1,
+        1,
+        2.7991154262516913
+    ]
+}

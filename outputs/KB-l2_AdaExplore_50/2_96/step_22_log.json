@@ -1,0 +1,32 @@
+{
+    "node_id": 22,
+    "parent_node_id": 20,
+    "context_node_ids": [
+        8,
+        21,
+        6,
+        20
+    ],
+    "depth": 5,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 1.6,
+    "max_reward": 1.6,
+    "avg_reward": 1.6,
+    "score": [
+        1,
+        1,
+        12.051385936515784
+    ],
+    "small_guidance": "- Add a `triton.autotune` over `BLOCK_P \u2208 {64,128,256}` \u00d7 `num_warps \u2208 {2,4,8}` \u00d7 `num_stages \u2208 {2,3,4}` keyed on `(PD,PH,PW)`; current fixed 4 warps / 2 stages is likely suboptimal for the inner static-unrolled triple loop.\n- Hoist the per-`(pd,ph,pw)` `id_q/ih_q/iw_q` and validity masks out of the `mkd/mkh/mkw` loops by computing them as `od = d0 + mkd` once and pre-checking divisibility; many `id_r==0` tests are redundant across pooled tiles and the compiler may not CSE them through `tl.load`.\n- Pre-load the per-(oc) weight slab (IC*KD*KH*KW = 81 floats) once into registers via a single `tl.load` with `tl.arange`, instead of per-tap `tl.load(w_ptr + w_off)` inside the static loop \u2014 saves ~81 L1 hits per pooled tile.",
+    "large_guidance": "- Switch from \"one program per (N,OC)\" to \"one program per (N, OC tile, pooled-spatial tile)\" and parallelize across the pooled grid; currently only 128*16 = 2048 programs run, which underutilizes the 4090. Have each program produce a partial sum over its pooled tile and use `tl.atomic_add` into `(N,OC)` accumulators, then a tiny epilogue kernel divides and clamps.\n- Reformulate as a gather-GEMM in im2col space along the input axis: for each output voxel inside a pooled window, the set of contributing `(ic, id_q, ih_q, iw_q)` is a sparse subset of the IC\u00d7KD\u00d7KH\u00d7KW=81 taps determined by stride-divisibility. Precompute, per `(od%SD, oh%SH, ow%SW)` phase, the compact list of valid `(kd,kh,kw)` taps at init time and pass as a constexpr-shaped table; this eliminates the `id_r==0` masking and shrinks the inner loop from 27 taps to ~3-4 per output.\n- Fuse maxpool reduction into the conv-transpose accumulation by accumulating directly into `max_v[BLOCK_P]` without materializing the MK^3 intermediate values across loop iterations \u2014 compute one output voxel's full sum, max-reduce into the pooled slot, and discard. Combined with phase-table dispatch this lets the kernel be reduction-bound rather than load-bound.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 23,
+    "global_best_node_id": 20,
+    "global_best_score": [
+        1,
+        1,
+        16.336806567370672
+    ]
+}

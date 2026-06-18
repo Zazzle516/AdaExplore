@@ -1,0 +1,29 @@
+{
+    "node_id": 41,
+    "parent_node_id": 26,
+    "context_node_ids": [
+        26
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4070645796566113,
+    "max_reward": 0.4070645796566113,
+    "avg_reward": 0.4070645796566113,
+    "score": [
+        1,
+        1,
+        0.15828278216704292
+    ],
+    "small_guidance": "- The current kernel reloads weights per (N, spatial-tile); add a `pid_n`-outer GEMM-like layout where weights are loaded once per OC tile and reused across batch \u2014 try tile shapes `BLOCK_OC=64, BLOCK_OH*BLOCK_OW=128/256` and use `tl.dot` over a packed `(BLOCK_OC, IC)` \u00d7 `(IC, BLOCK_SP)` matmul per (kh, kw) instead of scalar `w[:,None]*x[None,:]`.\n- Add larger-tile configs to autotune: `BLOCK_OC=128`, `BLOCK_OH=8/BLOCK_OW=64`, `num_warps=8, num_stages=3/4`; also try `BLOCK_OC=64, BLOCK_OH=16, BLOCK_OW=16` to keep the spatial tile square for better x-load reuse across kh/kw shifts.\n- Hoist `oc_offs * ICKHKW` and precompute `x_base + ic*IHW` outside the kh/kw loops; collapse the `ic` loop into a `tl.dot` over IC (IC=64 fits in one K-tile) so the inner work becomes 9 small matmuls instead of 64*9 scalar outer products.",
+    "large_guidance": "- Restructure as an implicit-GEMM: treat output as `(OC) x (N*OH*OW)` and K-dim as `(IC*KH*KW)=576`. One program computes a `BLOCK_M=64/128` \u00d7 `BLOCK_N=64/128` output tile via `tl.dot` with `BLOCK_K=32 or 64`; im2col indices computed on the fly from the N-tile's spatial positions. This unlocks tensor-core fp32/tf32 throughput which the current scalar FMA loop misses entirely.\n- Use channels-last (NHWC) input layout so the GEMM-K (IC) dimension is contiguous \u2014 do a one-time `x.permute(0,2,3,1).contiguous()` in forward, and write output in NHWC then permute back (or fuse permute by storing to NCHW with strided writes).\n- Enable TF32 via `tl.dot(..., allow_tf32=True)` and fuse the bias + multiplier + LeakyReLU + GELU as an epilogue on the accumulator before the store (already done \u2014 keep it). Consider a split-K only if occupancy is low; on 4090 with N*OH*OW = 64*254*254 \u2248 4M output points, a 64\u00d7128 tile gives plenty of grid.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 42,
+    "global_best_node_id": 40,
+    "global_best_score": [
+        1,
+        1,
+        1.3668474171539962
+    ]
+}

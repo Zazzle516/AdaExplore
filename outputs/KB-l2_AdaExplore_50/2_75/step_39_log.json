@@ -1,0 +1,29 @@
+{
+    "node_id": 39,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        24
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The dominant cost is the F.linear (1024\u00d78192\u00d78192 GEMM \u2248 137 GFLOPs); GN+min and bias-add are tiny. Tuning the existing GN/min/bias kernels won't move the needle. If staying small, at least fuse bias-add into the GN+min kernel epilogue (broadcast add over N after computing min) so that one kernel writes the final (1,N,M,1) output directly.\n- For the GN+min kernel: GROUP_SIZE=16 is tiny; use a 2D layout `tl.arange(0, NUM_GROUPS) \u00d7 tl.arange(0, GROUP_SIZE)` via 2D pointer math instead of `tl.reshape`, and try `num_warps=8, num_stages=3`. Store `min_out` directly into the broadcast layout to skip the second kernel.\n- Bias-add can be eliminated entirely: since the output is `(1, N, M, 1)` and `min_out` is shape `(M,)` broadcast across N, write the kernel to take a tile in M and a tile in N, loading bias[N tile] and min[M tile], emitting one kernel with coalesced writes along M.",
+    "large_guidance": "- Replace `F.linear` with a custom tiled Triton GEMM (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8, num_warps=8, num_stages=3-4) using `tl.dot`. M=1024, N=8192, K=8192 is large enough that a well-tuned GEMM matches or beats cuBLAS on a 4090, and it opens fusion opportunities.\n- Fuse the GEMM epilogue with GroupNorm: since each row is normalized independently, an \"epilogue-only\" approach is hard, but a split-K-free GEMM that writes to a temp followed by a single fused GN+min+bias-broadcast kernel (one program per row) is the right structure. Make the fused post-GEMM kernel write directly into the final `(1,N,M,1)` output by having each program compute the row's min, then loop over N tiles emitting `min + bias[n]`.\n- Alternatively, since out_features=8192 and num_groups=512 (group_size=16), keep the row resident in registers/SRAM across GN and min: one program per row, load all 8192 floats once (32KB, fits), do per-group stats, normalize+affine, reduce min, then store min broadcast across N with bias added. This collapses 3 ops into one launch.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 40,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

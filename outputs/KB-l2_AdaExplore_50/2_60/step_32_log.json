@@ -1,0 +1,30 @@
+{
+    "node_id": 32,
+    "parent_node_id": 31,
+    "context_node_ids": [
+        30,
+        31
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4453448317274124,
+    "max_reward": 0.4453448317274124,
+    "avg_reward": 0.4453448317274124,
+    "score": [
+        1,
+        1,
+        0.4740948617511521
+    ],
+    "small_guidance": "- The conv_transpose3d (torch) almost certainly dominates the 21.7ms runtime vs 10.3ms baseline \u2014 tuning the fused swish+GN+hswish kernel further will not close the gap. If staying small, at least try `channels_last_3d` memory format for the conv output and adjust the kernel's indexing so the C-axis is the contiguous one, enabling coalesced loads across CPG.\n- Add autotune configs with smaller BLOCK_S (256, 512) since S = 31*63*63 \u2248 123K per group but CPG=4 means the 2D tile is narrow; try `num_warps=2` for the smaller tiles to reduce occupancy pressure.\n- Persist the loaded x in registers between the two passes (single-pass Welford) to halve global memory traffic on the GN input.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)` computes `input \u00d7 weight` outer product and atomically scatters into the output grid at the strided/padded locations. This is the dominant cost (output is 128\u00d716\u00d731\u00d763\u00d763 \u2248 250M elements from a much smaller input) and torch's ConvTranspose3d is known to be slow.\n- Alternatively, implement ConvTranspose3d as a gather-style direct kernel: one program per `(N, OC tile, output-spatial tile)` loops over the (kd,kh,kw) positions that hit each output voxel (derived from stride/padding inverse map) and accumulates `sum over IC of input[...] * weight[ic, oc, kd, kh, kw]`. Fuse bias add + swish directly into the epilogue before storing.\n- Fuse the entire pipeline: convT3d \u2192 swish \u2192 GN \u2192 hardswish. The convT epilogue writes into a workspace tiled by group; a second kernel (or a persistent kernel pair with a barrier via separate launches) does the GN reduction + affine + hardswish. Keep the GN kernel as-is but ensure the conv kernel writes in a layout (N, G, CPG, S) so GN loads are contiguous along S with a tiny C-tile.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 33,
+    "global_best_node_id": 29,
+    "global_best_score": [
+        1,
+        1,
+        2.2462573144104803
+    ]
+}

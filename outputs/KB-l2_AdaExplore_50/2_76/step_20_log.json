@@ -1,0 +1,27 @@
+{
+    "node_id": 20,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (~1e-3 max diff, but trials 0/5) is likely because `torch.rand` inputs combined with `torch.randn` weights produce outputs that exceed the loose tolerance only at a few elements \u2014 investigate whether the issue is actually a stride bug. Check: with `weight` contiguous as `(N, K)` row-major, `weight[n, k]` lives at offset `n*K + k`, so `stride_bk=1, stride_bn=K` is correct. But ensure `x` is moved to CUDA *before* `.contiguous()` chain interacts with the weight \u2014 also ensure `self.gemm.weight` and `self.bias` are on CUDA (they're not explicitly moved).\n- Add `.cuda()` to weight/bias access or move the whole module to CUDA in `__init__`; currently `self.gemm.weight` may be on CPU while `x` is on CUDA, causing undefined behavior or silent wrong reads.\n- After fixing device placement, expand autotune with a `GROUP_M=8` swizzle config and try `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3` for the 1024\u00d78192\u00d78192 shape.",
+    "large_guidance": "- Rewrite with explicit device management: move `self.gemm.weight` and `self.bias` to CUDA in `__init__` (or lazily on first forward) so the kernel never reads CPU memory. This is likely the root cause of the correctness failure.\n- Add an L2-cache-friendly program ID swizzle (`GROUP_M`) since M=1024, N=8192 produce 8\u00d7 more N-tiles than M-tiles \u2014 grouping improves weight reuse across the N dimension.\n- Consider a split-K variant only if single-K-loop tiles can't saturate; for K=8192 with BLOCK_K=64 that's 128 iterations, which is fine \u2014 stick with a single-K GEMM and focus on tile shape + swizzle.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 21,
+    "global_best_node_id": 16,
+    "global_best_score": [
+        1,
+        1,
+        2.945607409468169
+    ]
+}

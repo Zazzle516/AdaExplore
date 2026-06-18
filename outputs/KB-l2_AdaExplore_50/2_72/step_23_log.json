@@ -1,0 +1,30 @@
+{
+    "node_id": 23,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        3,
+        4
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4145216885088404,
+    "max_reward": 0.4145216885088404,
+    "avg_reward": 0.4145216885088404,
+    "score": [
+        1,
+        1,
+        0.2198039301979331
+    ],
+    "small_guidance": "- The scatter kernel uses atomic_add per (kd,kh,kw) into the pooled output, which serializes 27 atomics per input voxel across many threads. Try increasing BLOCK_OC to 32 (OC=16, but pad to next pow2 \u2014 actually OC=16 fits exactly) and bumping num_warps to 4; also hoist D_out/H_out/W_out and the per-(kd,kh,kw) weight loads outside the spatial validity check so they aren't recomputed.\n- For `fused_bn_avgpool4_kernel`, the per-element scale/shift loads use `mask=mask` against a full BLOCK; switch to a layout where one program handles a full (n,c) plane so scale/shift load once per program and the inner pooling reduction is contiguous along W.\n- Add `@triton.autotune` over (BLOCK_OC, num_warps, num_stages) keyed on (N, IC, D_in) for the scatter kernel; current static `num_warps=2, BLOCK_OC=16` is almost certainly under-occupied.",
+    "large_guidance": "- Replace the scatter+atomics design with a gather-based direct ConvTranspose3d that writes each output voxel exactly once. Since stride=2, pad=1, k=3, each output position has at most \u23083/2\u2309\u00b3=8 contributing input positions \u2014 small and statically enumerable. One program per (N, OC tile, output-spatial tile) gathers those 8 input voxels \u00d7 IC=3, multiplies by the appropriate weight slice, accumulates in registers, then applies BN scale/shift. This eliminates all atomics.\n- Fuse the two AvgPool3d(k=2) layers (combined 4\u00d74\u00d74 pool with /64) directly into the conv-transpose epilogue: the program tile is sized to one pooled output voxel, which means accumulating 64 conv-transpose outputs in registers and emitting one store. With OD\u00d7OH\u00d7OW = 16\u00b3 = 4096 pooled voxels and OC=16, grid = N\u00b7OC\u00b74096 = 4M programs is too many \u2014 instead tile over (OC=16 full, pooled spatial tile of e.g. 4 or 8) per program, giving good register reuse and one write per element.\n- Use channels-last layout for both input and output so the IC=3 and OC=16 axes are contiguous; this turns the inner GEMM-K (IC\u00b7KD\u00b7KH\u00b7KW=81) into a clean dot product. Keep weight in a (KD,KH,KW,IC,OC) packed layout precomputed once at eval-time entry.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 24,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        0.36042383585251137
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 27,
+    "parent_node_id": 20,
+    "context_node_ids": [
+        20
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.42925914123376624,
+    "max_reward": 0.42925914123376624,
+    "avg_reward": 0.42925914123376624,
+    "score": [
+        1,
+        1,
+        0.34138791517857137
+    ],
+    "small_guidance": "- The current conv kernel recomputes the gather inside a triple nested loop over (IC, KH, KW); restructure the inner loop so that for each (kh, kw) you load a `[BLOCK_OC, IC]` weight tile and a `[IC, BLOCK_SP]` input tile and use `tl.dot` to accumulate \u2014 this turns the memory-bound scalar mul-add into a tensor-core GEMM.\n- Increase `BLOCK_SP` to 256 and try `BLOCK_OC=32` with `num_warps=8`, `num_stages=3`; the 4090 has plenty of registers and the current 128-wide spatial tile under-utilizes SMs (only ~32 spatial tiles per image \u00d7 128 batch).\n- For GroupNorm with group_elems = 64/8 \u00d7 258\u00b2 \u2248 533k, a single program per (N,G) is too serial; switch to a two-pass kernel with a parallel reduction across multiple programs per group (or use a persistent kernel with `BLOCK_SIZE=2048, num_warps=8`) and cache `(x-mean)*rstd` rather than re-reading x on the second pass via L2.",
+    "large_guidance": "- Rewrite the transposed conv as an **implicit GEMM**: with stride=1 and KH=KW=3, output[n, oc, oh, ow] = \u03a3_{ic,kh,kw} x[n, ic, oh-kh, ow-kw] * w[ic, oc, kh, kw]. Tile as one program per (N, OC-tile, OutSpatial-tile), accumulate via `tl.dot` over a K-loop of IC\u00d7KH\u00d7KW (K=576), with BLOCK_M=BLOCK_OC=64, BLOCK_N=BLOCK_SP=128, BLOCK_K=32. Fuse bias + exact GELU in the epilogue before store. This is the standard high-performance path and should give >5\u00d7 over the current scalar-outer-product implementation.\n- Alternative: since stride=1, KH=KW=3, the transposed conv is equivalent to a regular Conv2d on the input padded by (KH-1) using the flipped weight. Materializing the padded input is cheap (one elementwise kernel) and lets a plain Conv2d-as-GEMM kernel do the heavy lifting with simpler index math and better coalescing along W.\n- For GroupNorm, split each group's reduction across multiple programs using a two-stage approach (partial sums \u2192 finalize \u2192 normalize), or fuse it directly into the conv epilogue is not possible across N\u00d7G, but at least make the second pass a separate kernel that reads conv_out from L2 with channels_last layout so the per-channel affine load is contiguous.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 28,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        1.4057149448529411
+    ]
+}

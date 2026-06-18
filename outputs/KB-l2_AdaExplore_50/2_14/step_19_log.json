@@ -1,0 +1,27 @@
+{
+    "node_id": 19,
+    "parent_node_id": 12,
+    "context_node_ids": [],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure is likely due to `tl.dot` being applied to small/odd tile shapes; ensure `BLOCK_M`, `BLOCK_N`, `BLOCK_K` are all \u2265 16 and that masked loads use `other=0.0` correctly so out-of-bound K lanes don't poison the dot. Also verify `tl.trans(w_vals)` shape matches \u2014 w is loaded as `(BLOCK_N, BLOCK_K)`, transposed to `(BLOCK_K, BLOCK_N)`, which is correct, but double-check the accumulator dtype path.\n- Since the final output is `sum_n sum_k x[m,k] * w[n,k]` = `sum_k x[m,k] * (sum_n w[n,k])`, the *correct* fused kernel still must materialize the matmul per the safety contract \u2014 but the bug here is probably accumulator masking. Replace the inner `tl.where(n_mask, acc, 0)` then `tl.sum` with masking the loaded `w_vals` rows by `n_mask` so OOB rows contribute zero, avoiding double-mask issues.\n- Add tile configs sized for M=1024, N=K=8192 (e.g. `BLOCK_M=128, BLOCK_N=256, BLOCK_K=32, num_warps=8, num_stages=4`) and a `GROUP_M` swizzle even though only M tiles exist (helps L2 reuse of the shared weight).",
+    "large_guidance": "- Redesign as a two-stage kernel that respects the contract: stage 1 performs the full GEMM `Y = X @ W^T` into an `(M, N)` buffer (tiled `tl.dot` with BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8); stage 2 is a row-reduction kernel that computes `sum(Y, dim=1) * (scaling/2)`. This avoids the fused-row-sum numerical correctness issue and matches the reference work exactly.\n- Alternatively, keep fusion but restructure: one program per M-tile, persistently iterate N tiles, and accumulate `row_sum += tl.sum(tl.dot(x_tile, w_tile_T), axis=1)` \u2014 but compute `x_tile` once per M-tile (load once, reuse across all N tiles) by pulling the K-loop *outside* the N-loop. Currently x is reloaded for every N tile, wasting bandwidth on the M=1024 side.\n- Note that the reference does `(x @ W^T) / 2` then `sum(dim=1) * s`, which equals `x @ (W^T.sum(dim=1)) * (s/2)` = `x @ w_col_sum * (s/2)`. Do **not** precompute `w_col_sum` at init \u2014 that violates the safety contract. The redesign must keep the full GEMM at runtime.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 20,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        0.10046266372480192
+    ]
+}

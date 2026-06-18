@@ -1,0 +1,30 @@
+{
+    "node_id": 39,
+    "parent_node_id": 34,
+    "context_node_ids": [
+        31,
+        34
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.42985377183600715,
+    "max_reward": 0.42985377183600715,
+    "avg_reward": 0.42985377183600715,
+    "score": [
+        1,
+        1,
+        0.34629361764705885
+    ],
+    "small_guidance": "- The epilogue is already memory-bound and trivially fused; further tuning of BLOCK_SIZE/num_warps will not close the 3x gap. If staying small, try collapsing the (N*C, S/BLOCK) 2D grid into a 1D grid with larger BLOCK (16384) and num_warps=8, num_stages=3, and load bias via `c = (pid * BLOCK + offs) // S % C` to reduce launch overhead.\n- Ensure the conv_transpose output is consumed in-place (write back to x) to avoid a second allocation; allocate `out` with `torch.empty` only once and reuse across calls if possible.",
+    "large_guidance": "- The dominant cost (~9.5 of 10.2 ms) is `nn.ConvTranspose3d`. Replace it with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile) computes the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and atomically scatter-adds into `out[n, oc, d*stride-pad+kd, ...]` honoring stride=2, padding=1, output_padding=1. Fold the conv bias + the residual epilogue `(2x+bias_param)*x + x` directly into the final write (after all scatters complete) \u2014 that likely needs a two-pass design: pass 1 conv scatter-add (no epilogue), pass 2 epilogue fused with bias.\n- Alternatively, implement transposed conv as a gather-based GEMM: for each output voxel (n, oc, do, ho, wo), iterate (ic, kd, kh, kw), check `(do+pad-kd) % stride == 0` and gather from input at `(do+pad-kd)/stride`. This avoids atomics and maps cleanly to a tiled GEMM with BLOCK_M over output-spatial, BLOCK_N over OC, BLOCK_K over IC*kd*kh*kw. Use channels_last-ish layout (NDHWC) so OC-K loads coalesce.\n- Fuse the entire epilogue `out = (2*y + bias) * y + y` into the GEMM's store, eliminating the second kernel launch and the extra global read/write of the ~16*64*32*64*64 tensor.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 40,
+    "global_best_node_id": 30,
+    "global_best_score": [
+        1,
+        1,
+        0.7022256262425447
+    ]
+}

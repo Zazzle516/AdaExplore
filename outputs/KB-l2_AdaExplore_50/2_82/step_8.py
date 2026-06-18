@@ -1,0 +1,138 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import triton
+import triton.language as tl
+
+
+@triton.jit
+def fused_conv_tanh_scale_bias_pool_kernel(
+    x_ptr, w_ptr, cb_ptr, b_ptr, out_ptr,
+    N, IC: tl.constexpr,
+    IH: tl.constexpr, IW: tl.constexpr,
+    OC: tl.constexpr,
+    OH: tl.constexpr, OW: tl.constexpr,
+    PH: tl.constexpr, PW: tl.constexpr,
+    KH: tl.constexpr, KW: tl.constexpr,
+    POOL: tl.constexpr,
+    SCALE: tl.constexpr,
+    BLOCK_OC: tl.constexpr,
+    BLOCK_PW: tl.constexpr,
+):
+    # grid: (N, ceil(OC/BLOCK_OC) * ceil(PW/BLOCK_PW), PH)
+    n = tl.program_id(0)
+    oc_pw = tl.program_id(1)
+    ph = tl.program_id(2)
+
+    pw_tiles = (PW + BLOCK_PW - 1) // BLOCK_PW
+    oc_tile = oc_pw // pw_tiles
+    pw_tile = oc_pw % pw_tiles
+
+    oc_offs = oc_tile * BLOCK_OC + tl.arange(0, BLOCK_OC)  # [BLOCK_OC]
+    pw_offs = pw_tile * BLOCK_PW + tl.arange(0, BLOCK_PW)  # [BLOCK_PW]
+
+    oc_mask = oc_offs < OC
+    pw_mask = pw_offs < PW
+
+    # Load biases
+    cb = tl.load(cb_ptr + oc_offs, mask=oc_mask, other=0.0)  # [BLOCK_OC]
+    bb = tl.load(b_ptr + oc_offs, mask=oc_mask, other=0.0)   # [BLOCK_OC]
+
+    # Strip dimensions in input space
+    # For pool window of POOL x POOL, output rows oh = ph*POOL .. ph*POOL+POOL-1
+    # ows for each pw_off: pw_offs*POOL + kj, kj in [0, POOL)
+    # Input rows needed: ih = oh + kh, with oh in [ph*POOL, ph*POOL+POOL+KH-2 inclusive]
+    # We'll iterate over pool ki, kj sequentially and accumulate a running max.
+
+    max_val = tl.full((BLOCK_OC, BLOCK_PW), -1e30, dtype=tl.float32)
+
+    oh_base = ph * POOL  # base output row for this tile
+
+    # Iterate over pool window; compute conv at each location
+    for ki in tl.static_range(0, POOL):
+        for kj in tl.static_range(0, POOL):
+            oh = oh_base + ki  # scalar
+            # ow vector
+            ow = pw_offs * POOL + kj  # [BLOCK_PW]
+
+            acc = tl.zeros((BLOCK_OC, BLOCK_PW), dtype=tl.float32)
+
+            # K-dim: IC * KH * KW
+            for ic in tl.static_range(0, IC):
+                for kh in tl.static_range(0, KH):
+                    ih = oh + kh
+                    for kw in tl.static_range(0, KW):
+                        iw = ow + kw  # [BLOCK_PW]
+                        # x_val: [BLOCK_PW]
+                        x_off = ((n * IC + ic) * IH + ih) * IW + iw
+                        x_val = tl.load(x_ptr + x_off, mask=pw_mask, other=0.0)
+                        # w_val: [BLOCK_OC]
+                        w_off = ((oc_offs * IC + ic) * KH + kh) * KW + kw
+                        w_val = tl.load(w_ptr + w_off, mask=oc_mask, other=0.0)
+                        # outer product accumulate
+                        acc += w_val[:, None] * x_val[None, :]
+
+            acc = acc + cb[:, None]
+            e2 = tl.exp(2.0 * acc)
+            t = (e2 - 1.0) / (e2 + 1.0)
+            v = t * SCALE + bb[:, None]
+            max_val = tl.maximum(max_val, v)
+
+    # Store [BLOCK_OC, BLOCK_PW] to out[n, oc_offs, ph, pw_offs]
+    out_off = ((n * OC + oc_offs[:, None]) * PH + ph) * PW + pw_offs[None, :]
+    mask = oc_mask[:, None] & pw_mask[None, :]
+    tl.store(out_ptr + out_off, max_val, mask=mask)
+
+
+class ModelNew(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, scaling_factor, bias_shape, pool_kernel_size):
+        super().__init__()
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size)
+        self.scaling_factor = float(scaling_factor)
+        self.bias = nn.Parameter(torch.randn(bias_shape))
+        self.max_pool = nn.MaxPool2d(pool_kernel_size)
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = kernel_size
+        self.pool_kernel_size = pool_kernel_size
+
+    def forward(self, x):
+        x = x.contiguous()
+        N, IC, IH, IW = x.shape
+        OC = self.out_channels
+        KH = KW = self.kernel_size
+        OH = IH - KH + 1
+        OW = IW - KW + 1
+        POOL = self.pool_kernel_size
+        PH = OH // POOL
+        PW = OW // POOL
+
+        if PH * POOL != OH or PW * POOL != OW:
+            y = self.conv(x)
+            y = torch.tanh(y) * self.scaling_factor + self.bias
+            return self.max_pool(y)
+
+        out = torch.empty((N, OC, PH, PW), device=x.device, dtype=x.dtype)
+        bias_flat = self.bias.view(-1).contiguous()
+
+        BLOCK_OC = 32
+        BLOCK_PW = 16
+        oc_tiles = (OC + BLOCK_OC - 1) // BLOCK_OC
+        pw_tiles = (PW + BLOCK_PW - 1) // BLOCK_PW
+
+        grid = (N, oc_tiles * pw_tiles, PH)
+        fused_conv_tanh_scale_bias_pool_kernel[grid](
+            x, self.conv.weight, self.conv.bias, bias_flat, out,
+            N, IC,
+            IH, IW,
+            OC,
+            OH, OW,
+            PH, PW,
+            KH, KW,
+            POOL,
+            self.scaling_factor,
+            BLOCK_OC, BLOCK_PW,
+            num_warps=4,
+            num_stages=2,
+        )
+        return out

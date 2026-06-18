@@ -1,0 +1,29 @@
+{
+    "node_id": 45,
+    "parent_node_id": 8,
+    "context_node_ids": [
+        8
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The matmul is 128\u00d716384\u00d716384 \u2014 M=128 is tiny, so BLOCK_M=128 with one program per M-tile leaves only `ceil(N/BLOCK_N)` programs (64 with BLOCK_N=256). That under-fills the 4090's 128 SMs. Add configs with BLOCK_M=64 and BLOCK_N=128 (giving 2\u00d7128=256 programs) and BLOCK_M=32, BLOCK_N=128, plus a Split-K variant (e.g. SPLIT_K=2 or 4 with atomic-add or a second reduction pass) to expose more parallelism over the huge K=16384.\n- Try larger BLOCK_K (64/128) with num_stages=4 and num_warps=4 for the smaller-M tiles; with M=128 the dot is K-bound, so deeper pipelining of K-loads matters more than wider N.\n- Drop the pre-transposed weight buffer (it doubles weight memory and the original `weight` is already (N,K) contiguous \u2014 loading as B^T via swapped strides costs nothing with `tl.dot`'s layout) and instead pass `linear.weight` directly using `stride_wk=1, stride_wn=K`; this halves memory pressure / cache footprint.",
+    "large_guidance": "- Rewrite as a Split-K GEMM: launch grid `(cdiv(M,BM)*cdiv(N,BN), SPLIT_K)`, each program reduces K/SPLIT_K, then either atomic-adds into the output or writes to a partial buffer reduced in a tiny epilogue kernel that fuses bias + min + subtract. With M=128 the standard 2D tiling cannot fill the GPU; Split-K is the right structural fix.\n- Alternatively, treat this as a skinny-GEMM / GEMV-batched: persistent kernel where each CTA owns a strip of N (e.g. BLOCK_N=128) and streams all 128 rows of x through registers/shared, accumulating along K. With M=128 the entire X can be kept resident (128\u00d716384\u00d74B = 8MB \u2014 too big for SMEM, but per-tile slices of 128\u00d7BLOCK_K fit easily and the weight column tile is the bandwidth bottleneck).\n- Consider fp16/bf16 tensor-core path: cast x and weight_t to bf16 on the fly (or store weight in bf16 once at init) \u2014 Ada has 2\u00d7 throughput for bf16 tensor cores vs fp32, and the min/sub epilogue is unaffected by the intermediate precision since the loose tolerance permits it.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 46,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

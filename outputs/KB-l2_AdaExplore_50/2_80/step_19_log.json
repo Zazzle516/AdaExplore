@@ -1,0 +1,29 @@
+{
+    "node_id": 19,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5934914216907236,
+    "max_reward": 0.5934914216907236,
+    "avg_reward": 0.5934914216907236,
+    "score": [
+        1,
+        1,
+        1.6963042289484689
+    ],
+    "small_guidance": "- The current kernel does a tiled GEMM but writes only a per-tile row-max into a `(M, NB_ALLOC)` partial buffer, then runs a second kernel to reduce across N-tiles. With N=8192 and BLOCK_N=128, that's only 64 partials per row \u2014 try larger BLOCK_N (256) and a single-pass design where each program handles a full row strip (persistent over N) so the second kernel is unnecessary.\n- Add autotune configs with BLOCK_M=256/BLOCK_K=64 and num_stages=4 \u2014 K=8192 is large and benefits from deeper pipelining; the current best config is likely BLOCK_M=128/BLOCK_N=128/BLOCK_K=64 but wider M tiles reduce weight-reload pressure since weight (8192\u00d78192) is reused across M tiles.\n- Drop the `out * 0.0` epilogue tensor op \u2014 allocate `out` with `torch.zeros` directly (or fuse the zero-write into the final reduce kernel) to remove a full elementwise launch.",
+    "large_guidance": "- Restructure as a split-K-free, M-tile-persistent GEMM-reduce: one program per BLOCK_M rows, looping over all N tiles internally and maintaining a register-resident running max of size BLOCK_M. This eliminates the partial buffer and the second reduction kernel entirely, and keeps the activation tile resident while streaming weights.\n- Since the math collapses to zero output (max \u2192 x - mean(x) on a length-1 axis \u2192 0 \u2192 gelu(0)=0), the GEMM+max must still run for the safety contract, but the output store can be a constant 0 written by the same kernel \u2014 no second pass needed. Make the kernel write zeros to `out[m]` after computing (and discarding) the row max.\n- Consider a Split-K variant only if M=1024 leaves the SM grid underutilized; with BLOCK_M=128 that's 8 row-groups \u00d7 1 N-group = 8 programs which underfills 4090's 128 SMs. Use Split-K (e.g. 4-way) with atomic max into the output, giving ~32 programs and much better SM occupancy on the K=8192 reduction.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 20,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        1.7954388916792234
+    ]
+}

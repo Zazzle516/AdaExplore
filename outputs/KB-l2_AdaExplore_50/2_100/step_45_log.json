@@ -1,0 +1,29 @@
+{
+    "node_id": 45,
+    "parent_node_id": 40,
+    "context_node_ids": [
+        40
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4262838361391695,
+    "max_reward": 0.4262838361391695,
+    "avg_reward": 0.4262838361391695,
+    "score": [
+        1,
+        1,
+        0.31684164814814814
+    ],
+    "small_guidance": "- Add a `triton.autotune` sweep over BLOCK_OC \u2208 {32,64,128}, BLOCK_SP \u2208 {32,64,128}, IC_BLOCK \u2208 {16,32,64}, num_warps \u2208 {4,8}, num_stages \u2208 {2,3,4}. Current 64/64/32 with 4 warps is likely under-tiled for OC=128 and the large SP=49*97*97.\n- Move the IC loop to the outermost position (or hoist it outside the kd/kh/kw loops) so weights/x loads can be reused across the 27 kernel positions; currently you reload x 27\u00d7 per IC tile. Better: keep kd/kh/kw inner with `tl.static_range` but accumulate over IC tiles outside, computing 27 input offsets per spatial position from one shared base.\n- Specialize for STRIDE=2, PAD=1, K=3: precompute `id_valid`, `ih_valid`, `iw_valid` masks once per spatial tile rather than per kernel tap, and use `tl.multiple_of`/`tl.max_contiguous` hints on `sp_offs` to improve load coalescing.",
+    "large_guidance": "- Switch from the current gather formulation to an im2col-style GEMM where the K dimension is `IC * KD * KH * KW` (=1728) and M=OC (128), N=output-spatial tile. With OC=128 you can do a single `BLOCK_M=128` tile and sweep BLOCK_N=64/128 with BLOCK_K=32/64; this turns the kernel into a standard well-tuned GEMM with implicit im2col indexing in the K loop.\n- Alternatively, use the scatter-add (input-centric) formulation: one program per (N, IC tile, input-spatial tile) computes the `input \u00d7 weight` outer product (shape [BLOCK_SP, OC*KD*KH*KW]) and scatter-adds into output via `tl.atomic_add`. Because stride=2/pad=1/K=3 means each output voxel is hit by \u22641 input contribution per (kd,kh,kw), atomics rarely collide and total FLOPs drop ~8\u00d7 vs. the current gather (which evaluates 27 taps per output but most are masked out).\n- Use channels-last (NDHWC) layout for both input and output so the IC/OC axes are contiguous in the GEMM-K/GEMM-M dimensions, enabling vectorized 128-bit loads. Keep clamp+divide fused in the epilogue (already done).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 46,
+    "global_best_node_id": 39,
+    "global_best_score": [
+        1,
+        1,
+        0.6546983035714286
+    ]
+}

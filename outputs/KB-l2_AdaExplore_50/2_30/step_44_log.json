@@ -1,0 +1,29 @@
+{
+    "node_id": 44,
+    "parent_node_id": 43,
+    "context_node_ids": [
+        12
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing (max diff ~1.5e-3, avg 2.3e-4 across all trials at 0/5). The likely culprit is the cached transposed weight: `_wt_cache` is created once and never invalidated when `self.gemm.weight` is updated (or when called before the parameter is moved). Replace the cache with a per-forward `self.gemm.weight.t().contiguous()` (or invalidate on data_ptr change), and verify against `F.linear`.\n- The GEMM kernel does unmasked `tl.load` on A and B even when M/N/K aren't multiples of BLOCK_*. For 1024\u00d78192\u00d78192 the divisibility holds, but add boundary masks (`mask=offs_m[:,None]<M`, etc.) with `other=0.0` for safety and to allow more autotune shapes.\n- Increase autotune coverage with a couple of larger-K configs (BLOCK_K=64, num_stages=4) and a 128\u00d764\u00d764 variant; keep `allow_tf32=True` but also try a non-TF32 config to confirm TF32 isn't the source of the 1.5e-3 mismatch (rtol=5e-2 should still pass \u2014 so the bug is elsewhere, most likely the stale weight cache).",
+    "large_guidance": "- Keep the two-kernel structure (tiled GEMM with bias epilogue, then per-row GroupNorm+HardTanh). Both kernels are well-shaped for this problem; correctness, not design, is the issue.\n- For GroupNorm with C_per_G=512 on a row of 8192 floats, consider one program per (row, group) loading the 512-wide slice in a single tile (already done) but use `num_warps=8` and `num_stages=3`, and load gamma/beta once per group via shared/registers. Optionally fuse the bias-add from GEMM directly into the same kernel by launching GroupNorm to read the pre-bias accumulator \u2014 but the current split is fine.\n- The cleanest fix: drop the `_wt_cache` mechanism entirely and either (a) store `self.weight_t` as a registered buffer initialized from `gemm.weight.detach().t().contiguous()` in `__init__`, or (b) call the kernel with the original weight using strides (no transpose, B is K\u00d7N already since Linear weight is [out,in], so use weight as B with swapped strides). Eliminating the stale-cache hazard removes the correctness failure.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 45,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 38,
+    "parent_node_id": 22,
+    "context_node_ids": [
+        19,
+        22
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness fails with avg_diff ~2e-4 \u2014 likely the GroupNorm uses CPG=32 but BLOCK=next_power_of_2(32)=32 OK; the issue is more likely that `self.bias` has shape `(out_features,)` but is added before hardtanh \u2014 verify ordering matches reference. Also `tl.sigmoid(2*sp)` for large sp can overflow; clamp sp or use `tanh` via `(exp(2x)-1)/(exp(2x)+1)` with stable form, or compute mish as `x * (exp(2*sp) - 1) / (exp(2*sp) + 1)` with sp already clamped.\n- The mish numerical drift (~2e-3 max) suggests the softplus/tanh approximation diverges from PyTorch's implementation. Use `tl.log(1 + tl.exp(-tl.abs(x))) + tl.maximum(x, 0.0)` for softplus, then a careful tanh: `t = tl.exp(-2*sp); tanh_sp = (1 - t)/(1 + t)`.\n- Add autotune to group_norm_kernel over `num_warps in [2,4,8]` since CPG=32 is tiny; one program per (row, group) with M*G=1024*256=262144 launches may be launch-bound \u2014 consider processing multiple groups per program.",
+    "large_guidance": "- Restructure GroupNorm: with M=1024, G=256, CPG=32, the current 262K-program launch is launch-overhead-bound. Use a kernel where one program handles a full row (all 8192 channels, 256 groups) using a 2D tile [BLOCK_G, CPG] and computes all group stats in registers via tl.sum along axis=1, dramatically reducing launch count to 1024.\n- Consider fusing GroupNorm directly into the GEMM epilogue is hard (needs cross-tile reduction), but you can fuse hardtanh+mish into GEMM (already done) and write a single persistent GroupNorm kernel that loads the full row once, computes per-group mean/var, normalizes, and writes back \u2014 eliminating one full read/write pass.\n- Fix the mish numerical issue first: PyTorch's Mish uses `F.softplus` which is `log(1+exp(x))` with threshold=20; replicate exactly with `sp = tl.where(x > 20, x, tl.log(1 + tl.exp(x)))` and tanh as `(1 - tl.exp(-2*sp)) / (1 + tl.exp(-2*sp))` clamping sp to avoid exp underflow issues.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 39,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

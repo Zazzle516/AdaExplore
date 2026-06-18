@@ -1,0 +1,29 @@
+{
+    "node_id": 35,
+    "parent_node_id": 31,
+    "context_node_ids": [
+        31
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure stems from the two-stage reduction: `partial` is allocated with `max_grid_n` based on BLOCK_N=64, but unused rows are never zeroed; when the autotuner picks a larger BLOCK_N (e.g. 128/256), `actual_grid_n` is smaller but the stale rows beyond it still get read because BLOCK_GN is rounded up \u2014 fix by `torch.zeros` instead of `torch.empty`, or mask strictly to `actual_grid_n`.\n- Also verify the downstream ops really are identity: `logsumexp` over a singleton dim is identity, `mean`/`max` over singleton is identity, but the avg-difference ~0.013 suggests a real numerical bug (likely the stale `partial` rows). After fixing, retune with larger BLOCK_N (256) since N=8192 is large and row-sum collapses N anyway.\n- Consider fusing the N-reduction into the GEMM epilogue with `atomic_add` into a single `(M,)` buffer, eliminating the second kernel and the partial allocation entirely.",
+    "large_guidance": "- Rewrite as a single persistent kernel: one program per row-tile of M, looping over the full K and N dimensions internally, accumulating `sum_n(x @ W^T)` directly into a `(BLOCK_M,)` register vector. Since the final result is a scalar per row, you can reorder as `out[m] = sum_k x[m,k] * sum_n W[n,k] + sum(bias)` \u2014 but this is the algebraic shortcut forbidden by the safety contract, so instead keep the GEMM but reduce N inside the same kernel via a serial N-loop with `tl.dot` producing `(BLOCK_M, BLOCK_N)` tiles that immediately reduce to `(BLOCK_M,)`.\n- Use a 2D grid `(grid_m, grid_n)` with `tl.atomic_add` into a single `(M,)` output buffer (zero-initialized, plus bias_sum added once), removing the intermediate partial tensor and the second kernel launch entirely.\n- Pick BLOCK_M=64, BLOCK_N=128, BLOCK_K=64, num_warps=8, num_stages=3 for the 1024\u00d78192\u00d78192 shape; the row-reduce epilogue is cheap so larger BLOCK_N amortizes the atomic.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 36,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        0.8826896197781255
+    ]
+}

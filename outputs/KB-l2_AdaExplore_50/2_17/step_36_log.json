@@ -1,0 +1,29 @@
+{
+    "node_id": 36,
+    "parent_node_id": 21,
+    "context_node_ids": [
+        19
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing with small numerical drift (~1e-3). The conv im2col uses `tl.dot(w_vals, tl.trans(x_vals))` in fp32 which Triton may run with TF32 \u2014 pass `allow_tf32=False` to `tl.dot` (or cast inputs to fp32 and force IEEE) to match PyTorch's conv numerical precision on the eval check.\n- Increase InstanceNorm numerical stability: compute `sum_x` / `sum_x2` accumulators in fp32 (they already are), but use the more stable `var = (sum_x2 - sum_x*sum_x/HW) / HW` form, and consider casting `v` to fp32 explicitly before squaring.\n- Add larger autotune configs for the conv (BLOCK_M=128/BLOCK_N=128/BLOCK_K=16 with num_warps=8) for the H_OUT*W_OUT=15876, OC=128 shape.",
+    "large_guidance": "- The conv kernel is structurally fine (im2col-style implicit gather + GEMM); the redesign priority is correctness, not architecture. Keep im2col but switch to a `channels_last` (NHWC) input layout so the GEMM-K dimension (`IC*KH*KW`) is contiguous along IC \u2014 this both improves coalescing and removes the strided ic gather causing precision drift through tl.dot accumulation order.\n- Fuse the instance-norm reduction's first pass with the conv epilogue: have each conv program atomically contribute partial `sum`/`sum_sq` per `(n, oc)` into a small scratch tensor, then a second small kernel finalizes mean/rstd and a third applies normalize+divide. Or simpler: keep conv separate but make instance-norm a single 2D-grid kernel where one program covers a whole feature map with a tiled two-pass reduction (current persistent path only triggers for HW\u226432768; here HW=126*126=15876, so it should be fine \u2014 verify it's actually firing).\n- Force `allow_tf32=False` on the `tl.dot` so conv matches cuDNN's fp32 accumulation; the current 1.3e-3 max-diff is consistent with TF32 truncation across a K=576 reduction.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 37,
+    "global_best_node_id": 34,
+    "global_best_score": [
+        1,
+        1,
+        1.3586719656992086
+    ]
+}

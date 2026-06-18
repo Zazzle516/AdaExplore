@@ -1,0 +1,29 @@
+{
+    "node_id": 40,
+    "parent_node_id": 37,
+    "context_node_ids": [
+        37
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4232976596050903,
+    "max_reward": 0.4232976596050903,
+    "avg_reward": 0.4232976596050903,
+    "score": [
+        1,
+        1,
+        0.2922056917419948
+    ],
+    "small_guidance": "- The BN+sub-mean epilogue is already cheap; the dominant cost (\u22484.3 ms of 6.1 ms) is `nn.ConvTranspose3d`. Tuning the existing elementwise kernel cannot close the gap \u2014 focus tuning effort only after the conv is replaced. For the existing kernel, a small win is fusing both passes into one persistent kernel that keeps the row resident (S = 32*64*64 = 131072 fits if tiled), avoiding the second global re-load.\n- Add a `BLOCK_S=8192, num_warps=8, num_stages=3` config and key the autotune on `S` only (it's constant here) so the tuner doesn't re-search.\n- Use vectorized loads (`tl.load` of fp32x4 via pointer arithmetic on contiguous `S`) and ensure `out` is `channels_last_3d` if downstream consumers benefit; otherwise NCDHW contiguous is fine since one program owns one (n,c) row.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)` computes the `input \u00d7 kernel` outer product over `(OC, KD, KH, KW)` and scatters into the output grid with `stride=2, padding=1`. Output shape is `(16, 32, 31, 63, 63)`. This is the only path to meaningful speedup since the conv is ~70% of runtime.\n- Fuse the BN affine (scale, bias) and the spatial-mean subtraction into the conv-transpose epilogue by having each output-tile program also accumulate a per-(n,c) partial sum into a workspace via `tl.atomic_add`, then a tiny second kernel finalizes `y - mean`. Fold BN's `(weight/sqrt(var+eps))` into the conv weight at eval time (BN running stats are constant \u2014 this is allowed, it's a pure affine fold, not a reduction shortcut).\n- Use `channels_last_3d` layout for the conv-transpose output so the OC axis is the contiguous GEMM-N dimension; pick tiles `(BLOCK_OC=32, BLOCK_SPATIAL=64, BLOCK_IC=16)` at `num_warps=4, num_stages=2` for the first compile, then sweep upward. Verify `(BM\u00b7BK + BK\u00b7BN)\u00b74\u00b7num_stages \u2272 132 KB`.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 41,
+    "global_best_node_id": 29,
+    "global_best_score": [
+        1,
+        1,
+        0.3246729908244386
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 33,
+    "parent_node_id": 28,
+    "context_node_ids": [
+        28
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness bug: the epilogue applies LeakyReLU before adding the sum_tensor, but the reference adds sum_tensor *after* LeakyReLU on the conv output (which already includes conv.bias). Folding `conv.bias + sum_tensor` into a single pre-LeakyReLU bias is wrong because LeakyReLU is non-linear. Fix: run conv WITH its bias, then in the epilogue do `x = leaky_relu(x); x = x + sum_tensor_bias; clamp; gelu`. Only `sum_tensor` should be the channel bias passed to the kernel.\n- After fixing, sweep BLOCK_SIZE in {512, 1024, 2048, 4096} with num_warps in {4, 8} via `triton.autotune`; spatial = 16*62*62 = 61504 per (n,c), so larger blocks reduce launch overhead.\n- Collapse the grid to (N*C, cdiv(SPATIAL, BLOCK)) to reduce program_id overhead; load bias via `c = pid0 % C`.",
+    "large_guidance": "- The torch conv3d dominates runtime here (8\u219264 channels, 128\u00d716\u00d764\u00d764 input, 3\u00b3 kernel). Replace it with a custom Triton implicit-GEMM conv3d: one program per (N, OC tile, output-spatial tile), with K = IC*kD*kH*kW = 8*27 = 216, accumulating in fp32 and fusing bias+LeakyReLU+sum_tensor+clamp+GELU in the epilogue before the store.\n- Use channels-last-ish layout for the input by pre-permuting to (N, D, H, W, C) so the GEMM-K inner loop coalesces across IC; kernel weights can be reshaped to (OC, IC*kD*kH*kW) once in `__init__`.\n- Tile (BLOCK_M=OC tile=64, BLOCK_N=spatial tile=64 or 128, BLOCK_K=32 or 64); autotune over a small grid. Mask the output-spatial tail; hoist (d,h,w) decomposition outside the K-loop and only compute input offsets per K-iter.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 34,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        1.0859163592233008
+    ]
+}

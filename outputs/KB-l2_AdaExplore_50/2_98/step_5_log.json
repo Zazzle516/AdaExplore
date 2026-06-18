@@ -1,0 +1,30 @@
+{
+    "node_id": 5,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        3,
+        4
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.43184439578066197,
+    "max_reward": 0.43184439578066197,
+    "avg_reward": 0.43184439578066197,
+    "score": [
+        1,
+        1,
+        0.3627162651904612
+    ],
+    "small_guidance": "- The current kernel reloads the weight tile [BLOCK_K, NF] for every pooled tile but never reuses it across pooled tiles for the same row block \u2014 increase BLOCK_P (e.g. 16 or 32) so one K-loop pass amortizes more output features per program, and add autotune configs with NF up to 256 (BLOCK_P=16/POOL_K=16, BLOCK_P=32/POOL_K=16) at num_warps=8, num_stages=3-4.\n- Add larger BLOCK_M configs (64, 128) paired with BLOCK_K=32 so `tl.dot` shapes (M,K)\u00d7(K,N)=(64,32)\u00d7(32,128) hit tensor-core friendly tiles, and include a GROUP_M-style swizzle on the batch axis to improve L2 reuse of the weight tile across adjacent batch rows.\n- Cast x_tile/wt_tile to fp16 (or tf32 via `tl.dot(..., allow_tf32=True)` explicit) before the dot since inputs are fp32 and the 4090 (Ada) gets ~2\u00d7 throughput on tf32/fp16 tensor cores; keep accumulator fp32.",
+    "large_guidance": "- Restructure as a 2D grid (batch_tile, pooled_tile) so each program owns a (BLOCK_M, NF) output region with NF\u2248128-256, computing only that slice's matmul. This removes the serial loop over pooled tiles and lets the scheduler fill the GPU; the per-row max is then a small cross-program reduction via `atomic_max` on an int-reinterpreted fp32 buffer, or a tiny second-pass kernel over the (B, POOLED_LEN) intermediate.\n- Alternatively, make it a persistent split-K GEMM epilogue: tile the GEMM as (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32-64) with tf32 `tl.dot`, fuse bias+avgpool(reshape-and-sum over POOL_K=16 inside BLOCK_N)+GELU+scale in the epilogue, write per-tile partial maxes to a (B, num_n_tiles) scratch, then a tiny reduction kernel takes the max over num_n_tiles. This is the standard high-performance layout for matmul-then-reduction.\n- Pre-transpose+pack the weight into a layout where each [BLOCK_K, NF] tile is stored contiguously (K-major within tile, tile-major outer) so the inner load is a single contiguous block; combined with tf32 tensor cores this is the main lever \u2014 current 7.59ms vs 2.75ms baseline (cuBLAS sgemm) means the GEMM itself is ~3\u00d7 off peak.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 6,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        1.512646402634945
+    ]
+}

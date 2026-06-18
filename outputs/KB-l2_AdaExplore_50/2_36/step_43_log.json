@@ -1,0 +1,30 @@
+{
+    "node_id": 43,
+    "parent_node_id": 36,
+    "context_node_ids": [
+        9,
+        42
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.0,
+    "max_reward": 0.0,
+    "avg_reward": 0.0,
+    "score": [
+        0,
+        0,
+        0
+    ],
+    "small_guidance": "- The compile crash is a known Triton MLIR pass assertion (`OptimizeThreadLocality`) triggered by the `tl.dot(w_vals, x_vals)` whose operands depend on a loop with only-one-use accumulator pattern; try splitting `BLOCK_IC` into an inner reduction loop (tile K) instead of relying on `next_power_of_2(IC)=64` as a single K-block, or set `BLOCK_IC=32` and loop over IC tiles to break the problematic single-use pattern.\n- Drop the autotune configs with `BLOCK_SP=1024` / `BLOCK_OC=128,BLOCK_SP=256` (shared memory pressure on 4090) and add `BLOCK_OC=64, BLOCK_SP=128, num_warps=4, num_stages=2` as a safer baseline; ensure `num_stages=2` everywhere to avoid the pipeliner pass that is asserting.\n- In `min_sum_gelu_bias_kernel`, capping `BLOCK_OW` at 256 leaves OW=256 fine but consider `BLOCK_OW=128, num_warps=4` so each program owns fewer columns and you can keep the full OC=128 reduction in registers without spills.",
+    "large_guidance": "- Restructure the conv-transpose as a gather-style GEMM with explicit K-loop over `IC` in chunks of `BLOCK_K=16 or 32`, accumulating into `acc[BLOCK_OC, BLOCK_SP]` across both `(kh,kw)` and IC tiles \u2014 this avoids the single-iteration K reduction that is tickling the MLIR thread-locality pass and gives the compiler a normal GEMM shape to optimize.\n- Consider fusing the channel-min directly into the conv-transpose epilogue: each program already produces a `[BLOCK_OC, BLOCK_SP]` tile for one batch; if you make the grid iterate over all OC (single program per `(N, sp_tile)` looping OC tiles), you can reduce-min across OC inline and write only `[N, OH, OW]`, eliminating the full `[N,128,OH,OW]` intermediate (~256 MB) and the second kernel entirely (then sum/gelu/bias becomes a tiny third kernel or is fused into the same loop by also reducing along H).\n- Alternative redesign: implement conv-transpose as scatter-add (one program per `(N, IC tile, IH*IW tile)` computing the input\u00d7kernel outer product and atomically scattering into output) \u2014 but given OH*OW=256*256 and KH*KW=9, the gather formulation is preferable; the key win is the fusion above, not the algorithm switch.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 44,
+    "global_best_node_id": 26,
+    "global_best_score": [
+        1,
+        1,
+        1.3353401460373366
+    ]
+}

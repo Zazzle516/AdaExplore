@@ -1,0 +1,29 @@
+{
+    "node_id": 28,
+    "parent_node_id": 19,
+    "context_node_ids": [
+        19
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.45812008518753977,
+    "max_reward": 0.45812008518753977,
+    "avg_reward": 0.45812008518753977,
+    "score": [
+        1,
+        1,
+        0.5794907027972027
+    ],
+    "small_guidance": "- Add a `triton.autotune` over `BLOCK_OC \u2208 {32,64,128}`, `BLOCK_HW \u2208 {32,64,128}`, `BLOCK_K \u2208 {32,64}`, `num_warps \u2208 {4,8}`, `num_stages \u2208 {2,3}`; the current 64/64/32 with 4 warps is likely under-tiling for OC=128 / pool_total=4096.\n- Tile over conv-output spatial directly (BLOCK_H \u00d7 BLOCK_W aligned to POOL) instead of a flat BLOCK_HW; this lets the POOL\u00d7POOL inner loop reuse loaded `x` tiles across the 4 pool offsets and amortize the GEMM K-loop once per output tile rather than 4\u00d7.\n- Hoist the K-loop outside the `(dh,dw)` static loops \u2014 compute conv output for a (BLOCK_H+POOL-1)\u00d7(BLOCK_W+POOL-1) input patch once, then tanh+sub+pool in registers; this removes the 4\u00d7 redundant weight/input loads.",
+    "large_guidance": "- Restructure as one program per `(N, OC_tile, H_pool_tile, W_pool_tile)` performing a single implicit-GEMM over the union input region: load the (BLOCK_HP*POOL+KH-1)\u00d7(BLOCK_WP*POOL+KW-1) input slab into SMEM/registers once, run the K-reduction once to produce BLOCK_HP*POOL \u00d7 BLOCK_WP*POOL conv outputs, fuse `-sub1`, tanh, `-sub2`, then 2\u00d72 average-pool in registers before a single store. The current kernel redoes the full GEMM 4\u00d7 per pool window, which is the dominant cost.\n- Use `channels_last` input throughout (avoid the per-call `permute().contiguous()`), and pre-pack the weight as `[KH*KW*C_in, OC]` aligned to BLOCK_K=64 so `tl.dot` operates on 64\u00d764 tiles natively on Ada.\n- Consider a persistent-CTA scheme with one program per `(N, OC_tile)` sweeping all spatial tiles, so the bias and weight tile (128\u00d7{KH\u00b7KW\u00b7C_in}=1152 floats) stay resident across spatial iterations \u2014 weight reuse across spatial is currently zero.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 29,
+    "global_best_node_id": 24,
+    "global_best_score": [
+        1,
+        1,
+        1.6507404482071715
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 26,
+    "parent_node_id": 14,
+    "context_node_ids": [
+        1,
+        2
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4818851573055395,
+    "max_reward": 0.4818851573055395,
+    "avg_reward": 0.4818851573055395,
+    "score": [
+        1,
+        1,
+        0.7755525477707007
+    ],
+    "small_guidance": "- Add a `triton.autotune` over `BLOCK_M \u2208 {32, 64, 128}`, `BLOCK_K \u2208 {32, 64}`, `num_warps \u2208 {4, 8}`, `num_stages \u2208 {2, 3, 4}` keyed on `(OH*OW, OC, IC)`; current fixed `BLOCK_M=64`, `num_warps=4` is likely under-occupying the SMs given a single OC tile dimension grid.\n- Drop the final `out_nhwc.permute(0,3,1,2).contiguous()` \u2014 write directly into a pre-allocated NCHW output by computing `(n, c, h, w)` strides in the store (output is small enough that a permuted store is cheaper than a full extra copy of 128\u00b7128\u00b7128\u00b7128 fp32).\n- Keep the input layout reshape (`x.permute(0,2,3,1).contiguous()`) outside the timed kernel by caching `w_reshaped` and `conv_bias` in `__init__` (they are parameters, not inputs); only `x_nhwc` needs to be made contiguous each call.",
+    "large_guidance": "- Switch from gather-style conv-transpose to a scatter-add formulation: one program per `(n, ih_tile, iw_tile)` computes `input[n, :, ih, iw] @ weight[:, :, kh, kw]` outer products and atomically adds into the output grid. This avoids the `ih_num % STRIDE == 0` masking that wastes ~75% of the work in the current kernel (stride=2 means 3/4 of the (kh,kw) taps are invalid per output pixel).\n- Alternative: a two-pass design where pass 1 is a pure GEMM `[N*IH*IW, IC] x [IC, OC*KH*KW] -> [N*IH*IW, OC*KH*KW]` (use `torch.matmul` or a tuned Triton GEMM, no masking waste), and pass 2 is a fused col2im + softmax + bias + scale + sigmoid kernel that gathers the KH*KW contributions per output pixel and applies the full epilogue. The GEMM step gets full tensor-core utilization without the stride-divisibility branch.\n- For the epilogue fusion, keep the in-register softmax across `BLOCK_N >= OC` (already done) but combine it with the col2im in one program per `(n, oh_tile, ow_tile)`, so the intermediate `N*OH*OW*OC` tensor is never materialized.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 27,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.0969527027027028
+    ]
+}

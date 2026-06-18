@@ -1,0 +1,30 @@
+{
+    "node_id": 6,
+    "parent_node_id": 5,
+    "context_node_ids": [
+        1,
+        5
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.44298347828615103,
+    "max_reward": 0.44298347828615103,
+    "avg_reward": 0.44298347828615103,
+    "score": [
+        1,
+        1,
+        0.4546136958607456
+    ],
+    "small_guidance": "- The kernel currently launches one program per (N,C,Dp,Hp) = 32\u00b764\u00b78\u00b716 = 262144 programs each doing only 32 elements of work \u2014 way too many tiny launches. Tile multiple Hp (and/or Dp) rows per program so each program does e.g. BLOCK_HP=4 or 8 output rows, amortizing weight/bias loads and reducing grid size by 4-8\u00d7.\n- Add an autotune axis over BLOCK_HP \u2208 {1,2,4,8} with num_warps \u2208 {2,4} (BLOCK_W=64 is small, num_warps=2 likely best); also try keeping the LayerNorm gamma/beta in registers across the outer (dp,hp) tile loop instead of reloading.\n- Avoid the `tl.reshape(acc, (BLOCK_W//2, 2))` + sum trick when W is not a power of 2 case; here W=64 so it works, but precompute even/odd masks to allow vectorized pooling without the reshape, which may permit larger BLOCK_W tiles fused across hp.",
+    "large_guidance": "- The dominant cost in this graph is `ConvTranspose3d` (output \u2248 32\u00b764\u00b716\u00b732\u00b732 fp32 with 3\u00b3 kernel and stride 2) \u2014 the post-conv fused kernel only touches the conv output, so even a perfect fused tail leaves the conv as the bottleneck. A from-scratch rewrite should replace the ConvTranspose3d itself with a custom Triton scatter-add kernel (input \u00d7 weight outer product scattered into the strided/padded output grid) and fuse `+sum_weight`, LayerNorm-over-C-or-W, AvgPool3d, and GELU into the same producer's epilogue (or a chained pair of kernels) so the conv output is never materialized to global memory.\n- Because LayerNorm is over the last dim (W=64) and AvgPool is 2\u00d72\u00d72, structure the conv kernel to produce a full W-row (or 2 adjacent W-rows for the depth/height pool partner) per program in registers, then do norm+pool+GELU before storing the pooled output directly \u2014 eliminating the 32\u00b764\u00b716\u00b732\u00b732 fp32 round-trip entirely.\n- Use channels-last-3d (NDHWC) layout for the conv output staging so the LayerNorm reduction axis (W) is contiguous and pooling neighbors in D/H are easy to accumulate; fold conv bias into the epilogue add of sum_weight.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 7,
+    "global_best_node_id": 6,
+    "global_best_score": [
+        1,
+        1,
+        0.4546136958607456
+    ]
+}

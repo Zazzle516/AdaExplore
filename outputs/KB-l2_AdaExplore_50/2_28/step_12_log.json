@@ -1,0 +1,30 @@
+{
+    "node_id": 12,
+    "parent_node_id": 2,
+    "context_node_ids": [
+        1,
+        2
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.48561936164825226,
+    "max_reward": 0.48561936164825226,
+    "avg_reward": 0.48561936164825226,
+    "score": [
+        1,
+        1,
+        0.8063597335980807
+    ],
+    "small_guidance": "- The GEMM is the dominant cost (M=1024, N=8192, K=8192 \u2248 137 GFLOPs); current code defers to cuBLAS `addmm`. Replace `torch.addmm` with the autotuned `gemm_bias_kernel` already defined, and fuse the bias add in its epilogue \u2014 this removes the cuBLAS call overhead and a separate launch. Add larger tiles like `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4` and `BLOCK_M=64, BLOCK_N=256, BLOCK_K=64` to the autotune list for this large-K shape.\n- For the norm/residual kernel, N=8192 \u2192 BLOCK_N=8192 is huge; force `num_warps=16, num_stages=2` (or split the reduction into two passes with `BLOCK_N=1024` tiles to reduce register pressure / spills). Currently autotune key includes `BLOCK_N` which is constant, so it doesn't actually explore.\n- Consider fusing the GEMM epilogue with the InstanceNorm: since each row of C is normalized independently, the GEMM kernel can write the full row tile and a follow-up persistent reduction can stream through it; or do the bias+normalize+residual all in one pass after a full GEMM into a workspace.",
+    "large_guidance": "- Write a single custom GEMM kernel that fully replaces `addmm` and fuses bias; use split-K=1 with BLOCK_M=64/128, BLOCK_N=256, BLOCK_K=64, GROUP_M=8, num_warps=8, num_stages=4 tuned for (1024, 8192, 8192). This shape is compute-bound and cuBLAS is near-peak, so to beat it you must save the extra kernel launches by fusing bias (already planned) and ideally part of the norm.\n- Restructure as two kernels: (1) GEMM producing C in fp32 with bias fused; (2) a row-wise fused kernel that streams C in tiles, computes mean/var via a two-pass (or Welford) reduction, then re-streams to apply normalize + (x+y)*y. Tile the row across BLOCK_N=1024 with 8 tiles per row to fit registers and let `num_warps=8` cover the row efficiently.\n- Alternatively, since InstanceNorm2d with shape (N,C,1,1) gives mean=x, var=0 per element only if spatial=1 \u2014 wait, here spatial dims are 1\u00d71 so each (n,c) is its own group of size 1, meaning normalization yields 0 deterministically. Confirm reference semantics: `InstanceNorm2d` over H\u00d7W=1\u00d71 makes var=0, normalized output = 0 regardless of x. If true, the entire bmm+norm collapses; but per safety contract we must still execute the bmm. The fused post-kernel then just computes `(0 + y) * y = y*y`, so the GEMM result is unused \u2014 keep GEMM but the epilogue becomes trivial. Verify this behavior; it dramatically changes the optimization target.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 13,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.8111310929684835
+    ]
+}

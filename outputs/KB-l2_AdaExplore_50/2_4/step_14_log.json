@@ -1,0 +1,29 @@
+{
+    "node_id": 14,
+    "parent_node_id": 13,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The kernel failed at the C launcher compile step (gcc returned non-zero on the Triton-generated `main.c`), which often indicates the kernel itself errored during JIT lowering. Most likely culprit: `tl.dot(w_vals, x_vals)` with `w_vals: [BLOCK_M, BLOCK_K]` and `x_vals: [BLOCK_K, BLOCK_N]` where `BLOCK_K=32` is fine, but BLOCK_M/BLOCK_N=64 combined with kh/kw static unrolling (9 dots) may blow shared memory in some configs \u2014 prune to `BLOCK_M=64, BLOCK_N=64, BLOCK_K=32` and `BLOCK_M=64, BLOCK_N=128, BLOCK_K=16` only, num_warps=4, num_stages=2.\n- Replace `tl.log(1.0 + tl.exp(acc))` (overflow-prone) with a numerically-stable softplus: `tl.where(a > 20.0, a, tl.log(1.0 + tl.exp(a)))`, applied to both mish stages \u2014 this also reduces register pressure on the activation epilogue.\n- Hoist the `pid_n * stride_xn` and `pid_n * stride_on` base pointers outside the IC/kh/kw loops, and precompute `ih = oh[None,:] + kh` once per (kh) iteration so the inner kw loop only updates iw \u2014 reduces address arithmetic in the hottest loop.",
+    "large_guidance": "- Switch to a channels-last (NHWC) memory layout: permute input to NHWC once at forward entry and write output in NHWC, then permute back. This makes the GEMM-K dimension (IC) contiguous, so the inner `tl.load` of `x_vals` is a single coalesced vector load instead of a strided gather across the channel axis \u2014 typically 2-3x on 3x3 convs on Ampere.\n- Restructure as one program per `(N, oh_tile, OC_tile)` over a spatial tile of e.g. 8x16 output pixels, accumulating into a `[BLOCK_OC, TILE_H*TILE_W]` register tile. Iterate the 9 (kh,kw) positions in the outer loop and over IC in chunks of 16/32 in the inner loop using `tl.dot` on `[BLOCK_OC, IC_CHUNK] x [IC_CHUNK, TILE_H*TILE_W]`. Pre-fold the bias add and the two mish activations into the epilogue before the single store.\n- Since OH=OW=254 and OC=128 are modest, consider a persistent-kernel design (one program per SM that loops over (n, oc_tile, sp_tile) work items) to amortize launch + address-setup overhead, with the 3x3 weights cached in shared memory once per (oc_tile, ic_chunk).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 15,
+    "global_best_node_id": 8,
+    "global_best_score": [
+        1,
+        1,
+        0.9389400340136056
+    ]
+}

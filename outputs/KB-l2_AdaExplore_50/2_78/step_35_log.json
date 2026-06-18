@@ -1,0 +1,29 @@
+{
+    "node_id": 35,
+    "parent_node_id": 32,
+    "context_node_ids": [
+        32
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4062796548079026,
+    "max_reward": 0.4062796548079026,
+    "avg_reward": 0.4062796548079026,
+    "score": [
+        1,
+        1,
+        0.15180715216519647
+    ],
+    "small_guidance": "- The inner-loop gather over (kd,kh,kw,ic) recomputes weight loads per spatial window position; hoist the per-(d_o,h_o,w_o) modular-stride check using the equivalent split-by-residue trick: only iterate kd values where (d_o+PAD-kd) % STRIDE == 0 \u2014 for stride=2 and KS=5 only 3 of the 5 kd values contribute per d_o parity. Precompute valid (kd,kh,kw) triples per (dd,hh,ww) at compile time via tl.static_range branches based on parity.\n- Reduce the 6\u00d76\u00d76=216-point window loop by computing convT into a register tile of shape [POOL,POOL,POOL,BLOCK_OC] once per (n,od,oh,ow) and then reducing \u2014 current code recomputes the full convT gather at each of 216 spatial positions. Even partial reuse along the innermost (ww) axis would cut redundant weight loads by ~2\u00d7.\n- Add autotune configs with num_warps=2 (BLOCK_OC=64 is small enough that 4 warps may be underutilized given the heavy register pressure) and try splitting BLOCK_OC=32 with two programs along OC tile to free registers.",
+    "large_guidance": "- Restructure as scatter-add ConvTranspose: one program per (n, ic-tile, d_i, h_i, w_i) input voxel, scatter `input * weight` outer-product into a privately-held output tile in shared memory / registers for one (n, od_tile, oh_tile, ow_tile) pool-output region. After the scatter, apply the 6\u00d76\u00d76 max-reduce and OC sum in-kernel. This eliminates the 216\u00d7 redundant weight gather of the current per-output-point approach.\n- Alternative: split into two persistent kernels \u2014 (1) a properly tiled im2col GEMM scatter-add ConvT writing the (N,OC,63,63,63) tensor in channels-last layout, (2) a fused max-pool6 + channel-sum kernel. The current monolithic kernel does O(POOL\u00b3\u00b7KS\u00b3\u00b7IC\u00b7OC) work per output point (\u2248216\u00b7125\u00b732\u00b764 \u2248 55M MACs per output scalar) \u2014 completely arithmetic-bound on redundant reloads.\n- Use channels_last (NDHWC) for the convT intermediate so the OC=64 axis is contiguous; this lets the pool+sum kernel coalesce the 64-wide channel vector and do the max-then-sum in one register reduction per output voxel.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 36,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.9494847335423198
+    ]
+}

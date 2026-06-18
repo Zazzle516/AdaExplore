@@ -1,0 +1,29 @@
+{
+    "node_id": 14,
+    "parent_node_id": 5,
+    "context_node_ids": [
+        6
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.44298347828615103,
+    "max_reward": 0.44298347828615103,
+    "avg_reward": 0.44298347828615103,
+    "score": [
+        1,
+        1,
+        0.4546136958607456
+    ],
+    "small_guidance": "- The fused post-conv kernel is already efficient; the bottleneck is the ConvTranspose3d itself (dominates the 19.2ms vs 8.7ms baseline). Tuning the post kernel further won't close the gap. If staying small, try adding `num_warps=1` configs since each program only handles BLOCK_W=32 elements with tiny reductions, and consider tiling multiple (dp,hp) per program to amortize launch overhead.\n- Avoid the `self.sum_weight.item()` host sync \u2014 pass it as a 0-dim tensor pointer or bake it in via `tl.load` of a scalar to remove a CPU/GPU sync per forward.\n- Process pooled output spatial as the program axis (N*C*Dp*Hp*Wp / tile) and load only the 8 values per pooled cell, since LayerNorm is along W only \u2014 but this requires keeping the full row's mean/var; current layout already does this correctly.",
+    "large_guidance": "- The dominant cost is `nn.ConvTranspose3d` (input 32\u00d732\u00d716\u00d732\u00d732 \u2192 64\u00d732\u00d764\u00d764 with stride 2). At fast_p\u22480.45 with the tail already fused, the only high-headroom move is replacing the conv-transpose with a custom Triton kernel. Implement it as a scatter-add of the input\u00d7weight outer product, or equivalently as a gather-based GEMM where each output position (n, oc, d, h, w) sums over (ic, kd, kh, kw) of input positions `((d+pad-kd)/stride, ...)` with valid stride alignment. Fold the `+ sum_weight` bias into the conv epilogue.\n- Use a GEMM-style tiling: one program per (N, OC tile, output-spatial tile) with BLOCK_M=32, BLOCK_N=32, BLOCK_K=16, num_warps=4, num_stages=2 (safe SMEM). Key autotune on (OC, D*H*W, IC*KD*KH*KW). Fuse the entire pipeline (conv-transpose + sum + LayerNorm + avg-pool + GELU) only if feasible; otherwise fuse conv-transpose+sum into one kernel and keep the existing post kernel.\n- Channels-last (NDHWC) layout makes the IC reduction contiguous in the GEMM-K dimension and improves coalescing for both input gather and weight loads.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 15,
+    "global_best_node_id": 6,
+    "global_best_score": [
+        1,
+        1,
+        0.4546136958607456
+    ]
+}

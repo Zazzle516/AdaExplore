@@ -1,0 +1,29 @@
+{
+    "node_id": 28,
+    "parent_node_id": 27,
+    "context_node_ids": [
+        27
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.45280400354939526,
+    "max_reward": 0.45280400354939526,
+    "avg_reward": 0.45280400354939526,
+    "score": [
+        1,
+        1,
+        0.5356330292825106
+    ],
+    "small_guidance": "- The conv kernel recomputes the full conv for every one of the 64 (POOL=4) spatial points per output; each input load is reused across OC but weight loads dominate. Add a `triton.autotune` over `num_warps \u2208 {2,4,8}` and `num_stages \u2208 {2,3,4}` and try grouping pool tile so `BLOCK_POOL_W=POOL` (vectorize the innermost `wi` loop into a vector of width POOL instead of static_range), which lets weight loads be reused across POOL spatial points.\n- Hoist the weight tile `wv[oc, ic, kd, kh, kw]` load out of the spatial pool loop: load the full `[OC, IC*KD*KH*KW]` weight matrix once into registers/SMEM (only 16\u00d781 floats = 5KB) at the start of the program and reuse it across all 64 pool points, turning the inner loop into pure input gather + FMA.\n- Consider launching one program per `(N, dp, hp)` and iterating `wp` inside to amortize weight reloads further; with current grid `128*7*15*15 \u2248 200k` programs the launch is fine but per-program work is tiny \u2014 bigger tiles will improve occupancy/reuse.",
+    "large_guidance": "- Rewrite as im2col-style GEMM: one program per `(N, output-spatial tile of size BLOCK_M)`, computing `out[N, OC, BLOCK_M] = W[OC, IC*KD*KH*KW] @ im2col(x)[IC*KD*KH*KW, BLOCK_M]` via `tl.dot`. With OC=16, KD*KH*KW*IC=81, this is a tiny-K GEMM where `tl.dot` on tensor cores will dominate the current scalar FMA loop. Then fuse softmax-over-OC and 4\u00d74\u00d74 max-pool as the epilogue on the BLOCK_M output tile.\n- Choose BLOCK_M to align with the pool window: make each program produce one full pooled output `(dp, hp, wp)` worth of conv outputs, i.e. BLOCK_M = POOL\u00b3 = 64 conv-output positions, then softmax each column over OC=16 and reduce-max across the 64 columns to emit OC values. This eliminates the redundant input gathers across pool points and yields one global store per (n, oc, dp, hp, wp).\n- Alternative: persistent kernel where each program owns a slab of (n, dp_tile) and walks hp,wp internally, keeping the (tiny) weight matrix resident in registers for the entire program lifetime. Given W is only ~5KB, register/SMEM residency is trivially achievable and removes all repeated weight traffic.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 29,
+    "global_best_node_id": 22,
+    "global_best_score": [
+        1,
+        1,
+        2.689860190720031
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 15,
+    "parent_node_id": 8,
+    "context_node_ids": [
+        3,
+        8
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4302693657365737,
+    "max_reward": 0.4302693657365737,
+    "avg_reward": 0.4302693657365737,
+    "score": [
+        1,
+        1,
+        0.34972226732673267
+    ],
+    "small_guidance": "- The epilogue kernel is already memory-bound and tiny vs. the ConvTranspose3d cost; further tuning of BLOCK_SIZE/num_warps on the epilogue will not move fast_p. If staying small, try BLOCK_SIZE=4096, num_warps=4, num_stages=2 and use a 1D contiguous indexing with vectorized loads (tl.load of fp32x4 via pointer arithmetic).\n- Fold the bias add fully: precompute a per-channel `bias_view` broadcasted across S once, but the dominant cost (>95%) is the conv_transpose \u2014 tuning the epilogue cannot exceed ~1.05x.\n- Add `torch.backends.cudnn.benchmark = True` in `__init__` so cuDNN picks a faster ConvTranspose3d algorithm; this is the only realistic small-step win.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile), compute the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and atomically scatter-add into the output grid at `(d*stride - pad + kd, h*stride - pad + kh, w*stride - pad + kw)`. Fuse bias add and the `(2x+b)*x + x` epilogue into the final write (after all scatters complete \u2014 use a second small kernel for the epilogue since scatter-add can't know when accumulation is done).\n- Alternatively, implement ConvTranspose3d as a gather-style direct kernel: one program per (N, OC tile, output-spatial tile); for each output voxel (od,oh,ow) loop over (kd,kh,kw,ic) gathering input at `((od+pad-kd)/stride, ...)` only when divisibility holds. This avoids atomics and lets you fuse bias + epilogue into a single kernel with no second pass. Use channels_last_3d layout so IC is the contiguous GEMM-K axis.\n- Use `triton.autotune` over BLOCK_OC \u2208 {32,64}, BLOCK_SPATIAL \u2208 {32,64,128}, num_warps \u2208 {4,8}, num_stages \u2208 {2,3}; the GEMM-K dimension is `IC * kd * kh * kw = 32*27 = 864`, small enough to fully unroll with BLOCK_K=32 stepped 27 times.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 16,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.34972226732673267
+    ]
+}

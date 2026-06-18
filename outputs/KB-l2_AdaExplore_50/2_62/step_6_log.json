@@ -1,0 +1,29 @@
+{
+    "node_id": 6,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing (max diff ~0.005). The GEMM uses `input_precision=\"tf32\"` which loses precision on fp32 inputs of this size (K=8192); switch to `input_precision=\"ieee\"` or accumulate with explicit fp32 promotion, then re-check tolerance.\n- Verify the weight stride mapping: `nn.Linear.weight` is (N, K) row-major, so for B treated as (K, N) we need `stride_bk = weight.stride(1) = 1` and `stride_bn = weight.stride(0) = K`. Current code passes them in that order \u2014 double-check by computing one reference output element to confirm sign/transpose are right.\n- In the GN kernel, ensure `BLOCK >= CH_PER_G` (here CH_PER_G = 8192/512 = 16, so BLOCK=16 is fine); consider `num_warps=1` for such tiny reductions to reduce launch/warp overhead, and tune autotune over BLOCK={16,32}.",
+    "large_guidance": "- Keep the two-kernel split (GEMM+bias, then fused GN+LeakyReLU+double) \u2014 GN cannot be fused into the GEMM epilogue because it needs a cross-row-tile reduction over channels. But fuse the `2*x` and LeakyReLU into the GN store epilogue (already done) and also fold the `*2` into `gamma` and `beta` at the Python wrapper level to save a multiply (gamma' = 2*gamma, beta' = 2*beta applied after LeakyReLU is non-trivial since LeakyReLU is before \u2014 leave as-is or apply post-activation scaling).\n- For the GEMM at M=1024, N=8192, K=8192 (fp32), prefer larger tiles like BLOCK_M=128, BLOCK_N=256, BLOCK_K=32 with num_warps=8, num_stages=3, and ensure tf32 is acceptable; if not, use ieee and expect lower throughput. Add a split-K variant in autotune for the large K.\n- Consider a persistent GN kernel: one program per (batch, group), CH_PER_G=16 is tiny so launch B*G = 1024*512 = 524288 programs \u2014 that's huge. Group multiple (b, g) pairs per program (e.g., process 8 groups per program) to reduce launch overhead.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 7,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

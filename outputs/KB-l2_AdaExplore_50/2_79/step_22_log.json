@@ -1,0 +1,30 @@
+{
+    "node_id": 22,
+    "parent_node_id": 21,
+    "context_node_ids": [
+        3,
+        21
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5025520712578193,
+    "max_reward": 0.5025520712578193,
+    "avg_reward": 0.5025520712578193,
+    "score": [
+        1,
+        1,
+        0.9460545878770088
+    ],
+    "small_guidance": "- Wrap both kernels in `triton.autotune` over `BLOCK_S \u2208 {1024, 2048, 4096, 8192}` with `num_warps \u2208 {4, 8, 16}` and `num_stages \u2208 {2, 3, 4}` keyed on `(N, C, S)`; the current hard-coded `BLOCK_S=2048, num_warps=8` for stats and `BLOCK_S=256, num_warps=4` for apply are likely off the optimum for `S=12600`.\n- In `apply_norm_clamp_max_kernel`, since `C=16` is small and constant, drop the `c_mask` (set `BLOCK_C=16` exactly) and avoid the `tl.where(c_mask, y, -inf)` step \u2014 saves a load mask and a select on the hot path; also try `BLOCK_S=512/1024` so the max-reduce across 16 channels is wider and amortizes the index math.\n- Fuse the conv bias add + multiplier into the stats kernel epilogue isn't possible without the conv kernel, but you can at least fold the `x*m` into the apply kernel by storing only `mean, invstd` (already done) and skip recomputing `x*m` in stats by keeping `sum`/`sumsq` over `x` then transforming: `mean_y = m*mean_x`, `var_y = m^2*(E[x^2]-E[x]^2)` \u2014 removes a multiply per element in the stats pass.",
+    "large_guidance": "- The torch `nn.Conv3d` is the dominant cost here (`fast_p\u22480.95` against a baseline that includes the conv); replace it with a custom Triton im2col-GEMM conv3d kernel \u2014 one program per `(N, OC tile, output-spatial tile)` with implicit im2col gather \u2014 and fuse the multiplier, instance-norm scale/shift, clamp, second multiplier, and channel-max all into a single post-conv pipeline (two kernels: conv\u2192write `[N,C,S]`, then stats+apply as today, or even fuse stats into the conv epilogue via atomics on per-(n,c) accumulators).\n- Better yet: since the final op is `max` over the C=16 channel dim, design a persistent kernel that for each `(n, spatial-tile)` computes all 16 output channels of the conv into registers, applies the multiplier, accumulates per-channel sum/sumsq into shared memory across the spatial tile partitions, then does a second pass (or block-sync) to apply norm+clamp+mult and reduces across C in-register \u2014 eliminating the materialized `[N,16,D,H,W]` tensor.\n- Use channels-last (NDHWC) layout for the conv output so the C=16 reduction in the max step is contiguous and the instance-norm reduction over S is a strided-but-coalesced 16-wide load; this aligns with the channel-max being the final consumer.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 23,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.9527247729854249
+    ]
+}

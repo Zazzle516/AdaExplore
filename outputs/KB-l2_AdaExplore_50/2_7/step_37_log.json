@@ -1,0 +1,30 @@
+{
+    "node_id": 37,
+    "parent_node_id": 20,
+    "context_node_ids": [
+        3,
+        20
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4614389232323233,
+    "max_reward": 0.4614389232323233,
+    "avg_reward": 0.4614389232323233,
+    "score": [
+        1,
+        1,
+        0.6068711166666666
+    ],
+    "small_guidance": "- The fused activation+bias kernel is memory-bound and already near peak; the conv dominates. Minor tuning (BLOCK_SIZE 4096/16384, num_warps=8) won't close the 0.61 gap. If staying small, try replacing `(offs // S) % C` with strided pid grid `(N*C, spatial_blocks)` so bias is loaded once per program in a register instead of recomputed per element.\n- Consider switching the conv output / activation to channels_last_3d layout so the bias add becomes a contiguous broadcast and coalesces better.\n- num_stages=2 is correct here; bumping won't help a bandwidth-bound elementwise kernel.",
+    "large_guidance": "- The torch `nn.Conv3d` is the runtime bottleneck (fast_p=0.61 with epilogue already fused). Replace it with a custom Triton conv3d implemented as an implicit-im2col GEMM: one program per `(N, OC tile, output-spatial tile)`, K-loop over `IC*KD*KH*KW`, computing input offsets on the fly. Fuse ReLU\u2192LeakyReLU\u2192GELU\u2192Sigmoid\u2192bias entirely in the epilogue on the accumulator before store (note ReLU\u2218LeakyReLU(0.01) on non-negative is identity, so the chain reduces to `sigmoid(gelu(relu(x))) + bias`).\n- Wrap the conv kernel in `@triton.autotune` from the first emission with safe configs: `(BM,BN,BK) \u2208 {(32,32,16),(64,32,16),(32,64,16),(64,64,32)}`, `num_warps=4`, `num_stages=2`. Verify `(BM\u00b7BK + BK\u00b7BN)\u00b74\u00b7num_stages \u2272 132KB`. Key on `(OC, N*D_out*H_out*W_out, IC*KD*KH*KW)` \u2014 here that's `(32, 64*30*62*62, 8*27)=(32, ~7.4M, 216)`, so K is small; favor larger BM/BN tiles and a single K-loop without splitK.\n- Use channels_last_3d for input/weight reshaping so the K-axis (IC contiguous within each kernel position) coalesces; precompute `(kd,kh,kw)` index tables on host and pass as a constant tensor to avoid divmod in the inner loop.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 38,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        1.9646906654676257
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 29,
+    "parent_node_id": 27,
+    "context_node_ids": [
+        24
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness issue is likely due to the GroupNorm fusion not matching PyTorch's GroupNorm semantics exactly. PyTorch's GroupNorm computes mean/var across the (C/G) channels per group \u2014 verify CPG=32 (8192/256) and that the fused kernel actually reads contiguous values. Also ensure `eps` is passed as fp32 (consider making it `tl.constexpr` since it's a fixed Python float).\n- Increase `num_warps` for the GN kernel \u2014 with BLOCK_CPG=32, try `num_warps=4` and `num_stages=2`; the current warp heuristic (1 warp for small blocks) leaves the SM under-utilized for N=1024 launches.\n- Cache `weight.t().contiguous()` once at init (or after first forward) rather than rechecking each call; also store it as a buffer so it doesn't need re-transposing every iteration.",
+    "large_guidance": "- Process multiple rows per program in the fused GN kernel (e.g. BLOCK_N=4 rows \u00d7 G groups per program) to amortize the launch overhead and improve memory throughput; with CPG=32 each program does almost no work, so the kernel is launch-bound at 1024\u00d7256 = 262K programs.\n- Consider fusing the GEMM epilogue directly with GroupNorm: have the GEMM write its tile, then a second persistent kernel reads N=1024 rows, performs GN+swish+mul+swish in one pass with vectorized loads over the full C=8192 dimension (one program per row, blocked over groups internally). This reduces the GN launch from 256K programs to 1K.\n- Alternatively, do per-row normalization where each program handles one full row of C=8192: load all 8192 elements into registers/SRAM (or in chunks), compute per-group statistics by reshaping to (G, CPG), then apply affine + swish + multiply + swish in the same kernel.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 30,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 27,
+    "parent_node_id": 26,
+    "context_node_ids": [
+        26
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5781205172413794,
+    "max_reward": 0.5781205172413794,
+    "avg_reward": 0.5781205172413794,
+    "score": [
+        1,
+        1,
+        1.5694942672413792
+    ],
+    "small_guidance": "- The output store is non-coalesced: `out_offset = pid_b*OC*OS + offs_n[None,:]*OS + offs_m[:,None]` writes BLOCK_N strided (stride=OS) values per row of BLOCK_M. Swap to write contiguously along `offs_m` for each `offs_n` (i.e., make the inner contiguous axis the spatial one) \u2014 current layout already does that, but verify with a transpose-store; alternatively store in [N, OS, OC] then permute, or split program axis so each program writes one OC tile contiguously across spatial.\n- Add a third grid axis over OC tiles (BLOCK_N=32 or 64) instead of hard-coding `BLOCK_N=32` and looping all OC inside one program; with OC=32 this is fine, but expose `BLOCK_N` to autotune so configs like `(BLOCK_M=128, BLOCK_N=32, BLOCK_K=72=IC*KH*KW)` with a single K iteration become possible (K_TOT=216 \u2192 BLOCK_K=72 or 108 eliminates the K-loop overhead).\n- Try larger BLOCK_M (256, 512) with num_warps=8, num_stages=3, since K_TOT=216 is small and SMEM pressure is low; also add a config with BLOCK_K=K_TOT (216 rounded to 256) so the reduction loop runs once.",
+    "large_guidance": "- Switch input layout to channels-last (NDHWC). The current gather indexes IC as the slowest-varying axis inside the K reduction, so consecutive `offs_k` differ in `kw` (innermost) but jumping across IC strides ID*IH*IW elements \u2014 terrible cache behavior. With NDHWC, IC becomes contiguous, so a (kd,kh,kw,ic) reduction order makes the inner BLOCK_K load fully coalesced.\n- Make the kernel persistent per (N, OC-tile) and stream the spatial tile as the M axis with BLOCK_M=128\u2013256, fusing the bias-add + ReLU + GELU + sigmoid + bias2 in the epilogue exactly as now. Combined with NDHWC, output stores also coalesce on the channel axis.\n- Alternative: a direct-conv kernel (not im2col-style) where the K loop is a 4-level unrolled nest over (ic, kd, kh, kw) with KD=KH=KW=3 as constexpr; this lets Triton fully unroll the 27 spatial taps and keeps the reduction in registers, avoiding the modular arithmetic on `offs_k` each iteration.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 28,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        1.9646906654676257
+    ]
+}

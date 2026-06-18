@@ -1,0 +1,29 @@
+{
+    "node_id": 19,
+    "parent_node_id": 18,
+    "context_node_ids": [
+        18
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The atomic_add accumulation is the source of the correctness failure: when N is not divisible by `BLOCK_N`, the masked-out lanes get `-inf`, but `tl.max` over a window that crosses the valid/invalid boundary still produces a finite value, and more critically `tl.sum` includes those `-inf` results from fully-invalid pool windows in the partial sum, polluting the atomic accumulation. Here N=32768, BLOCK_N=128/256 divides evenly so this isn't the issue \u2014 the real problem is `float32` atomic_add ordering producing nondeterministic rounding across many tiles (256 N-tiles \u00d7 2 M-tiles = many concurrent atomics per row). Switch to a two-stage approach: have each program write its `partial` into a `[num_pid_n, M]` scratch buffer, then a small second kernel sums along the N-tile axis and multiplies by `scale`.\n- Also ensure `BLOCK_N % KERNEL_SIZE == 0` (it is for KS=2) and that the pool window never straddles a tile boundary \u2014 currently fine since BLOCK_N is even and pools are size 2 aligned to N=0.\n- Bump configs to include `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3` since K=32768 is huge and benefits from larger BLOCK_K and deeper pipelining.",
+    "large_guidance": "- Replace the atomic-add reduction with a deterministic two-pass design: kernel 1 is a tiled GEMM that writes a `[M, N]` post-bias output (or directly the pooled `[M, N/2]` output) to global memory; kernel 2 is a row-wise reduction kernel that does the pool+sum+scale per row. This eliminates fp32 atomic non-associativity that's causing the ~290k absolute error and keeps the GEMM hot loop simple.\n- Alternatively, since the final output is just `[M]`, redesign as a split-K-style GEMM where each program covers the full N range for a slice of K, then a second kernel finishes the pool+sum. But given M=128 is small and N=K=32768, a cleaner design is: one program per `(M-tile, N-tile)` GEMM into a scratch `[M, N]` buffer, then a second kernel with one program per row doing pool+sum+scale over the full N axis with a wide BLOCK reduction.\n- If memory pressure of the `[128, 32768]` scratch (16MB) is a concern, instead split N into chunks and have each program emit one scalar per `(row, n_chunk)` into a `[M, num_n_chunks]` buffer (no atomics, deterministic), then sum that small buffer.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 20,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

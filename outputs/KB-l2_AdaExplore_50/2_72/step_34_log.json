@@ -1,0 +1,29 @@
+{
+    "node_id": 34,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4145216885088404,
+    "max_reward": 0.4145216885088404,
+    "avg_reward": 0.4145216885088404,
+    "score": [
+        1,
+        1,
+        0.2198039301979331
+    ],
+    "small_guidance": "- The fused conv-transpose kernel uses one program per single output voxel with BLOCK_OC=16, launching N\u00b7OD\u00b7OH\u00b7OW\u00b7(OC/16) = 64\u00b78\u00b78\u00b78\u00b71 \u2248 32K tiny programs each doing only 16 OC outputs \u2014 increase BLOCK_OC to 32 or 64 (OC=16 so just set BLOCK_OC=OC=16 but tile spatial), and instead tile output spatial (e.g. process a (od,oh,ow) block of 2\u00d72\u00d72 = 8 voxels per program) to amortize the weight loads across voxels that share the same kd/kh/kw mapping.\n- Add `@triton.autotune` over `(BLOCK_OW, BLOCK_OC, num_warps, num_stages) \u2208 {(8,16,4,2),(16,16,4,2),(8,32,4,3),(16,32,8,2)}` keyed on `(OC, OD*OH*OW, IC*KD*KH*KW)`; current single-config launch is leaving easy wins on the table.\n- Hoist the bias load + `acc/64 + scale*acc + shift` out of the 64-voxel accumulation loop (currently `bv` is loaded and added inside every dd/hh/ww), and precompute `(pad - kd)` constants outside the per-voxel loop so only the divisible-by-stride test changes.",
+    "large_guidance": "- Restructure as a gather-style direct ConvTranspose: one program per `(N, OC_tile, OD_tile, OH_tile, OW_tile)` (e.g. 2\u00d72\u00d72 output voxels \u00d7 full OC=16) with an inner GEMM-K loop over `IC*KD*KH*KW=81`. Treat the 81-element reduction as the K axis of a tiny GEMM where M = 8 output voxels and N = 16 OC; load the input slab once per program (the 8 output voxels share a small contiguous input region after the stride-2 upsample mapping) and reuse weights via shared memory.\n- Alternatively, since stride=2 and pooling factor=4 means each output voxel of the final result aggregates a 4\u00d74\u00d74 region of the pre-pool conv-transpose output (which itself comes from a 2\u00d72\u00d72 input region plus padding), fold the entire pipeline into a single program per `(N, OC, od, oh, ow)` that loops over the small input neighborhood (~2\u00d72\u00d72\u00d7IC=24 input values) and accumulates contributions to the 64 pooled positions analytically \u2014 this changes the inner loop from 64\u00b727\u00b73 to 24\u00b727 multiplies per output voxel (consistent with reference op count, just better reuse).\n- Use channels-last (NDHWC) layout for both input and weight so the IC reduction axis is the contiguous one, enabling vectorized `tl.load` of IC=3 (pad to 4) per inner step and letting OC be the GEMM-N tile loaded with strided contiguous reads.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 35,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        0.36042383585251137
+    ]
+}

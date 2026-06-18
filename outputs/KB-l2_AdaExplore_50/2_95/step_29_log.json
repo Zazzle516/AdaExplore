@@ -1,0 +1,29 @@
+{
+    "node_id": 29,
+    "parent_node_id": 24,
+    "context_node_ids": [
+        24
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.6911957468544049,
+    "max_reward": 0.6911957468544049,
+    "avg_reward": 0.6911957468544049,
+    "score": [
+        1,
+        1,
+        2.50236491154884
+    ],
+    "small_guidance": "- Skip the fp16 cast on the output store \u2014 keep `acc` in fp32 and store fp32 directly to avoid the fp16\u2192fp32 round-trip in `fused_linear_act` (the `.to(torch.float32)` after the kernel is a full extra pass over the 1024\u00d78192 output). Either return fp16 and let downstream consume it, or do the GEMM in fp16 inputs but write fp32 once.\n- Add larger-tile autotune configs tuned for M=1024, N=8192, K=8192 on Ada: `BLOCK_M=128, BLOCK_N=256, BLOCK_K=32, num_warps=8, num_stages=4` and `BLOCK_M=64, BLOCK_N=256, BLOCK_K=32, num_warps=4, num_stages=5`. With K=8192 a smaller `BLOCK_K` plus more pipeline stages typically beats `BLOCK_K=64/128` on RTX 4090 (limited shared memory, 128KB).\n- Drop the in-loop `k_remaining` masking since K=8192 is divisible by all candidate `BLOCK_K`; use a fast path with no mask on A/B loads inside the K loop to reduce predicate overhead.",
+    "large_guidance": "- Use tensor cores via fp16 inputs with fp32 accumulate (already doing this) but switch to a **split-K** or **stream-K** strategy: with M=1024 there are only 8 row tiles of size 128, so for N=8192 (32 col tiles of 256) the grid is 256 programs \u2014 under-utilizing the 128 SMs of the 4090 unless split-K is added. A stream-K decomposition would balance work better.\n- Consider a **persistent kernel** where each SM loops over multiple (m,n) tiles, amortizing launch and improving L2 reuse of B (the 8192\u00d78192 weight = 256MB in fp16 dominates traffic). Combined with a Hilbert/swizzle order this maximizes weight reuse across tiles handled by the same SM.\n- Convert weights once at init (already done) and additionally consider bf16 for the weight to avoid any fp16 overflow risk and match Ada's tensor-core throughput; pre-pack weight in a tile-friendly layout (e.g., `[N/BLOCK_N, K, BLOCK_N]`) so the inner B load is purely contiguous and avoids strided gathers.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 30,
+    "global_best_node_id": 24,
+    "global_best_score": [
+        1,
+        1,
+        2.615496586774945
+    ]
+}

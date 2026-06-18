@@ -1,0 +1,29 @@
+{
+    "node_id": 15,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        4
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5253347396293028,
+    "max_reward": 0.5253347396293028,
+    "avg_reward": 0.5253347396293028,
+    "score": [
+        1,
+        1,
+        1.1340116019417477
+    ],
+    "small_guidance": "- Add larger-M autotune configs that bias toward spatial tiling since OUT_HW=64516 dominates and OC=128 fits in a single BLOCK_N tile: try `(BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, num_warps=8, stages=2)` and `(BLOCK_M=256, BLOCK_N=128, BLOCK_K=32, num_warps=8, stages=2)` \u2014 verify SMEM (`(BM\u00b7BK+BK\u00b7BN)\u00b74\u00b7stages \u2264 132KB`).\n- Hoist the `kh/kw/ic` decomposition and the constant `kh*KW*IC*OC + kw*IC*OC + ic*OC` weight stride out of the per-(M,N) broadcast: precompute a 1D `w_offs[BLOCK_K]` and `x_off_k[BLOCK_K] = kh*W*IC + kw*IC + ic`, then add `oh*W*IC + ow*IC` (per-M) and `pid_n*H*W*IC` once \u2014 reduces index arithmetic in the inner loop.\n- Since OC=128 \u2264 a single BLOCK_N tile, specialize a path with `num_oc_tiles=1` to drop the outer `oc_tile` loop and the `tl.where(n_mask, \u2026, INF)` masking; fuse min directly in registers.",
+    "large_guidance": "- Restructure as a single-pass im2col GEMM where each program owns one `(N, output-spatial tile)` and the entire OC dimension is reduced inside registers (BLOCK_N = OC = 128). Accumulate the per-row min as the GEMM's N-loop progresses, never materializing the BLOCK_M\u00d7OC conv output tile to SMEM/global \u2014 this fuses scale+min into the GEMM epilogue with no second pass.\n- Use NHWC for input/output and pre-permute the weight to `(KH, KW, IC, OC)` once at init (already done); additionally consider a persistent-CTA design where each SM iterates over multiple spatial tiles for the same N to amortize weight loads (weight tile is only 3\u00b73\u00b764\u00b7128\u00b74=288KB total, but per-iter 9\u00b764\u00b7128 reuse is high).\n- Alternative: split-K along `IC*KH*KW` is unnecessary (only 576 elements); instead increase spatial tile size (BLOCK_M=128 or 256) to maximize weight reuse. The reduction over OC for `min` is cheap (128 elements) \u2014 do it inline per BLOCK_M row using `tl.min(acc, axis=1)` once, no outer oc_tile loop needed.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 16,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.1340116019417477
+    ]
+}

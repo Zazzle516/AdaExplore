@@ -1,0 +1,30 @@
+{
+    "node_id": 8,
+    "parent_node_id": 6,
+    "context_node_ids": [
+        3,
+        6
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.43700508479256817,
+    "max_reward": 0.43700508479256817,
+    "avg_reward": 0.43700508479256817,
+    "score": [
+        1,
+        1,
+        0.40529194953868714
+    ],
+    "small_guidance": "- The GEMM output is huge (1024\u00d78192) but immediately reduced row-wise; current configs all use BLOCK_M \u2264 128 with single-program-per-row-tile. Add a split-K / split-N strategy: have multiple programs cooperate on a row tile across N, each computing a partial (max, sumexp), then combine via atomic-free two-stage reduction (write per-tile partials, second tiny kernel merges). This unlocks much more parallelism \u2014 currently only \u23081024/BLOCK_M\u2309 = 8-32 programs run on a 128-SM GPU.\n- Try larger BLOCK_M (128, 256) with BLOCK_N=64 and BLOCK_K=32/64, num_warps=8, num_stages=4 \u2014 the K-loop is 8192 long so deep pipelining matters more than wide N tiles, and the row-reduction cost amortizes better with more rows per program.\n- Cache Wt once at __init__ (weight is fixed for inference) instead of checking `_version` every forward; also pre-fuse bias into a scaled bias `B*SCALE` to drop one multiply in the epilogue.",
+    "large_guidance": "- Redesign as a two-stage persistent kernel: stage 1 is a streaming-K GEMM where each program owns an (M tile, N tile) and writes out (tile_max, tile_sumexp) to a small (M, num_n_tiles) scratch (size 1024 \u00d7 64 floats = trivial); stage 2 is a tiny kernel that does the log-sum-exp combine across N tiles per row and applies the Mish epilogue. This exposes M*N_tiles parallelism (~256-1024 programs) instead of the current ~16-32, which is the real bottleneck on a 128-SM GPU.\n- Alternatively, since K=N=8192 and M=1024, the workload is GEMM-dominated (~137 GFLOP). At 4090's ~80 TFLOP/s fp32 theoretical, a well-tuned GEMM should hit ~2-3 ms. Consider using tf32 (`tl.dot(..., allow_tf32=True)` is default; ensure inputs allow it) or, given fp32 ref, accept current precision but ensure tile shapes match cuBLAS-class throughput (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M swizzle for L2 reuse on Wt).\n- Add an L2 block-swizzle (GROUP_M) over the (M_tile, N_tile) grid in the redesigned two-stage version so neighboring programs share Wt tiles in L2 \u2014 Wt is 256 MB and is re-streamed per row tile in the current single-stage design, which is the dominant memory-traffic cost.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 9,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.8922229236424055
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 19,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4012869635391347,
+    "max_reward": 0.4012869635391347,
+    "avg_reward": 0.4012869635391347,
+    "score": [
+        1,
+        1,
+        0.11061744919786096
+    ],
+    "small_guidance": "- The conv-mean kernel's innermost loop reloads the same `x` value across `kd` iterations (since for stride=1 the depth window is a contiguous range of `D`); hoist a one-time per-(ic,ih,iw) sum-over-depth into the kernel by collapsing the `kd` loop into a single accumulator multiplied by `\u03a3_kd w[ic,oc,kd,kh,kw]` only if you keep the per-depth multiply (otherwise it's a shortcut). Safer win: swap loop order to `ic -> kh -> kw -> kd -> idd` and cache `mask_spatial` and `x_base` outside the `kd` loop; also precompute `H*W` and `D*H*W` as Python ints.\n- Increase `BLOCK_HW` to 256 with `num_warps=8`, `num_stages=3`, and tile `OC` (e.g. BLOCK_OC=4) per program so weights are reused across multiple output channels \u2014 this turns the kernel into a small GEMM and amortizes the input loads.\n- Use `tl.load` on `x` once per (ic,kh,kw,oh,ow) and reduce over `idd` with a register accumulator, since for stride=1 the valid `idd` range is the same for all `kd` (just shifted); current code redoes the load `KD` times.",
+    "large_guidance": "- Rewrite as an explicit im2col-style GEMM: for stride=1, ConvTranspose3d with KD=KH=KW=3 and pad=1 has output shape == input shape, and each output (oh,ow) gathers from a 3\u00d73 input window per `ic`. Since mean over depth collapses D, accumulate over `(ic, kd, kh, kw, idd)` where `idd` ranges over valid depths; structure as one program per `(N, OC tile, HW tile)` doing a `[BLOCK_OC, BLOCK_HW] += W[BLOCK_OC, IC*KH*KW] @ Xsum[IC*KH*KW, BLOCK_HW]` where `Xsum` is the per-(ic,kh,kw) depth-summed slab computed inside the kernel loop (still does the full multiply count: every (n, oc, oh, ow, ic, kd, kh, kw, d) MAC is performed because `Xsum` is paired with the full weight tensor including the `kd` axis via separate accumulators per `kd`, or equivalently reordered without folding).\n- Switch input layout to channels-last (NDHWC) so the IC axis is contiguous and the GEMM-K loads coalesce; this is the dominant bandwidth issue at IC=16, OC=64, HW=16384.\n- Fuse bias-add + softmax + tanh + scale into the conv-mean epilogue by making the kernel persistent over OC for a fixed (n, hw) tile: hold the full OC=64 vector in registers, do the channel softmax in-place, tanh+scale, and store \u2014 eliminating the second kernel and the intermediate write/read of `mean_out`.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 20,
+    "global_best_node_id": 10,
+    "global_best_score": [
+        1,
+        1,
+        2.7991154262516913
+    ]
+}

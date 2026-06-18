@@ -1,0 +1,31 @@
+{
+    "node_id": 19,
+    "parent_node_id": 9,
+    "context_node_ids": [
+        2,
+        7,
+        9
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.03355958024911032
+    ],
+    "small_guidance": "- The conv kernel iterates `IC=32` serially per output element with redundant 2\u00d72\u00d72 pool gathers; tile the IC dimension as `BLOCK_IC` (e.g. 16 or 32) and load a `[BLOCK_IC, BLOCK_OC]` weight tile to use `tl.dot`, turning the inner loop into a small GEMM instead of scalar FMAs.\n- Pre-pool the input once into an `(N, IC, ID, IH, IW)` tensor with a tiny Triton avg-pool kernel (or `F.avg_pool3d`) before launching the convT kernel \u2014 current code re-reads each pre-pool voxel up to `KD*KH*KW=27` times across overlapping output positions.\n- Add a `triton.autotune` over `(BLOCK_OC \u2208 {64,128}, BLOCK_IC \u2208 {8,16,32}, num_warps \u2208 {4,8}, num_stages \u2208 {2,3})` keyed on `(OC, IC)`; current single config with grid `(N*OD, OH*OW) = 32\u00b764\u00b764\u00b764 \u2248 8.4M` programs each doing 27\u00b732 scalar loads is launch- and memory-bound.",
+    "large_guidance": "- Redesign convT as scatter-add (input \u00d7 weight outer product scattered into the output grid). With `stride=2, pad=1, op=1`, each input voxel contributes to exactly `KD*KH*KW=27` output voxels; launch one program per `(N, input-spatial tile, OC tile)`, load an `[BLOCK_S, IC]` input tile and an `[IC, BLOCK_OC]` weight slice per `(kd,kh,kw)`, compute via `tl.dot`, and `tl.atomic_add` (or accumulate in a private buffer when tiles are disjoint) into the output. This replaces the current 27-way redundant gather with a single read per input element.\n- Fuse the avg-pool directly into the scatter kernel's input load: each program reads the `POOL^3=8` pre-pool voxels once, averages in registers, then broadcasts into the GEMM-K dimension \u2014 eliminates the separate pool pass and removes the 8\u00d7 read amplification the current kernel has on pre-pool memory.\n- Keep clamp+softmax+scale fused as today, but switch softmax to a single-pass online algorithm with `BLOCK=1024` and a persistent grid of `N*OC` programs; with `S = OD*OH*OW = 64\u00b7128\u00b7128 \u2248 1M` per row the current `BLOCK=4096` is fine but `num_stages=3` on such a large row may be spilling \u2014 try `num_warps=16, num_stages=2`.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 20,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.43060465981735163
+    ]
+}

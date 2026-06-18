@@ -1,0 +1,32 @@
+{
+    "node_id": 44,
+    "parent_node_id": 14,
+    "context_node_ids": [
+        3,
+        4,
+        5,
+        14
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The final `out = min_buf.view(1,1,M,1) + self.bias` runs as a separate PyTorch broadcast over (1, out_features, M, 1) = 8192*1024 elements; replace it with the existing `fused_min_bias_kernel` (already defined but unused) launched on grid `(M, cdiv(N, BLOCK_N))` with `BLOCK_N=256, num_warps=4` to fuse the bias-add and write directly into the (1,N,M,1) layout.\n- For `gn_min_kernel`, with C_PER_G=16 and 512 groups the tile is 8192 elements per row \u2014 try `GROUPS_PER_BLOCK=256` with `num_warps=4` (smaller tile, two iters) and also `GROUPS_PER_BLOCK=512, num_warps=8, num_stages=2` via an autotune decorator keyed on N to pick the best.\n- Add more GEMM autotune configs targeted at M=1024,N=8192,K=8192: `BLOCK_M=64,BLOCK_N=128,BLOCK_K=64,num_warps=4,num_stages=4` and `BLOCK_M=128,BLOCK_N=128,BLOCK_K=32,num_warps=4,num_stages=5`; also try `GROUP_M=4` since M only has 8 row-tiles at BLOCK_M=128.",
+    "large_guidance": "- Fuse GroupNorm+min directly into the GEMM epilogue is impractical (cross-row stat), but you can fuse min+bias-add with the GN kernel: have `gn_min_kernel` write the final (1,N,M,1) output by, after computing row_min, looping over bias tiles and storing `row_min + bias[c]` to `out[c*M + row]`. This eliminates the separate min buffer and the final broadcast add entirely.\n- Consider a split-K / persistent GEMM: with K=8192 and only M*N/(BM*BN) = 1024*8192/(128*256) = 256 tiles, the SM occupancy on a 4090 (128 SMs) is barely 2 waves \u2014 a persistent kernel iterating over tiles could help, or split-K with atomic accumulation to hide K-loop latency.\n- The GEMM dominates (~1.5ms of 1.61ms). Try fp32 tensor-core via TF32 by setting `tl.dot(..., allow_tf32=True)` and ensure inputs are TF32-eligible; on Ada this gives ~2x for fp32 GEMM and is the largest available win.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 45,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

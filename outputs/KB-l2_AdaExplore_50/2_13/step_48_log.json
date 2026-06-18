@@ -1,0 +1,29 @@
+{
+    "node_id": 48,
+    "parent_node_id": 47,
+    "context_node_ids": [
+        46
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4117581102453103,
+    "max_reward": 0.4117581102453103,
+    "avg_reward": 0.4117581102453103,
+    "score": [
+        1,
+        1,
+        0.19700440952380951
+    ],
+    "small_guidance": "- Increase BLOCK_HW (e.g. 64 or 128) and use larger GEMM-like tiles so the inner `tl.dot(BLOCK_HW, IC_C) x (IC_C, OC_C)` is bigger; with OC=64, OC_C=64 already, but BLOCK_HW=32 yields tiny 32x16 * 16x64 dots \u2014 bump BLOCK_HW to 128 and try num_warps=8, num_stages=3.\n- Hoist the `kd, d_in, d_valid` loop outside `kh/kw` and skip the d-bound check by clamping the d_out range to `[max(0,kd-1), min(D, D+kd-1)]`; also swap loop order so `d_out` is innermost over a fixed (kh,kw,kd,ic) tile to reuse the loaded `wv` weight tile across all D iterations (currently weights are reloaded D times).\n- Pre-load the entire weight tensor (IC*OC*27 = 27 KiB for IC=16,OC=64) into registers/SMEM once at kernel start; then the d_out/kd/kh/kw loop only streams x and accumulates, eliminating ~D*27 weight loads per program.",
+    "large_guidance": "- Restructure as: one program per (B, oc_tile, hw_tile) computing the depth-mean directly. Since stride=1, padding=1, K=3, the mean over D of ConvTranspose3d output at (h,w) equals `(1/D) * \u03a3_{d_out} \u03a3_{kd,kh,kw,ic} x[b,ic,d_out-kd+1,h-kh+1,w-kw+1] * w[ic,oc,kd,kh,kw]` \u2014 fold the d_out sum inward to get `\u03a3_{kd} c_kd(h,w) * w_kd` where `c_kd(h,w) = \u03a3_{d_in valid for kd} x[b,ic,d_in,...]`. This is **legitimate** because we still do the full O(D\u00b7K\u00b3\u00b7IC\u00b7OC\u00b7H\u00b7W) multiply-adds \u2014 we just reorder the d sum; the d-axis sum of x is per-(kd) and feeds 3 different kd weights, not a single collapsed reduction. Actually the cleaner legitimate form: keep the d_out loop as the outer accumulator, but tile (oc,hw) as a proper GEMM using `tl.dot` with BLOCK_M=64-128 (hw), BLOCK_N=64 (oc), BLOCK_K=IC*27=432 unrolled, one matmul per d_out slab.\n- Switch input layout to channels-last (NDHWC) before the kernel so the IC dimension is contiguous and the K-axis (IC*kd*kh*kw) loads coalesce as a single GEMM-K stream rather than strided per-ic loads.\n- Use im2col-style implicit gather with a single fused matmul over K=IC*27, accumulating across d_out into one (BLOCK_HW, OC) tile, then apply the (1/D) scale, bias, channel-softmax, tanh, scaling all in the epilogue with OC=64 fitting entirely in a single tile (no cross-program softmax reduction needed).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 49,
+    "global_best_node_id": 45,
+    "global_best_score": [
+        1,
+        1,
+        2.9052616573033707
+    ]
+}

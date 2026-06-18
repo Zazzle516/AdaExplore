@@ -1,0 +1,27 @@
+{
+    "node_id": 9,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4389858842523597,
+    "max_reward": 0.4389858842523597,
+    "avg_reward": 0.4389858842523597,
+    "score": [
+        1,
+        1,
+        0.42163354508196726
+    ],
+    "small_guidance": "- Fuse the standalone swish into the group-norm kernel's pass-1: load x from conv output, compute swish (x*sigmoid(x)), accumulate sum/sum_sq directly, and write the swish result to a scratch (or re-load and recompute in pass-2 to save memory traffic). This removes one full read+write of a 16\u00d7128\u00d733\u00d765\u00d765 tensor.\n- Autotune `BLOCK_SIZE` \u2208 {512, 1024, 2048, 4096} with `num_warps` \u2208 {4, 8} and `num_stages` \u2208 {2, 3} keyed on `group_elems` (here C_per_G*S = 4*33*65*65 \u2248 558k per program \u2014 large, so larger BLOCK + 8 warps likely wins).\n- In pass-2, avoid the per-element `tl.load(weight_ptr + c_global, mask=mask)` gather: since S is large and c_in_g is constant across long contiguous spans, tile the inner loop by channel (outer over c_in_g, inner over spatial) so `w` and `b` are scalars per tile rather than gathered per element.",
+    "large_guidance": "- The conv_transpose3d dominates the 24.4 ms runtime (output tensor ~558 M elements per batch element across N=128 is enormous \u2014 actually output is 128\u00d716\u00d733\u00d765\u00d765 \u2248 580 M floats). Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile), compute `input \u00d7 weight` outer product and scatter-add into the output grid with stride=2, padding=1 index math. Fuse bias add + swish + group-norm stat accumulation into the same kernel where possible, or at least into a follow-up that reads the output once.\n- Alternative design: implement transposed conv as a gather (one program per output tile) \u2014 for each output voxel, iterate over the (kh,kw,kd) taps that land on it and accumulate from the corresponding input voxels. With stride=2 the effective per-output-tap count is small (kernel_size^3 / stride^3 \u2248 3.375 taps), making the gather formulation very compute-light and memory-bound \u2014 fuse bias+swish into the epilogue and write directly into the GN input.\n- Fuse the entire tail (bias + swish + groupnorm + hardswish) into a two-pass persistent kernel over (N, G): pass-1 reads conv output, applies swish, accumulates group stats; pass-2 re-reads, normalizes, applies affine + hardswish. This eliminates the intermediate swish tensor entirely.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 10,
+    "global_best_node_id": 8,
+    "global_best_score": [
+        1,
+        1,
+        1.0863630939809925
+    ]
+}

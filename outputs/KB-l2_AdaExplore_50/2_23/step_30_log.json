@@ -1,0 +1,29 @@
+{
+    "node_id": 30,
+    "parent_node_id": 22,
+    "context_node_ids": [
+        22
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4820102178606761,
+    "max_reward": 0.4820102178606761,
+    "avg_reward": 0.4820102178606761,
+    "score": [
+        1,
+        1,
+        0.7765842973505773
+    ],
+    "small_guidance": "- The conv3d (output 128\u00d724\u00d722\u00d730\u00d730 \u2248 60M elements) almost certainly dominates over the GN+mean kernel; tuning BLOCK/num_warps of the current GN kernel will not close the gap. Still, try BLOCK=1024 with num_warps=4 and num_stages=2, and switch the two-pass loop to use a single resident tile when group_size (CPG*S = 3*19800 \u2248 59400) is tiled \u2014 i.e. cache loaded values in registers across the two passes by using a larger BLOCK like 4096 with num_warps=8.\n- Replace the atomic_add per (n,g) with a 2D grid (N, G) writing partial sums to a `[N, G]` scratch buffer, then a tiny second kernel reduces along G \u2014 atomics on out[n] serialize G groups per batch.\n- Precompute per-channel `w_scaled = w * rstd` and `b_shift = b - mean*w*rstd` as scalars, then the second pass becomes `v * w_scaled + b_shift` (one fma) instead of `(v-mean)*rstd*w+b`.",
+    "large_guidance": "- The conv3d is the runtime bottleneck (fast_p=0.78 with GN already fused). Replace `nn.Conv3d` with a custom Triton im2col-style GEMM kernel: one program per (N, OC tile, output-spatial tile), implicit im2col gather, BLOCK_M=64/BLOCK_N=64/BLOCK_K=32 over (OC, D'H'W', IC*kD*kH*kW=81). Use channels_last_3d layout so IC is contiguous along K.\n- Fuse the GroupNorm + mean directly into the conv epilogue: have the conv kernel write per-(n,g) partial sum and sum-of-squares to a scratch `[N, G, 2]` buffer (atomic_add), plus the conv output. Then a single small kernel computes mean/rstd and the final batch-reduced mean in one pass over the conv output. This removes one full read of the 60M-element conv output.\n- Alternatively, since the final op is a scalar mean over all of (C,D,H,W), and GN's affine + normalization commutes with summation per group, you can compute `out[n] = (1/total) * sum_g [ (sum_v_g - mean_g*GS)/sqrt(var_g+eps) * w_avg_g + b_sum_g ]` \u2014 but this still requires the full conv output to compute mean_g/var_g per group, so the win comes from eliminating the second pass over x, not the conv. Combine with the fused conv-epilogue stats above.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 31,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        1.1431320857000498
+    ]
+}

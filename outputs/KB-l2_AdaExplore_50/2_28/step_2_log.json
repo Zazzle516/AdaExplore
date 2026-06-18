@@ -1,0 +1,29 @@
+{
+    "node_id": 2,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness bug is in the norm: InstanceNorm2d on shape (M,1,1,N) treats H=1,W=N as spatial, but with affine=False/track_running_stats=False the normalized output across N>1 spatial elements is NOT zero \u2014 it's a proper LayerNorm-style normalize across N. The kernel does this correctly, but the reference `nn.InstanceNorm2d(out_features, ...)` is constructed with num_features=out_features=N while channels=1 \u2014 PyTorch still runs and normalizes over (H,W)=(1,N). The mismatch (~1e-4) suggests fp32 reduction precision; ensure mean/var use full fp32 accumulation and divide using `1.0 / N` cast appropriately, and double-check eps placement. Try computing `mean = tl.sum(x)/N` and `var = tl.sum(x*x)/N - mean*mean` vs two-pass; the small max_diff (~1.3e-3) is just above tolerance \u2014 most likely a stale-input issue where `self.bmm.weight.cuda()` is re-copied each call but model is initialized on CPU; ensure parameters are moved to CUDA once in `__init__` so they match the reference's parameters exactly.\n- Verify the reference Model's bmm weight is the same as ModelNew's: both subclass with `nn.Linear`, but RNG state differs unless seeded identically. The correctness harness likely loads weights from the reference into ModelNew \u2014 confirm by printing. If diff is truly numerical, the GEMM tile reduction order in fp32 should still be within 5e-2 atol; so this is suspicious. Re-check that `Bt = W.t().contiguous()` matches `x @ W.T + b` ordering.\n- Once correct, autotune `norm_residual_kernel` with configs over num_warps\u2208{4,8,16} and add num_stages=2; for N=8192, BLOCK_N=8192 with num_warps=16 may be faster.",
+    "large_guidance": "- Keep the two-kernel structure (fused GEMM+bias, fused norm+residual+mul) \u2014 it's the right design. Redesign the norm kernel as a single-pass Welford or `E[x^2]-E[x]^2` formulation to halve memory traffic, and fuse the y-load with the x-load prefetch.\n- Consider fusing the entire pipeline into one persistent kernel per row: load a row's input x, compute matmul tile-by-tile against W^T streamed from global (since each row is independent and N=K=8192, this is a GEMV per row), accumulate, then immediately normalize and apply residual without writing C to HBM. This eliminates the intermediate (M,N) write/read of 32MB.\n- Alternative: since this is effectively M independent GEMVs (M=1024, K=8192, N=8192), a split-K GEMV kernel with one program per (row, N-tile) and atomic-free reduction, followed by a row-wise fused norm, may outperform the GEMM tiling for this skinny-ish shape.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 3,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

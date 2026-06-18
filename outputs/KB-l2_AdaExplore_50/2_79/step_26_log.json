@@ -1,0 +1,30 @@
+{
+    "node_id": 26,
+    "parent_node_id": 25,
+    "context_node_ids": [
+        19,
+        25
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5037691226144364,
+    "max_reward": 0.5037691226144364,
+    "avg_reward": 0.5037691226144364,
+    "score": [
+        1,
+        1,
+        0.9560952615690997
+    ],
+    "small_guidance": "- The kernel is dominated by the Conv3d call (the fused tail is already a single pass). Verify by profiling: with `S=14*30*30=12600` and `C=16`, the fused kernel is tiny \u2014 most of 0.848s is `nn.Conv3d`. Tuning BLOCK_S further will not close the gap.\n- If staying with this structure, try a single-pass Welford+output design with `BLOCK_S` = next-pow2(S) = 16384 so the loop becomes one iteration, keeping `x_raw` resident in registers between the two passes (eliminate the second global load). Use `num_warps=8, num_stages=3`.\n- Add configs with smaller `BLOCK_S` (128, 256) + more warps for occupancy comparison; current min config is 512 which may be over-tiled for `S\u224812600`.",
+    "large_guidance": "- Replace `nn.Conv3d` with a custom Triton im2col-style GEMM kernel: one program per `(N, OC_tile, output-spatial tile)` with implicit im2col gather over `IC*kD*kH*kW = 3*27 = 81` K-dimension. Output spatial is `14*30*30=12600`, OC=16 \u2014 a single small GEMM per batch. Fold the conv bias into the epilogue.\n- Fuse the entire pipeline (conv \u2192 \u00d7multiplier \u2192 InstanceNorm \u2192 clamp \u2192 \u00d7multiplier \u2192 max over C) into a two-stage design: stage 1 computes conv output into a scratch `[N,C,S]` buffer (custom kernel), stage 2 is the existing fused-tail. Or, since C=16 is tiny, do a persistent per-`(N, spatial-tile)` kernel that computes all 16 conv outputs into registers, runs the channel-wise stat reduction across spatial in a separate pass, then re-loads (or recomputes) and emits the max-reduced output \u2014 avoiding any `[N,C,S]` materialization.\n- Channels-last (NDHWC) layout for the conv output would make the channel-axis reduction (max over C=16) coalesce trivially in the tail, but the stat reduction wants channel-major; pick layout based on which pass is heavier (stat pass touches data twice \u2192 favor `[N,C,S]` major as now).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 27,
+    "global_best_node_id": 25,
+    "global_best_score": [
+        1,
+        1,
+        0.9606265187329343
+    ]
+}

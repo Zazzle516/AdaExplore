@@ -1,0 +1,30 @@
+{
+    "node_id": 29,
+    "parent_node_id": 28,
+    "context_node_ids": [
+        27,
+        28
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.42723308979690167,
+    "max_reward": 0.42723308979690167,
+    "avg_reward": 0.42723308979690167,
+    "score": [
+        1,
+        1,
+        0.3246729908244386
+    ],
+    "small_guidance": "- The BN+sub-mean kernel is already memory-bound and tiny vs. the conv; further tuning of BLOCK_S/num_warps will not move the needle. If kept, try BLOCK_S=1024 with num_warps=8, num_stages=3 and a single-pass kernel that computes sum and sumsq while keeping x resident in registers (S=16\u00b764\u00b764=65536 \u2014 use a persistent loop).\n- Fuse the batch-mean reduction across N (currently a torch sum on (N,C)) into a second tiny kernel rather than a torch op, and skip writing `sum_nc`/`sumsq_nc` separately by using atomic adds into per-C accumulators.\n- Eval-mode fast path: since BN running stats are constant at eval, fold scale=weight*rsqrt(var+eps) and pre_bias=bias-running_mean*scale into buffers at module init, so the apply kernel only does `(x-spatial_mean)*scale + pre_bias_correction`.",
+    "large_guidance": "- The dominant cost is `nn.ConvTranspose3d` (baseline 1.78 ms; current 5.49 ms means the BN/sub fusion is fine but the conv-transpose is unchanged). Replace the ConvTranspose3d with a custom Triton scatter-add kernel: one program per (N, OC tile, output-spatial tile) computing the input\u00d7kernel outer product and scattering into the output grid with stride=2, padding=1, output_padding handled in index math.\n- Fuse BN affine (scale/shift folded from running stats at eval, or computed via a separate stats pass at train) and the spatial-mean subtraction into the conv-transpose epilogue, so the output tensor is written exactly once. For training, do a two-pass scheme: pass 1 = conv-transpose writing raw output + accumulating per-(N,C) sum/sumsq via atomics; pass 2 = elementwise apply with scale and per-(N,C) spatial mean.\n- Use channels_last_3d layout for the conv-transpose output so the BN/mean reduction along (D,H,W) with C contiguous gets coalesced loads; size GEMM tiles conservatively (BM=32,BN=32,BK=16, num_warps=4, num_stages=2) to fit the 132 KB SMEM budget on the first compile, then autotune upward.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 30,
+    "global_best_node_id": 29,
+    "global_best_score": [
+        1,
+        1,
+        0.3246729908244386
+    ]
+}

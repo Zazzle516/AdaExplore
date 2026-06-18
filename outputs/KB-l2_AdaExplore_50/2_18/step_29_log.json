@@ -1,0 +1,27 @@
+{
+    "node_id": 29,
+    "parent_node_id": 28,
+    "context_node_ids": [],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4332861011136874,
+    "max_reward": 0.4332861011136874,
+    "avg_reward": 0.4332861011136874,
+    "score": [
+        1,
+        1,
+        0.3746103341879211
+    ],
+    "small_guidance": "- Replace the two-stage GEMM+partial-reduce with a single tiled GEMM that directly accumulates the row sum: use `BLOCK_M=128, BLOCK_N=128, BLOCK_K=32` (or 64/64/32), `num_warps=8, num_stages=4`, enable `allow_tf32=True`, and have each program reduce its `(BM, BN)` tile along N before doing `tl.atomic_add` into a `(M,)` output buffer (or split-K style). This removes the second kernel launch and the partial buffer.\n- Add an autotune sweep over `(BLOCK_M, BLOCK_N, BLOCK_K, num_warps, num_stages)` with a `GROUP_M=8` swizzle for L2 reuse; current 64/64/64 with `allow_tf32=False` is the dominant cost (M=N=K=1024..8192).\n- Fuse the bias add into the same kernel: precompute `bias_sum` once on host as a 0-d tensor and add it in the GEMM epilogue (or only on the first N-tile) so no second kernel is needed.",
+    "large_guidance": "- The downstream chain (sum\u2192max\u2192mean\u2192logsumexp\u2192logsumexp) on a `(M,1)` tensor is an identity, so the real work is just `sum(x @ W.T + b, dim=1)`. Rewrite as: per-row program computes `dot(x_row, W.sum(dim=0))` \u2014 but that violates the safety contract (precomputing a reduced weight collapses the GEMM into a matvec). Instead, keep the full GEMM but reorganize as one program per M-tile that streams over all of N in the K-inner loop, accumulating `tl.sum(acc, axis=1)` after each N-tile, so the (M,N) intermediate never materializes.\n- Use a split-K / split-N persistent kernel: launch `grid = (num_SMs,)`, have each program iterate over assigned `(m_tile, n_tile)` pairs computing the `(BM, BN)` GEMM tile and atomic-adding the row-reduced vector into a `(M,)` accumulator. This eliminates the partial `(grid_n, M)` buffer entirely and keeps occupancy high.\n- Enable TF32 (`allow_tf32=True`) \u2014 the loose 5e-2 tolerance easily admits it, and on a 4090 it roughly doubles `tl.dot` throughput vs. fp32.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 30,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        0.8826896197781255
+    ]
+}

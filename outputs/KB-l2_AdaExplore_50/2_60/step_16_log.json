@@ -1,0 +1,31 @@
+{
+    "node_id": 16,
+    "parent_node_id": 15,
+    "context_node_ids": [
+        1,
+        8,
+        15
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5375802466441122,
+    "max_reward": 0.5375802466441122,
+    "avg_reward": 0.5375802466441122,
+    "score": [
+        1,
+        1,
+        1.2350370348139257
+    ],
+    "small_guidance": "- Add autotune to `group_norm_hardswish_kernel` over `BLOCK_SIZE` \u2208 {1024, 2048, 4096, 8192} with `num_warps` \u2208 {4, 8, 16} and `num_stages` \u2208 {2, 3, 4}; for this shape `group_elems = (16/4) * 33*65*65 \u2248 558k`, so a larger BLOCK with more warps (e.g. 4096/warps=16) should reduce loop iterations significantly versus current 4096/warps=8.\n- In `conv_transpose3d_swish_kernel`, expand the autotune grid to include `BLOCK_SP=64/128` with `num_warps=2` and `num_stages=4`, and try `num_warps=8` with `BLOCK_SP=256`; the inner `IC=3, KD=KH=KW=3` static loops produce 81 FMAs per spatial element so register pressure is moderate and deeper pipelining may help.\n- Precompute `(id_div, ih_div, id_valid, ih_valid)` once per `(kd, kh)` outside the `kw`/`ic` loops (already partly done) and hoist the `w_off` base for each `(kd,kh,kw)` so only `ic*OC` stride math remains inside; also try loading all OC weights for a `(kd,kh,kw,ic)` tile via a single contiguous `tl.load` of size `OC` (OC=16 is tiny, already done \u2014 verify it stays in registers).",
+    "large_guidance": "- Restructure the conv-transpose as a gather-GEMM where each program owns a tile of `(OC, output-spatial)` and iterates over `(IC, KD, KH, KW)` as the K dimension: load `OC \u00d7 IC` weight slice into registers/SMEM once per `(kd,kh,kw)` and reuse across the BLOCK_SP spatial tile via `tl.dot`. With OC=16, IC=3 this is too small for `tl.dot`; instead pack BLOCK_N over output-spatial with BLOCK_M=OC and accumulate via outer product \u2014 but increase spatial tile to 256-512 elements per program to amortize the 27 kernel positions, and consider tiling across `(od, oh)` jointly so KD\u00d7KH input rows are reused.\n- For GroupNorm, switch to a two-stage design: stage 1 a persistent reduction kernel with one program per `(N, group)` that uses multiple warps cooperating via `tl.sum` over a wider BLOCK (8192\u201316384), storing mean/rstd; stage 2 a fully-parallel elementwise apply+hardswish kernel over the full tensor that loads mean/rstd by `(n,g)` index. This avoids the current serialized re-read in the second loop and exposes much more parallelism (currently only N*G = 512 programs for ~286M elements).\n- Alternatively fuse the GroupNorm apply pass into the conv-transpose epilogue is not possible (reduction crosses spatial), but you can fuse hardswish + the affine application into the apply kernel and channels-last the output of conv-transpose so the group-norm reduction stride is contiguous.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 17,
+    "global_best_node_id": 15,
+    "global_best_score": [
+        1,
+        1,
+        1.2350370348139257
+    ]
+}

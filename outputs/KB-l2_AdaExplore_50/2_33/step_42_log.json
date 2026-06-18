@@ -1,0 +1,31 @@
+{
+    "node_id": 42,
+    "parent_node_id": 6,
+    "context_node_ids": [
+        3,
+        4,
+        6
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing \u2014 the BN training-path uses the batch stats but PyTorch's BatchNorm1d in training mode normalizes with the biased batch variance which matches; check that `bn.weight`/`bn.bias` are applied correctly and that `eps` is passed as a float (not int). Likely the issue is the bn_apply path reads `self.bn.running_mean/var` instead of batch stats when `self.training` is False but the reference is in train mode \u2014 verify the model is set to `.eval()` or `.train()` matching the harness, and that running_mean/var updates use the right alpha.\n- The bigger likely bug: `bn_stats_kernel` computes batch stats over `out` (post-scale GEMM output), which is correct, but the var update uses `var * M/(M-1)` \u2014 fine. However the loose tol is 5e-2 and max_diff is 0.0025, so this is *very close*. Likely the harness runs in eval mode and the kernel modifies running stats \u2014 but eval branch reads them so subsequent comparison drifts. Skip the running-stats update or guard it; ensure eval-mode path matches reference exactly.\n- Once correct, fuse the BN apply into the GEMM epilogue when in eval mode (running stats known): one kernel doing `(A@W^T + bias) * scale * bn_scale + bn_shift`, eliminating two extra passes over the M\u00d7N tensor.",
+    "large_guidance": "- Redesign as two kernels only: (1) fused GEMM+scale that writes `out` and simultaneously accumulates per-column partial sums and sum-of-squares into atomic buffers (one program per (M,N) tile contributes to per-N reductions via `tl.atomic_add` on small N-sized vectors), then (2) a fused finalize+apply kernel that computes mean/invstd and rewrites `out` in place with the affine. Avoids a separate two-pass stats kernel reading the full M\u00d7N matrix again.\n- Alternatively, since this is eval-dominant in benchmarks, branch on `self.training`: in eval, fuse the entire pipeline `(x @ W^T + bias) * scale * (bn_w/sqrt(var+eps)) + (bn_b - mean*bn_w/sqrt(var+eps))` into the GEMM epilogue \u2014 a single kernel launch. Precompute the combined per-channel scale/shift (constant w.r.t. input) once per forward, not at init (so the reference's BN op still runs as an arithmetic op at runtime, just folded into the GEMM epilogue \u2014 this is a legal fusion, not an algebraic shortcut).\n- For training mode, use a one-pass Welford-style reduction across M for each N-column, kept resident in registers in a persistent kernel with one program per N-tile spanning all of M.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 43,
+    "global_best_node_id": 41,
+    "global_best_score": [
+        1,
+        1,
+        0.7463267251274046
+    ]
+}

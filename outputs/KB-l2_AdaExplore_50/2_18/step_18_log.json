@@ -1,0 +1,29 @@
+{
+    "node_id": 18,
+    "parent_node_id": 17,
+    "context_node_ids": [
+        17
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (max_diff ~0.05) is borderline at the 5e-2 tolerance \u2014 tighten accumulation by switching `input_precision='ieee'` instead of `tf32`, since summing 8192 GEMM outputs accumulates tf32 rounding error. Alternatively cast x and w loads to fp32 explicitly and use full fp32 dot.\n- Tune tiles for M=1024, N=8192, K=8192: try `BLOCK_M=128, BLOCK_N=128, BLOCK_K=32` with `num_warps=8, num_stages=4` to better overlap K loads on the 4090.\n- Add `tl.multiple_of` / `tl.max_contiguous` hints on the K dimension pointers since K=8192 is contiguous and well-aligned, enabling vectorized loads.",
+    "large_guidance": "- Exploit the structure: `sum(linear(x), dim=1) = x @ weight.sum(0) + bias.sum()` is a graph-level shortcut and is forbidden. Instead, keep a full GEMM but write a single persistent kernel: one program per row tile, streaming over N tiles and K, accumulating a per-row scalar (sum over N of `dot(x_row, w_n) + b_n`) \u2014 this is what the current kernel does, just keep arithmetic at full fp32 to satisfy tolerance.\n- Since the final pipeline reduces (M,1)\u2192(M,1) via max/mean/logsumexp (all identity on a singleton dim except logsumexp which is identity for size-1), the entire post-GEMM tail is a no-op on dim=1 of size 1. Fuse the row scalar straight into the output tensor of shape (M,1) inside the GEMM kernel epilogue \u2014 no separate launches.\n- Consider a split-K design: launch grid `(cdiv(M,BLOCK_M), SPLIT_K)` with atomic-add into the row accumulator, since K=8192 is large; this raises occupancy beyond the M=1024/BLOCK_M=64 = 16 program count which underutilizes the 4090's 128 SMs.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 19,
+    "global_best_node_id": 11,
+    "global_best_score": [
+        1,
+        1,
+        0.6167747552424558
+    ]
+}

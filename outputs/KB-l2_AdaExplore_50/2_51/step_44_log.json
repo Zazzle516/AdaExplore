@@ -1,0 +1,29 @@
+{
+    "node_id": 44,
+    "parent_node_id": 41,
+    "context_node_ids": [
+        41
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness bug: residual uses `original_x = x.clone()` of the raw input, but the reference's `original_x` has shape `[batch, in_features]` while the forward output of the non-residual branch is `[batch, 1]`, which broadcasts to `[batch, in_features]`. That part is fine \u2014 the real bug is that `RowSum` is accumulated across many tile programs via `atomic_add` in fp32, and the partial sums include masked-out N lanes only zeroed *after* the bias/subtract add; but the bigger issue is that `gelu_residual_kernel` only loads `RowSum + pid_m` (a scalar) \u2014 that is correct. The actual numerical bug is in the mean: reference computes `mean(gemm(x) - subtract)` which equals `(sum(W@x) + sum(b - subtract)) / N`. Verify `b - sub` is summed exactly once per row \u2014 currently masked-N tiles contribute `(b-s)` only on valid N, which is correct, but if `N % BLOCK_N != 0` the `tl.where` happens after add so OK. Re-examine: the per-trial mismatch suggests random init seed sensitivity \u2014 likely the atomic_add ordering producing non-determinism in fp32 round-off, but max_diff 2.18 is too large for that. Most likely the residual is broadcasting `g` (scalar from rowsum) to the wrong rows due to grid layout in `gelu_residual_kernel` \u2014 double-check `pid_m` indexes rows of `RowSum` (size M) not K tiles.\n- Replace atomics with a two-stage reduction: write per-tile partial sums to a `[num_pid_n, M]` buffer, then a second small kernel reduces along the N-tile axis. Eliminates atomics and improves determinism/perf.\n- Autotune configs are reasonable; add `BLOCK_M=256, BLOCK_N=128, BLOCK_K=32, num_warps=8` and a `BLOCK_K=128` variant since K=8192 is large.",
+    "large_guidance": "- Redesign as a split-K GEMM-with-row-reduction: one program per (row-tile, k-chunk) reducing immediately across N within the tile (since the only thing needed from `X@W^T - sub + b` is its row sum). This collapses to a per-row dot product against `sum_k(W[:,k]) ... ` \u2014 but that is exactly the disallowed algebraic shortcut. Instead, structure as: compute the full GEMM tile, sum across N in-register, and write tile partials to a `[M, num_n_tiles]` scratch; second kernel reduces along num_n_tiles and applies `/N`, GELU, and broadcast-adds to original_x in a fused epilogue over K.\n- Since output = `gelu(scalar_per_row) + original_x`, the residual-add kernel is memory-bound on the `[M, K]` write. Fuse it with the input read so original_x is read once and stored once; do not allocate a separate `original_x` clone \u2014 read `x` directly in the epilogue kernel.\n- Consider a persistent GEMM with one CTA per row-tile that loops over N-tiles in a register-resident accumulator and reduces locally \u2014 completely avoids atomics and the scratch buffer.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 45,
+    "global_best_node_id": 36,
+    "global_best_score": [
+        1,
+        1,
+        1.66307092995426
+    ]
+}

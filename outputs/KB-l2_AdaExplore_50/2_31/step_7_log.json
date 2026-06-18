@@ -1,0 +1,29 @@
+{
+    "node_id": 7,
+    "parent_node_id": 2,
+    "context_node_ids": [
+        2
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4444000444167705,
+    "max_reward": 0.4444000444167705,
+    "avg_reward": 0.4444000444167705,
+    "score": [
+        1,
+        1,
+        0.4663003664383562
+    ],
+    "small_guidance": "- The current GEMM uses `tl.dot(w_tile, tl.trans(x_tile))` with `allow_tf32=False` \u2014 switch to `allow_tf32=True` (input is fp32 random in [0,1], well within tf32 precision) for a large throughput boost on Ampere tensor cores. This alone often doubles conv throughput.\n- Expand the autotune grid with larger `BLOCK_OC`/`BLOCK_SP` tiles now that fp32-accum + tf32 is cheaper: e.g. `(BLOCK_OC=128, BLOCK_OH=8, BLOCK_OW=16, BLOCK_IC=32, num_warps=8, stages=3)` and `(BLOCK_OC=64, BLOCK_OH=8, BLOCK_OW=32, BLOCK_IC=32, num_warps=8, stages=3)`; verify `(BM\u00b7BK + BK\u00b7BN)\u00b74\u00b7stages \u2272 132 KB`.\n- Hoist the weight load out of the spatial loop by reordering loops: with one program per `(N, OC tile, spatial tile)`, the weight tile for a given `(kh,kw,ic)` is reused across the whole spatial tile already \u2014 but currently `w_ptrs` is recomputed each iter; precompute `offs_oc * stride_wo` once outside the `kh/kw/ic` loops and reuse.",
+    "large_guidance": "- Reformulate as an explicit im2col-style GEMM with K = IC\u00b7KH\u00b7KW as the contraction axis and M = OC, N = spatial tile. Collapse the triple `(kh, kw, ic)` loop into a single K-loop of length `IC\u00b7KH\u00b7KW` stepped by `BLOCK_K=32`, so tensor-core utilization isn't fragmented across many tiny K=16 dots.\n- Use a channels-last output too (write NHWC then a cheap permute, or fuse into the store with the right strides) to keep both input and output coalesced along IC/OC; the current NCHW store with `oh_idx_flat`/`ow_idx_flat` scatter is non-coalesced across the BLOCK_SP axis.\n- Enable tf32 (`allow_tf32=True`) and target `BLOCK_M=64, BLOCK_N=64, BLOCK_K=32, num_warps=4, num_stages=3` as the safe starting point, then sweep up to `BLOCK_M=128, BLOCK_N=64`. Fuse min/bias/scale in the epilogue exactly as today.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 8,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.686288845766129
+    ]
+}

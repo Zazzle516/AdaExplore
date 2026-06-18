@@ -1,0 +1,29 @@
+{
+    "node_id": 32,
+    "parent_node_id": 27,
+    "context_node_ids": [
+        27
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.44465660978203086,
+    "max_reward": 0.44465660978203086,
+    "avg_reward": 0.44465660978203086,
+    "score": [
+        1,
+        1,
+        0.46841703070175433
+    ],
+    "small_guidance": "- The softmax+sigmoid epilogue is already fused and cheap; the 11.4ms runtime is dominated by `nn.ConvTranspose3d`. Further tuning of `BLOCK_C` / `num_warps` on the epilogue cannot close the gap to baseline (5.3ms). At best, drop the channels_last conversion overhead by keeping NCDHW and writing a channel-strided softmax kernel.\n- If sticking with this structure, try `num_warps=4` for the epilogue (C=64 with BLOCK_C=64 is small but the kernel is launch-bound across 16\u00b732\u00b764\u00b764 = 2M programs \u2014 consider tiling multiple positions per program, e.g. process 4 positions \u00d7 64 channels per program to cut launch count 4\u00d7).\n- Verify channels_last_3d actually accelerates ConvTranspose3d on this shape; if not, drop the layout conversion (it's pure overhead before the conv).",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC-tile, input-spatial-tile)`, computing the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and `atomic_add` into the output grid at `(n, oc, d*stride+kd-pad, h*stride+kh-pad, w*stride+kw-pad)`. With stride=2, pad=1, output_padding=1 the output is (16,64,32,64,64). Fuse the bias add at the end, then a second kernel does softmax+sigmoid across the channel axis (already done).\n- Alternatively, implement ConvTranspose3d as a gather-style GEMM: one program per output tile, iterating over `(kd, kh, kw, ic)` and gathering from input positions `(d-kd+pad)/stride` when divisible. This avoids atomics. Tile shape: BLOCK_OC=32, BLOCK_SPATIAL=64, BLOCK_K=16 (over IC), num_warps=4, num_stages=2 \u2014 well under SMEM budget.\n- Fuse the channel-softmax directly into the conv-transpose epilogue only if a single program owns all 64 output channels for a spatial position; otherwise keep softmax+sigmoid as a separate fused pass over the materialized conv output.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 33,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.5287083316831683
+    ]
+}

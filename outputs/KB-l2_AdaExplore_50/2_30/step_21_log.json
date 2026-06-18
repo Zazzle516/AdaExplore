@@ -1,0 +1,27 @@
+{
+    "node_id": 21,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (max_diff ~0.0017, avg ~0.00023) suggests the GroupNorm reduction is happening in lower precision or the input to GN isn't being cast properly. Ensure `x` is loaded with `.to(tl.float32)` (already done) but also verify the mean/var are computed with full precision and that gamma/beta indexing matches PyTorch's per-channel layout (gamma/beta are per-channel of length C, not per-group).\n- Pass `eps`, `hmin`, `hmax` as `tl.constexpr` rather than runtime floats to avoid launcher specialization issues and bake constants into PTX.\n- For the GEMM, add a `GROUP_M` block swizzle (e.g. 8) for better L2 reuse on the 1024x8192x8192 problem, and add a 128x256 / 256x128 BLOCK_K=64 config to the autotune list.",
+    "large_guidance": "- The small numeric drift (~1.6e-3) hints that the GroupNorm reduction over CPG=512 elements as a single block is fine, but masking the subtraction with `tl.where(mask, x-mean, 0.0)` is correct only if `x` was loaded as 0 where masked. CPG=512 is a power of two so no masking is needed \u2014 drop the mask and load the full block cleanly; this also enables a more numerically stable Welford-style two-pass.\n- Consider fusing the GEMM epilogue with the GroupNorm partial reduction: since each row's groups are contiguous, the GEMM's N tile can be sized to a multiple of CPG (512) and emit partial sums to a scratch buffer, letting a second tiny kernel finish mean/var. Or, keep GEMM separate but ensure GroupNorm kernel is persistent per-sample (one program reduces all G groups of one sample, reusing the loaded row).\n- Verify gamma/beta indexing: PyTorch GroupNorm has `weight`/`bias` of shape `(C,)` indexed per-channel, so the current `gamma_ptr + group*CPG + offs` is correct only if channel-to-group mapping is contiguous (it is). Double-check the eps value matches PyTorch's default (1e-5) \u2014 it does. Investigate whether the diff comes from accumulator order in `tl.sum` vs PyTorch; try computing `E[x^2] - E[x]^2` vs the centered form and compare.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 22,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

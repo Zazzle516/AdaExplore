@@ -1,0 +1,31 @@
+{
+    "node_id": 17,
+    "parent_node_id": 14,
+    "context_node_ids": [
+        3,
+        8,
+        14
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.43983604435261714,
+    "max_reward": 0.43983604435261714,
+    "avg_reward": 0.43983604435261714,
+    "score": [
+        1,
+        1,
+        0.4286473659090909
+    ],
+    "small_guidance": "- The softmax kernels are already fast; the bottleneck is now the `nn.ConvTranspose3d`. Tuning the softmax further (e.g. raising NUM_CHUNKS to 16-32 to better fill the 128 SMs, or fusing the partial+finalize into a single persistent kernel that keeps `(global_max, global_sum)` in registers since S\u2248131072 fits in two passes per row) can recover at most a few percent.\n- If keeping current structure: drop the 2-stage launcher, use a single persistent kernel per `(b,c)` row with BLOCK=2048, num_warps=8, doing pass-1 to compute (max,sum) then pass-2 to write output \u2014 eliminates the partial_max/partial_sum global round trip.\n- Pre-fold conv_transpose bias and `self.scale` together (multiply scale into bias and weight at eval) so the softmax epilogue avoids a separate scale load \u2014 minor.",
+    "large_guidance": "- The dominant cost is `nn.ConvTranspose3d` (in_channels=32\u2192out_channels=64, kernel=3, stride=2 over 16\u00d732\u00d732 input \u2192 32\u00d764\u00d764 output). Replace it with a custom Triton scatter-add kernel: one program per `(N, OC tile, input-spatial tile)` that loads an input tile, computes the `input \u00d7 weight` outer product, and atomically scatters into the strided output positions handling stride=2 / padding=1 / output_padding=1 in the index math. Fuse the bias add and clamp into the scatter epilogue.\n- Alternatively, formulate ConvTranspose3d as a gather-style GEMM: for each output voxel, gather the contributing input voxels (those `(id, ih, iw)` with `id*stride - pad + kd == od`, i.e. `(od + pad - kd)` divisible by stride). This avoids atomics and maps to a clean im2col-GEMM tile of shape `(OC, IC*kd*kh*kw)` \u00d7 `(IC*kd*kh*kw, out_spatial_tile)`. Use channels_last 3D layout so IC is contiguous along K.\n- Fuse the entire tail (clamp \u2192 softmax over DHW \u2192 scale) onto the conv-transpose output: have the gather-GEMM kernel write clamped output, then a separate softmax kernel as today. The big win is replacing the cuDNN ConvTranspose3d call (which is the >20ms tail), not further softmax tuning.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 18,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.43060465981735163
+    ]
+}

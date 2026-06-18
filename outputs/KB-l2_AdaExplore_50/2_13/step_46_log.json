@@ -1,0 +1,27 @@
+{
+    "node_id": 46,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4609787543069176,
+    "max_reward": 0.4609787543069176,
+    "avg_reward": 0.4609787543069176,
+    "score": [
+        1,
+        1,
+        0.60307472303207
+    ],
+    "small_guidance": "- The softmax/tanh tail is tiny (B*H*W = 16*128*128 programs, C=64); the runtime is dominated by `conv_transpose3d`. Tuning BLOCK_C/num_warps on the tail will not move `fast_p`.\n- If keeping the tail kernel, fuse the bias add into it (load bias[c] once, add before the max), and fuse the depth-mean too so the D-axis intermediate (B,64,32,128,128) is never written \u2014 read the post-conv tensor and reduce over D inside the same kernel.\n- Use `num_warps=2`, `BLOCK_C=64` exactly (C is already pow2), and ensure contiguous (channel-strided) load pattern; current layout already coalesces along HW.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: for stride=1, padding=1, k=3, the output spatial shape equals the input shape (D=32, H=128, W=128), so write a direct conv kernel (gather form) \u2014 output[n,oc,d,h,w] = \u03a3_{ic,kd,kh,kw} x[n,ic,d+kd-1,h+kh-1,w+kw-1] * W[ic,oc,kd,kh,kw] + b[oc]. This is just a regular conv with flipped kernel since stride=1.\n- Fuse the depth-mean directly into the conv epilogue: have each program tile over (oc, h, w) for a given n, accumulate over all D outputs and divide by D before storing \u2014 eliminates the (B,64,32,128,128) intermediate (~67MB) entirely. Output is (B,64,1,128,128).\n- Then chain bias-add + softmax(C) + tanh + scale in a second small kernel (or fuse into the conv epilogue if a persistent over-C reduction is feasible). Tile shape suggestion: one program per (n, h-tile, w-tile) with BLOCK_H*BLOCK_W=64-128 outputs, loop over (ic, kd, kh, kw) and over D inside; use channels_last-ish layout for OC contiguous loads of W.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 47,
+    "global_best_node_id": 45,
+    "global_best_score": [
+        1,
+        1,
+        2.9052616573033707
+    ]
+}

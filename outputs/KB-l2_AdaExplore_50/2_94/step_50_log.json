@@ -1,0 +1,29 @@
+{
+    "node_id": 50,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        4
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM uses `allow_tf32=False`, which forces fp32 mma and roughly halves throughput on Ampere/Ada. Switch to `tl.dot(a, b, allow_tf32=True)` \u2014 the loose 5e-2 tolerance easily covers the precision drop, and this is likely the single biggest win.\n- Add larger tile configs to the autotune list (e.g. `BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, num_warps=4, num_stages=3` and `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4`) and drop the small `BLOCK_M=32/64` configs \u2014 at M=1024, N=8192, K=8192 the GEMM is compute-bound and wants big tiles.\n- Avoid the `Wt = W.t().contiguous()` materialization on every forward; cache the transposed weight as a buffer in `__init__` (or just pass W with swapped strides) so the per-call transpose copy of an 8192\u00d78192 fp32 weight isn't on the critical path.",
+    "large_guidance": "- Restructure the GroupNorm kernel to consume the GEMM output in fp16 directly and write fp32 \u2014 but more importantly, fuse hardtanh+mish into the GroupNorm input load instead of the GEMM epilogue. That way the GEMM can store raw fp32 accumulator into a register-resident tile and skip the extra fp16 round-trip when M\u00b7N fits in L2; alternatively keep fp16 store but ensure GroupNorm reads coalesced fp16.\n- Consider a split-K GEMM (K=8192 is large) with atomic-free two-stage reduction, or a streamK variant, since M=1024 yields only 8 row-tiles at BLOCK_M=128 \u2014 wave quantization leaves SMs idle. StreamK or split-K could improve SM occupancy on the 4090.\n- For GroupNorm, one program per (row, group-bundle) currently launches 1024 * 32 = 32K programs with only 256 elements of reduction each \u2014 very launch/overhead heavy. Switch to one program per row that handles all 256 groups via a 2D tile (rows \u00d7 C), doing per-group reductions with `tl.reshape((G, CG))` and `tl.sum(axis=1)`; this collapses launches by 32\u00d7 and keeps the whole row resident.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 51,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

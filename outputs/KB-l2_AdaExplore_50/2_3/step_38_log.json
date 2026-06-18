@@ -1,0 +1,31 @@
+{
+    "node_id": 38,
+    "parent_node_id": 36,
+    "context_node_ids": [
+        34,
+        35,
+        36
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.44025552331548945,
+    "max_reward": 0.44025552331548945,
+    "avg_reward": 0.44025552331548945,
+    "score": [
+        1,
+        1,
+        0.4321080673527879
+    ],
+    "small_guidance": "- The post-conv kernel is already light; the bottleneck is the ConvTranspose3d (fast_p\u22480.43 with epilogue fused). Tuning BLOCK_W/ROWS_PER_PROG further will not close the gap \u2014 focus must shift to the conv. If staying small, add a `triton.autotune` over `(BLOCK_W, ROWS_PER_PROG, num_warps) \u2208 {(32,2,2),(32,4,4),(32,1,2),(64,2,4)}` keyed on `(C, D, H, W)`, and pass `sum_weight` as a 0-d tensor pointer to avoid `.item()` host sync each call.\n- Avoid the `.item()` GPU\u2192CPU sync on `self.sum_weight` every forward \u2014 read it once into a python float in `__init__` via a buffer, or load it from a device pointer inside the kernel.\n- Merge the two `tl.sum` reductions (mean and variance) into a single pass using `E[x]` and `E[x^2]` so var = E[x\u00b2] \u2212 mean\u00b2, halving the reduction cost on the 32-wide row.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, D_in\u00b7H_in\u00b7W_in tile)` computing the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and atomic-adding into the output grid at the strided/padded positions. This is the dominant op (input 32\u00b732\u00b716\u00b732\u00b732, output 32\u00b764\u00b732\u00b764\u00b764) and currently runs as cuDNN \u2014 the only way to break past fast_p\u22480.5.\n- Alternatively, formulate ConvTranspose3d as a GEMM: reshape weight to `(IC, OC\u00b7KD\u00b7KH\u00b7KW)`, multiply with input `(N\u00b7D\u00b7H\u00b7W, IC)`, then col2im scatter into the output. Tile with `BLOCK_M=64,BLOCK_N=64,BLOCK_K=16,num_warps=4,num_stages=2` to fit SMEM.\n- Fuse the entire pipeline (convT \u2192 +sum_weight \u2192 LayerNorm over W \u2192 2\u00d72\u00d72 avg-pool \u2192 GELU) into a single output-centric kernel: each program produces a `(Dp,Hp,Wp)` tile of the final output by gathering the 8 contributing pre-pool positions, each computed by summing over `(ic, kd, kh, kw)` valid taps. This eliminates the intermediate `(N,C,32,64,64)` tensor entirely (\u224864 MB of write+read traffic).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 39,
+    "global_best_node_id": 26,
+    "global_best_score": [
+        1,
+        1,
+        1.0415970119959803
+    ]
+}

@@ -1,0 +1,31 @@
+{
+    "node_id": 48,
+    "parent_node_id": 28,
+    "context_node_ids": [
+        21,
+        22,
+        28
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (max diff ~0.0018, avg ~0.00022) suggests the group-norm reduction is slightly off. The `xc = tl.where(mask, x - mean, 0.0)` is fine, but `mean = sum_x / CPG` uses CPG=512 here (8192/16) \u2014 verify BLOCK >= CPG and that masked lanes don't pollute the sum. Also ensure `gamma`/`beta` are loaded with correct per-channel indexing: GroupNorm's affine is per-channel (size C), not per (group, CPG) \u2014 but `group * CPG + offs` is equivalent since channels are contiguous. The issue is more likely numerical: cast accumulation to fp32 explicitly and use `tl.sum` carefully. Try increasing num_warps to 16 or splitting into a two-pass kernel.\n- Add an autotune over the GroupNorm kernel with BLOCK in {512, 1024} and num_warps in {4, 8, 16}.\n- For GEMM, the M=1024,N=8192,K=8192 shape favors BLOCK_M=128,BLOCK_N=256,BLOCK_K=32-64 with num_warps=8, num_stages=3-4. Prune smaller-tile configs from the autotune list to reduce tuning overhead.",
+    "large_guidance": "- Rewrite the GroupNorm+Hardtanh kernel to use a tiled two-pass reduction over the 512-element group: pass 1 computes sum and sum-of-squares with Welford or naive accumulation in fp32, pass 2 applies normalization+affine+hardtanh. With CPG=512 and 1024*16=16384 programs, one program per (sample, group) with BLOCK=512 and num_warps=4 should be well-tuned.\n- Consider fusing GEMM epilogue partially: since each group spans 512 contiguous output channels and there are 16 groups across N=8192, the GEMM tile of BLOCK_N=256 or 512 aligns with group boundaries. A persistent GEMM that writes per-tile partial sums to a workspace then a separate norm kernel is cleanest; full fusion is hard because group stats need the full row.\n- Verify GroupNorm affine indexing: PyTorch's GroupNorm has gamma/beta of shape (C,), applied per-channel after normalization. The current kernel does this correctly. The correctness bug may be elsewhere \u2014 double-check that `xc * rstd * g + b` matches PyTorch exactly (no fused-multiply reorder issues with masked lanes).",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 49,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 18,
+    "parent_node_id": 17,
+    "context_node_ids": [
+        17
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5943379189243428,
+    "max_reward": 0.5943379189243428,
+    "avg_reward": 0.5943379189243428,
+    "score": [
+        1,
+        1,
+        1.703287831125828
+    ],
+    "small_guidance": "- The conv kernel's inner loop iterates over IC with one scalar load per ow position; rewrite the IC loop as a vectorized GEMM-K reduction (tile IC with BLOCK_IC=4/8, use `tl.dot` over [BLOCK_OC, BLOCK_IC] \u00d7 [BLOCK_IC, BLOCK_OW]) to amortize loads and exploit tensor cores.\n- Add autotune configs sweeping BLOCK_OW \u2208 {8,16,32} with BLOCK_OC fixed at 16 (since OC=16) and num_warps \u2208 {2,4}; current configs all force BLOCK_OC=16 padded but the GEMM shape is tiny \u2014 try persistent grid over (N, OD) processing multiple (OH, OW) tiles per program to reduce launch overhead.\n- In the group_norm kernel, fuse the two passes by using Welford or by caching x in registers when group_elems fits (here C_per_G*S = 4*OD*OH*OW \u2248 130k, too large) \u2014 instead split the group across multiple programs and do a two-stage reduction, or increase BLOCK_SIZE to 4096 with num_warps=16 to reduce loop trips.",
+    "large_guidance": "- Rewrite the ConvTranspose3d as a scatter-add: one program per (N, IC tile, ID, IH, IW tile) loads input, multiplies by weight[ic, :, kd, kh, kw] to form an outer product, and `tl.atomic_add`s into the output at the strided (od, oh, ow) positions. With stride=2, pad=1, k=3, each input element contributes to 27 output positions; the gather-based forward kernel is doing wasted work checking divisibility on every (od,oh,ow). Alternative: precompute the gather indices implicitly but reorganize as an im2col GEMM with output reshaped to (N*OD*OH*OW, OC) = (N*33*65*65, 16) \u00d7 (16, IC*KD*KH*KW=81) \u2014 small-K GEMM that fits tensor cores.\n- Use channels_last memory layout (NDHWC) end-to-end so the OC axis is contiguous; this makes the conv GEMM's N dimension (OC=16) coalesce and lets the group_norm reduction be done with contiguous channel-grouped loads, removing the `idx//S` index math in the second pass.\n- Fuse Swish into a single conv-epilogue and keep group_norm+hardswish as a separate kernel (current structure), but make group_norm a single-pass Welford-online to avoid re-reading 130k elements per group from HBM twice \u2014 this is currently the second-largest cost after the conv.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 19,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        1.703287831125828
+    ]
+}

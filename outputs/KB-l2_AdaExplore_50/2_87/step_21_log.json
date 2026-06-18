@@ -1,0 +1,30 @@
+{
+    "node_id": 21,
+    "parent_node_id": 20,
+    "context_node_ids": [
+        19,
+        20
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.45516465926439975,
+    "max_reward": 0.45516465926439975,
+    "avg_reward": 0.45516465926439975,
+    "score": [
+        1,
+        1,
+        0.5551084389312977
+    ],
+    "small_guidance": "- Add `triton.autotune` over `BLOCK_M \u2208 {64,128}`, `BLOCK_N \u2208 {32,64,128}`, `num_warps \u2208 {4,8}`, `num_stages \u2208 {2,3,4}`; the current 128\u00d764/4-warp config is likely suboptimal for C_OUT=64, BLOCK_N=64 (single N tile, leaving M as the only parallel axis).\n- Increase grid parallelism: with C_OUT=64 and BLOCK_N=64 you only get 1 N-block \u00d7 cdiv(254*254,128)=505 M-blocks \u00d7 128 N = 64640 programs which is fine, but try BLOCK_M=64/BLOCK_N=64 with num_warps=4 to raise occupancy on the 4090, and consider swizzling pid_m/pid_n for L2 reuse of weights.\n- The K dimension is only 72 (3\u00b73\u00b78) padded to 128 \u2014 you're wasting >40% of dot lanes. Split BLOCK_K=16 and loop over K (4 iters of 16, with masking only on last) so tl.dot operates on full tiles, or pad C_IN load to 16 contiguous lanes by reordering K as (kh,kw,ic_pad).",
+    "large_guidance": "- Restructure as one program per (N, oh_tile, ow_tile, oc_tile) computing a 2-D output tile directly with explicit kh/kw loops (KH=KW=3 unrolled, C_IN=8 as a constexpr inner) instead of a flattened K. With KH\u00b7KW\u00b7C_IN=72, an explicit doubly-unrolled loop using tl.dot on (BLOCK_HW, 8) \u00d7 (8, BLOCK_OC) fragments amortizes weight loads across the 9 spatial taps and avoids the padding waste of BLOCK_K=128.\n- Keep input in NCHW (skip the permute+contiguous, which itself costs ~2ms for 128\u00b78\u00b7256\u00b7256 fp32) and gather per-channel planes; or fuse the NHWC permute into the kernel by reading NCHW with strided offsets. The current explicit `x.permute(...).contiguous()` is a hidden copy that scales with input size.\n- Use channels-last weight layout `[KH,KW,C_IN,C_OUT]` already \u2014 good \u2014 but vectorize the output store as 2-D `[BLOCK_OH, BLOCK_OW, BLOCK_OC]` written in NHWC, then do the final permute back to NCHW (or skip if downstream allows NHWC). Consider persistent kernel with one CTA per (N, oc_tile) sweeping the spatial grid to reuse weight tiles in registers.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 22,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        2.4402417953020135
+    ]
+}

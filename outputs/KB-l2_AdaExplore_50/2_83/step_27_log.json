@@ -1,0 +1,30 @@
+{
+    "node_id": 27,
+    "parent_node_id": 21,
+    "context_node_ids": [
+        4,
+        21
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4737757932263815,
+    "max_reward": 0.4737757932263815,
+    "avg_reward": 0.4737757932263815,
+    "score": [
+        1,
+        1,
+        0.7086502941176471
+    ],
+    "small_guidance": "- The conv3d kernel currently iterates ic/kd/kh/kw scalar-wise and uses outer-product accumulation; try larger BLOCK_OC (e.g. 32) since OC=16 fits in one tile and tune BLOCK_SP up to 4096 with num_warps=8/16, num_stages=2, to maximize SP-axis throughput.\n- Add an autotune config sweep with BLOCK_OC=16 (full OC in one program, eliminating the OC grid dim) so the kernel becomes 2D `(N, sp_tile)` \u2014 this lets each program reuse the weight load across all SP and removes redundant weight reloads.\n- In fused_gn_min_clamp, the second pass reloads x; consider increasing BLOCK_SIZE (channels_per_group*S = 2*65536 = 131072 per group is large) or persist x in registers across the two passes when the group is small enough.",
+    "large_guidance": "- Restructure conv3d as an implicit-GEMM: one program per `(N, output-spatial tile)` with OC fully resident (OC=16 fits in a single tile), reducing over `IC*KD*KH*KW=81` as the K dimension using `tl.dot`. Load a `[BLOCK_K, BLOCK_SP]` input panel via im2col gather and a `[OC, BLOCK_K]` weight panel, then call `tl.dot` \u2014 this replaces the scalar `w[:,None]*x[None,:]` outer-product loop with tensor-core MMA and should be 3-5\u00d7 faster.\n- Fuse the GroupNorm into the conv epilogue when feasible: since OC=16 and groups=8 (channels_per_group=2), each conv program already produces a contiguous spatial slab per channel; a second kernel can do per-(N,group) reduction over the conv output stored in `channels_last` layout, then a third applies normalize+min+clamp. Better: write conv output already in `(N, group, c_in_group, S)` layout so GN reads contiguously.\n- For GN, switch to channels-last storage of the conv output so each GN program reduces a contiguous `[channels_per_group*S]` range with vectorized loads; current layout already gives this since C is outer, but ensure BLOCK_SIZE divides cleanly and use a single-pass Welford to halve memory traffic vs. the current two-pass reload.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 28,
+    "global_best_node_id": 20,
+    "global_best_score": [
+        1,
+        1,
+        0.83563387283237
+    ]
+}

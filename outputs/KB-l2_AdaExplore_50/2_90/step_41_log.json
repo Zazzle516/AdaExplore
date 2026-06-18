@@ -1,0 +1,29 @@
+{
+    "node_id": 41,
+    "parent_node_id": 38,
+    "context_node_ids": [
+        38
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4509369330514447,
+    "max_reward": 0.4509369330514447,
+    "avg_reward": 0.4509369330514447,
+    "score": [
+        1,
+        1,
+        0.5202296976744186
+    ],
+    "small_guidance": "- The epilogue kernel is already memory-bound at ~17ms while the conv alone (cuDNN) is the dominant cost; tuning BLOCK_SIZE/num_warps in the epilogue will not move the needle. If staying small, try BLOCK_SIZE=8192 with num_warps=8 and drop the per-element mask by padding spatial to a multiple of BLOCK_SIZE via a 1D grid over total elements with channel index computed as `(offs // spatial) % C`.\n- Consider folding the sum_tensor (per-channel) into the conv bias at forward time (`bias_eff = conv.bias + sum_tensor.view(-1)`) \u2014 but only after LeakyReLU, which is non-linear, so this exact fold isn't valid; instead skip and focus on conv.\n- Use channels_last_3d memory format for the conv input/output to get faster cuDNN kernels on Ampere.",
+    "large_guidance": "- The bottleneck is `nn.Conv3d` (cuDNN), not the epilogue. Replace it with a custom Triton implicit-GEMM conv3d kernel: one program per (N, OC tile, output-spatial tile), GEMM-K = IC*kD*kH*kW (=8*27=216, very small), accumulate into registers, then fuse bias + LeakyReLU + sum_tensor add + clamp + GELU directly in the epilogue before the store. This eliminates the separate epilogue pass entirely (one kernel instead of conv+epilogue, saves a full read/write of the 128*64*14*62*62 output tensor).\n- Use channels-last layout (NDHWC) so the IC dimension is contiguous and the K-loop loads coalesce; tile BLOCK_M (output spatial)=64-128, BLOCK_N (OC)=32-64, BLOCK_K=full 216 since it's tiny \u2014 unroll fully with `tl.static_range`.\n- Pass sum_tensor as a per-OC vector loaded once per program in registers; apply leaky_relu on accumulator, add sum, clamp, GELU (closed-form erf) all in registers before the single store. Wrap in `triton.autotune` over a small grid of (BLOCK_M, BLOCK_N, num_warps).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 42,
+    "global_best_node_id": 35,
+    "global_best_score": [
+        1,
+        1,
+        1.1241144221105526
+    ]
+}

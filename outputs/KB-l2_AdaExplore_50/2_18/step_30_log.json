@@ -1,0 +1,29 @@
+{
+    "node_id": 30,
+    "parent_node_id": 29,
+    "context_node_ids": [
+        29
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The atomic_add accumulation onto `out` is fine in principle, but initializing `out` via `bias_sum.expand(M).contiguous().clone()` then adding partial row sums from the GEMM is correct only if every (m,n) tile contributes exactly once; verify by switching to a zero-init buffer and adding `bias_sum` once at the end \u2014 the current correctness failure (~0.013 avg diff) suggests a tile-mask bug where masked-out N lanes still contribute non-zero via the `tl.dot` (mask is on `offs_k`, not `offs_n`, so out-of-range N rows of W load garbage-zeros which is fine, but BLOCK_N=128 vs N=8192 fits exactly \u2014 check tail).\n- Replace the K-mask `offs_k[None,:] < K - k` (which compares against a shifting bound) with `(k + offs_k)[None,:] < K` for clarity, and ensure x/w masks use the same expression to avoid mismatched zero-fills.\n- After fixing correctness, autotune over BLOCK_M\u2208{64,128}, BLOCK_N\u2208{128,256}, BLOCK_K\u2208{32,64}, num_warps\u2208{4,8}, num_stages\u2208{3,4}; with M=N=K=8192 the larger tiles (128\u00d7128\u00d764, 8 warps, 4 stages) should win.",
+    "large_guidance": "- Keep the persistent tiled GEMM but fuse the row-sum cleanly: each program owns a full row-strip of M tiles (pid \u2192 pid_m), iterates all N tiles internally accumulating a `BLOCK_M`-vector running sum across N, then writes the final per-row sum once (no atomics). This eliminates the atomic_add hazard and the bias_sum pre-seed trick.\n- Since the entire pipeline after the GEMM reduces (1024,8192)\u2192(1024,1)\u2192\u2026\u2192(1024,1) and max/mean/logsumexp/logsumexp over a singleton dim are all identity (max of one element = that element, mean of one = that element, logsumexp of one = that element), the only real work is the GEMM + bias + row-sum. Fuse bias add into the epilogue (add `b[offs_n]` to the tile before summing along N) so bias participates per-tile, not via a precomputed `bias_sum` (which is fine algebraically but cleaner this way).\n- Grid as `(NUM_TILES_M,)` persistent across N, one row-strip per program: load x row-strip into registers once if K fits in stages, stream W column-tiles, accumulate `acc[BLOCK_M, BLOCK_N]` per N-tile, reduce to `row_sum[BLOCK_M]`, accumulate into a register-resident `row_total`, then a single masked store to `out`. This removes all atomics and the seed-clone.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 31,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        0.8826896197781255
+    ]
+}

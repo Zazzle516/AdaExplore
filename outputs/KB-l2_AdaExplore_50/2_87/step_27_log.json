@@ -1,0 +1,31 @@
+{
+    "node_id": 27,
+    "parent_node_id": 14,
+    "context_node_ids": [
+        10,
+        12,
+        14
+    ],
+    "depth": 5,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.6327245976430977,
+    "max_reward": 0.6327245976430977,
+    "avg_reward": 0.6327245976430977,
+    "score": [
+        1,
+        1,
+        2.0199779305555556
+    ],
+    "small_guidance": "- Add autotune configs with larger BLOCK_SP (e.g. 512) paired with BLOCK_OC=32/64 and num_warps=8, and try BLOCK_OC=128/BLOCK_SP=256; the output spatial dim is 254\u00d7254\u224864k per (N,OC) tile so larger SP tiles will reduce launch/index overhead and improve K-reuse of the weight tile.\n- Reorder the inner loops so that the weight tile for a given (kh,kw) is loaded once and reused across the BLOCK_SP dimension via tl.dot \u2014 current code already does this, but consider swapping accumulator layout to `acc[BLOCK_SP, BLOCK_OC]` (transpose tl.dot operands) so stores are contiguous along the SP axis (currently store stride along oc is OH*OW, which is non-coalesced); switching to channels-last output, or storing as (N, OH*OW, OC) then permuting, would coalesce the write.\n- Hoist the spatial index math (oh,ow,sp_base) and bias load outside the kh/kw loops (already done), and replace the mish formulation with `2*sigmoid(2*sp)-1` style or use `tl.math.tanh` on softplus directly to avoid the two extra exp/div \u2014 fewer transcendentals in the epilogue.",
+    "large_guidance": "- Switch to an implicit-GEMM with channels-last (NHWC) input/output layout: pack input as (N, IH, IW, IC) so the GEMM-K axis (IC*KH*KW) is contiguous; this lets a single vectorized load gather IC values per spatial point and dramatically improves coalescing for IC=8 (currently IC is the slow axis, hurting bandwidth).\n- Use one program per (N, output-tile of OH*OW, OC tile) with BLOCK_M on spatial (e.g. 128) and BLOCK_N on OC (e.g. 64), BLOCK_K = IC*KH*KW = 72 (pad to 128); accumulate via a single tl.dot per (kh,kw) iteration with K loop collapsed \u2014 fewer dot calls and far better tensor-core utilization than the current 9 separate dots of shape (BLOCK_OC, BLOCK_IC)\u00d7(BLOCK_IC, BLOCK_SP) where BLOCK_IC=16 is tiny.\n- Pre-pack weights once in __init__ into (KH*KW*IC, OC) layout (or (OC, KH*KW*IC) contiguous) and store as a buffer so the kernel does a clean GEMM-style load; fuse bias subtraction (bias - sub_total) into the bias buffer at init to remove one epilogue op, and fuse mish in registers using `x * tanh(softplus(x))` with `tl.math.tanh` (or the (e2-1)/(e2+1) form already used).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 28,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        2.4402417953020135
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 18,
+    "parent_node_id": 9,
+    "context_node_ids": [
+        9
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing with ~2e-3 max diff \u2014 likely the BN stats path. In training mode the reference BatchNorm1d normalizes using biased variance but the `bn_apply_kernel` uses `var` from `sum_sq/M - mean^2` which is fine; verify the running stats aren't affecting eval. Also ensure `mean`/`var` tensors are fp32 and `y` is fp32 \u2014 load casts to fp32 inside `bn_stats_kernel` but the apply kernel loads `var` as fp32 fine. Check that the reduction in `bn_stats_kernel` is numerically stable: use Welford or accumulate in fp64-ish via two-pass (load all, compute mean, then variance) since `sum_sq/M - mean^2` can have catastrophic cancellation for M=1024, N=8192 with scaled GEMM outputs of large magnitude.\n- Switch BN stats to a two-pass (mean first, then sum of (x-mean)^2) kernel to fix the numerical error driving the 2e-3 mismatch.\n- After fixing correctness, fuse the BN apply into the GEMM epilogue is not possible (needs full-column reduction), but fuse scale into BN-apply only path if GEMM output is reused; keep current split but increase `BLOCK_M=256, BLOCK_N=128, num_warps=8` for the apply kernel.",
+    "large_guidance": "- Rewrite BN stats with a two-pass Welford-style kernel: program per column, first pass computes mean with Kahan or just fp32 sum, second pass computes `sum((x-mean)^2)`. This eliminates the `E[x^2]-E[x]^2` cancellation that's producing the ~2e-3 error.\n- Alternatively, transpose y to `(N, M)` layout (or run GEMM directly producing column-major output) so the BN reduction is contiguous along M; one program per channel reads a contiguous row of M=1024 elements in a single tile, enabling a fast single-pass Welford with no strided loads.\n- Consider persistent BN-stats kernel: since N=8192 channels and M=1024 fits easily, one program per channel loads the entire column into registers/SMEM once, computes mean+var, and immediately writes normalized output \u2014 fusing stats+apply into a single launch and halving memory traffic.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 19,
+    "global_best_node_id": 12,
+    "global_best_score": [
+        1,
+        1,
+        0.5658960882834168
+    ]
+}

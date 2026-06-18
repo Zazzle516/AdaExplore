@@ -1,0 +1,29 @@
+{
+    "node_id": 20,
+    "parent_node_id": 17,
+    "context_node_ids": [
+        17
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.43948903450422067,
+    "max_reward": 0.43948903450422067,
+    "avg_reward": 0.43948903450422067,
+    "score": [
+        1,
+        1,
+        0.4257845346598203
+    ],
+    "small_guidance": "- The current kernel runs one program per (N,C,Do,Ho) which is only 32\u00b764\u00b78\u00b716=262144 programs but each does very little work (one row of 32 W elements \u00d7 4 sub-rows). Fuse more work per program: process a full Do\u00d7Ho slab per (N,C) program with a 2D loop, or coalesce multiple channels per program (BLOCK_C=4 or 8) so loads of x and stores share a wider vector.\n- The `tl.where(mask_i, y[None,:], norm_rows)` pattern to write into a 4-row buffer is wasteful \u2014 replace it with 4 explicit scalars/registers (one per (dd,hh) pair) and sum them directly to avoid a 4\u00d7BLOCK_W tile materialization. Also drop the `_next_pow2(W)` round-up: W=64 already, but verify `BLOCK_W` matches W exactly to avoid masked compute.\n- Add `@triton.autotune` over `num_warps\u2208{2,4,8}` and `BLOCK_C\u2208{1,2,4}`; the kernel is light enough that 2 warps may win.",
+    "large_guidance": "- The bottleneck is almost certainly `conv_transpose3d` itself, not the post-epilogue. The reference baseline is 8.7 ms while the current kernel is 20.5 ms \u2014 even an optimal post-fusion can't beat the torch baseline because cuDNN's conv-transpose dominates. Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile), compute the input\u00d7weight outer product and scatter into the upsampled output grid handling stride=2/pad=1/output_padding=1. Fuse the `+sum_weight` into the scatter epilogue.\n- Then fuse LayerNorm(over C=64)+AvgPool(2,2,2)+GELU into a single second kernel that reads the conv-transpose output once. LN is over the channel axis (norm_shape=(64,)), so reorder the conv-transpose output to channels-last (N,D,H,W,C) so the LN reduction axis is contiguous and the avg-pool over (D,H,W) is a strided gather over the outer dims.\n- Pipeline: conv-transpose-scatter (writes channels-last + sum_weight) \u2192 fused LN-pool-GELU (one program per (N, Do, Ho, Wo), reduces 64 channels, then writes pooled+GELU output). This eliminates an entire materialization of the post-conv tensor at each stage.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 21,
+    "global_best_node_id": 6,
+    "global_best_score": [
+        1,
+        1,
+        0.4546136958607456
+    ]
+}

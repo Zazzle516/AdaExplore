@@ -1,0 +1,29 @@
+{
+    "node_id": 50,
+    "parent_node_id": 48,
+    "context_node_ids": [
+        46
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The atomic_add accumulation is the correctness bug: multiple `pid_n` programs each compute a partial `row_sum` for the same `offs_m`, but `out` is initialized to zero only once \u2014 however the real issue is that each program's `pooled` only covers a `BLOCK_N/2` slice of the pooled axis, so summing across all `pid_n` is correct *only if* `BLOCK_N` is even-aligned with the pool stride (kernel_size=2) AND `N` is divisible by `BLOCK_N`. Verify `out_features=32768` divides cleanly by all `BLOCK_N` configs (drop BLOCK_N=64 with odd tile counts? 32768/64=512 ok). The bug is more likely that masked-out lanes in the last N-tile get `acc=0` then `+bias=0` (masked) but the max-pool pair `(0,0)` contributes 0 \u2014 which is fine. Re-check: the bias load uses `other=0.0` on masked lanes, so masked acc lanes become 0, and max(0,0)=0 contributes 0 to sum. That's actually correct. The real bug: `tl.atomic_add` with a vector and mask \u2014 ensure `row_sum` masked lanes don't corrupt. Try replacing atomic_add with a two-stage reduction: kernel writes `partial[M, num_n_tiles]`, then a second kernel sums across n-tiles.\n- Add larger-K-friendly configs: `BLOCK_K=128` with `num_stages=4` since K=32768 is huge and the K-loop dominates.\n- Verify weight layout: `w_ptrs = w_ptr + offs_n[None,:]*K + offs_k[:,None]` \u2014 this loads W as [K, N] view of a [N, K] tensor, which is strided (non-contiguous inner). Transpose W once at init to make the inner-K load contiguous, or swap to `tl.dot(x, w.T)` pattern with contiguous B.",
+    "large_guidance": "- Split into two kernels: (1) a tiled GEMM that writes the full `[M, N]` linear output (or directly the pooled `[M, N/2]`) with bias fused in the epilogue, (2) a reduction kernel that does max-pool-pair + sum + scale per row. This eliminates the cross-program atomic_add hazard and lets each kernel be tuned independently. With M=128, N=32768, K=32768 the GEMM is the bottleneck; correctness must come first.\n- Alternatively, make the fused kernel persistent along N: one program per row tile (`pid_m` only), iterating `pid_n` internally so the row_sum accumulates in registers and a single non-atomic store writes the final scaled result. Grid becomes `(cdiv(M, BLOCK_M),)` \u2014 eliminates atomics entirely and is ideal given M=128 is small.\n- Pre-transpose the Linear weight to `[K, N]` contiguous at `__init__` so the GEMM's B operand is contiguous on the inner (N) axis, enabling wider `BLOCK_N` and better `tl.dot` throughput.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 51,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

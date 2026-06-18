@@ -1,0 +1,29 @@
+{
+    "node_id": 37,
+    "parent_node_id": 35,
+    "context_node_ids": [
+        31
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.00576214502446982
+    ],
+    "small_guidance": "- The scatter kernel launches N*IC*ID*IH*IW = 16*32*16*32*32 = 8.4M programs and each does atomic_adds across OC \u2014 this is the bottleneck. At minimum, raise BLOCK_OC to 128 or 256 and num_warps to 4\u20138 so each program amortizes more work per atomic stream.\n- Try swapping the grid axes (pid_oc as axis 0) and/or collapsing (n, ic) into a single dim with `tl.num_programs` tuning; also consider `num_stages=2` to overlap weight loads with atomics.\n- Move bias initialization into the scatter kernel's first write (output-centric kernel) to drop the separate `expand().contiguous()` materialization, which alone touches ~67MB.",
+    "large_guidance": "- Rewrite as a **gather-based (output-centric) GEMM**: one program per (N, OC tile, output-spatial tile). For each output voxel (od,oh,ow), iterate over (kd,kh,kw,ic) and gather input from `((od+pad-kd)/stride, ...)` only where divisibility holds. This eliminates all atomic_adds (the current killer) and lets you use `tl.dot` over an IC*KD*KH*KW reduction dim.\n- Fuse the bias add and the `(2x+b)*x + x` epilogue directly into the GEMM kernel's store path \u2014 no second pass over 64MB of output needed.\n- Use `triton.autotune` over BLOCK_OC \u2208 {32,64,128}, BLOCK_SPATIAL \u2208 {32,64,128}, BLOCK_K \u2208 {16,32,64}, num_warps \u2208 {4,8}, num_stages \u2208 {2,3}. With stride=2 the effective per-output reduction is IC * (KD*KH*KW)/stride^3 \u2248 32*27/8 \u2248 108 multiply-accumulates per output, which fits a single GEMM tile cleanly.\n- Keep weight in (OC, IC, KD, KH, KW) layout (transpose from PyTorch's (IC,OC,...) once at init) so the GEMM-K stride is contiguous.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 38,
+    "global_best_node_id": 30,
+    "global_best_score": [
+        1,
+        1,
+        0.7022256262425447
+    ]
+}

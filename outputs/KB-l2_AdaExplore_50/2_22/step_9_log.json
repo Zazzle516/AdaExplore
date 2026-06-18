@@ -1,0 +1,29 @@
+{
+    "node_id": 9,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.45752980458633324,
+    "max_reward": 0.45752980458633324,
+    "avg_reward": 0.45752980458633324,
+    "score": [
+        1,
+        1,
+        0.574620887837249
+    ],
+    "small_guidance": "- The kernel is slower than baseline (5.17ms vs 2.97ms). The autotune K-loop is suspicious: `mask_k = offs_k < k_remain` is correct but K=8192 is divisible by BLOCK_K so masking is unnecessary \u2014 split into a fast path with no K-mask to let Triton emit denser code. Also pre-transpose W once to be (K, N) row-major contiguous so `w_ptrs` strides along N inner are contiguous loads.\n- Add larger tile configs targeting the (M=1024, N=8192, K=8192) shape: `BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, num_warps=8, num_stages=4` and `BLOCK_M=64, BLOCK_N=256, BLOCK_K=32, num_warps=8, num_stages=3`. Current best configs likely under-tile N, causing too many outer-loop iterations and redundant X reloads.\n- Cache X tile in registers across the N loop: restructure so the outer loop is over K (load X once per K-tile) and inner loop over N tiles, accumulating partial dots into a per-row register vector reduced lazily \u2014 but since LSE needs full row, keep current order but ensure X tile pointers are recomputed from scratch each N iter (currently they are, which is wasteful). Consider a two-pass design where pass-1 computes only row max via a small scan, pass-2 computes sum_exp \u2014 or better: persistent-row kernel with BLOCK_M small (16) and BLOCK_N huge (512+) to minimize N-loop iterations.",
+    "large_guidance": "- The fundamental issue: this kernel re-streams X from HBM for every N tile (N/BLOCK_N = 64+ times for K=8192), making it bandwidth-bound on X reloads. Redesign as a **split-K / two-stage** approach: stage 1 is a standard tiled GEMM (using Triton or cuBLAS via `torch.addmm`) writing the full (M,N) matmul output, stage 2 is a fused epilogue kernel that does `scale*2 + clamp + LSE + mish` in a single row-wise reduction pass. cuBLAS sgemm on 1024x8192x8192 runs in ~1-1.5ms on a 4090; the epilogue reduction is bandwidth-bound on 32MB and runs in ~0.4ms \u2014 total well under 2ms.\n- Alternatively, keep fusion but flip the loop order to be **K-outer, N-inner**: load an X tile of shape (BLOCK_M, BLOCK_K) once, then sweep all N tiles for that K slice, accumulating into a (BLOCK_M, N_TILES_IN_REG) buffer. Not feasible for N=8192 in registers, so split N into a moderate number of chunks held in shared memory. This is essentially a persistent GEMM with online LSE epilogue.\n- For the epilogue-only kernel in the two-stage design: use one program per row (or BLOCK_M=4 rows), BLOCK_N=1024 or 2048, num_warps=8, online LSE in a single pass over the row, then fused mish at the end. This is the standard softmax-style kernel pattern and is near-optimal for row reductions.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 10,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.8922229236424055
+    ]
+}

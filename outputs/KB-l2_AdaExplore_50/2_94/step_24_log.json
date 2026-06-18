@@ -1,0 +1,30 @@
+{
+    "node_id": 24,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        3,
+        23
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness bug: bias is added twice. `gemm_bias_act_kernel` adds `BIAS_ptr` (passed as `self.gemm.bias + self.bias`), but `tl.dot` over `Wt = W.t()` does not include `gemm.bias` \u2014 wait, actually `Wt` is just weights, so `gemm.bias + self.bias` is the correct fused bias. The real issue is likely numerical: hardtanh clamps to [-1, 1], so mish input is bounded; check the softplus/tanh formula for overflow safety \u2014 use `tl.log(1+tl.exp(x))` is fine for |x|\u22641. The 0.0019 avg diff suggests TF32 accumulation in `tl.dot(allow_tf32=True)` with K=8192 is too lossy for the 5e-2 tolerance test? Actually max diff 0.0027 is within 5e-2. The harness reports correctness=False with that small diff \u2014 likely mismatch is from groupnorm using `weight/bias` contiguous load but `tl.where(mask, x, 0.0)` with `x` already masked-loaded as 0 is fine. Try `allow_tf32=False` or accumulate in fp32 with fp32 inputs (already fp32) \u2014 tolerance should pass. Investigate harness atol; the reported diffs (~2.7e-3) are well under 5e-2 so this should pass \u2014 re-check whether `correctness_trials: (0/5)` means a stricter check.\n- Make `eps` a `tl.constexpr` float (1e-5) baked in, and pass `CG` as constexpr to avoid the `.to(tl.float32)` on a runtime int.\n- Add autotune to `group_norm_kernel` over `num_warps\u2208{4,8}` keyed on `CG`.",
+    "large_guidance": "- Fuse the entire epilogue (bias + hardtanh + mish + groupnorm) into a single post-GEMM kernel: write GEMM output to a temp, then one kernel per (row, group) that loads CG=32 contiguous elements, computes mean/var, applies affine \u2014 this is what's done, but consider fusing groupnorm into the GEMM epilogue when BLOCK_N is a multiple of CG and groups align with N-tiles (CG=32, BLOCK_N\u226532) by doing a per-tile partial reduction then a second small kernel to finalize per-group stats. Alternatively, split-K GEMM writing to fp32, then a single fused activation+groupnorm kernel.\n- Consider a persistent GEMM with one program per output tile and a Stream-K decomposition for M=N=1024, K=8192 on RTX 4090.\n- For groupnorm with CG=32 (num_groups=256, C=8192), pack multiple groups per program (e.g., 8 groups \u00d7 32 elems = 256 lanes) and do a segmented reduction to amortize launch overhead \u2014 currently 1024\u00d7256=262144 programs is excessive.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 25,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

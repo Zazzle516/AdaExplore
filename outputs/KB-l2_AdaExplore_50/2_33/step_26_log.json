@@ -1,0 +1,29 @@
+{
+    "node_id": 26,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        24
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing because in training the BN stats kernel updates running_mean/var with the biased variance multiplied by `var_factor` (Bessel correction applied to running_var), but normalization uses the biased `var`. That's actually fine; the real bug is likely a race or output-write issue. Check that `bn_stats_apply_kernel` uses the *unbiased* update for running_var (PyTorch stores running_var updated with unbiased var) \u2014 current code does that. Verify `momentum` is passed as a float constexpr or 0-d tensor, not a raw Python float positional arg (per safety contract rule 3). Convert `eps`, `momentum`, `inv_M`, `var_factor` to `tl.constexpr` or wrap as tensors.\n- The diff (~0.002 max) suggests fp32 GEMM accumulation is fine but TF32 (`allow_tf32=True`) is being used while the reference uses fp32. Set `allow_tf32=False` in `tl.dot` to match reference precision and pass correctness at 5e-2 tolerance (it should already pass at 5e-2 \u2014 re-check whether the harness uses tighter tol; if so, drop TF32).\n- Increase BN `BLOCK_M` to 1024 (M=1024 fits entirely) so the two-pass loop becomes one iteration; bump `num_warps=8` for the wide reduction. Add autotune over BN BLOCK_M \u2208 {256, 512, 1024}.",
+    "large_guidance": "- The structure is sound (fused GEMM+bias+scale, then fused BN two-pass). For a redesign, consider fully fusing BN into the GEMM epilogue by doing a first pass that writes GEMM output to a scratch buffer and accumulates per-column sum/sum\u00b2 via `tl.atomic_add` to a (N,) stats buffer, then a single second kernel that loads stats and writes normalized output \u2014 eliminating the separate BN load of the GEMM output.\n- Alternatively, since M=1024 and N=8192 are both large and BN reduces over M (the batch), tile the GEMM by (BLOCK_M=full-M-slab, BLOCK_N) so each program owns a full column tile and can compute BN stats in-register immediately after the GEMM, then normalize and store \u2014 collapsing GEMM+scale+BN into a single kernel with no intermediate global write.\n- For RTX 4090 (Ada, not Ampere as the prompt says), prefer BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, num_warps=8, num_stages=4 for the 8192\u00d78192\u00d78192-ish GEMM shape; sweep with persistent-CTA scheduling (grid = #SMs, loop over tiles) for better L2 reuse.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 27,
+    "global_best_node_id": 24,
+    "global_best_score": [
+        1,
+        1,
+        0.5932781570713239
+    ]
+}

@@ -1,0 +1,27 @@
+{
+    "node_id": 1,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Replace `tl.reshape(acc, (num_groups, GROUP_SIZE))` with arithmetic-based group reduction: build a 2D index grid using `tl.arange(0, NUM_GROUPS)[:, None] * GROUP_SIZE + tl.arange(0, GROUP_SIZE)[None, :]` and reload from a scratch buffer, or compute group reductions via masked sums on the flat `acc`. Pass `NUM_GROUPS` as a `tl.constexpr` instead of a runtime int.\n- Avoid the `tl.sum(w_tile * x_row[None, :], axis=1)` matvec pattern; use `tl.dot` with proper `BLOCK_M`/`BLOCK_N`/`BLOCK_K` tiling so the GEMM hits tensor cores.\n- Add `num_warps=8`, `num_stages=3` and try `BLOCK_K=64` with autotune sweep over (64,128) for K.",
+    "large_guidance": "- Split into two kernels: (1) a tiled GEMM with `tl.dot` writing the [M,N] activation, (2) a per-row fused kernel that does GroupNorm + min + bias-broadcast. The current \"one program per row, BLOCK_N=8192\" design can't use tensor cores and forces the entire row into registers, which is why reshape/scratch operations are fragile. With M=1024, N=K=8192, GEMM dominates and must use `tl.dot`.\n- For the fused GN+min kernel, launch `(M,)` programs each loading the full N=8192 row. Compute per-group mean/var by indexing `acc[group_id * GROUP_SIZE + tl.arange(0, GROUP_SIZE)]` in a loop over groups (constexpr `NUM_GROUPS=512`, `GROUP_SIZE=16`), avoiding `tl.reshape` to 2D entirely. Track running min across groups in the same loop, then write a scalar per row.\n- The final `min + bias` produces a [1,N,M,1] tensor (8192*1024 elements). This broadcast-add is cheap but should be a tiny standalone elementwise kernel or just left to PyTorch \u2014 do not fuse it into the GN/min kernel since the output shape differs from the per-row work.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 2,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 16,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        2
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The kernel is severely under-tiled: BLOCK_M=32, BLOCK_N=128, BLOCK_K=32 with K=N=32768 means tiny `tl.dot` tiles inside a long K-loop. Bump to BLOCK_M=64/128, BLOCK_N=128, BLOCK_K=64, num_warps=8, num_stages=3-4 and drop SPLIT_N so each program covers the full N (no atomics needed) \u2014 replace `tl.atomic_add` with a single `tl.store`.\n- Wrap launch in `triton.autotune` over {BM=64/128, BN=128/256, BK=32/64, warps=4/8, stages=3/4} keyed on (M,N,K); current single config leaves >5\u00d7 on the table on a 4090.\n- Fuse the pool+sum more cheaply: since you sum after max-pool kernel=2, do `pooled = tl.maximum(acc[:, 0::2], acc[:, 1::2])` then `tl.sum(pooled, 1)` directly on the BLOCK_N tile without the reshape/`-inf`/`where` dance (N is a multiple of 2\u00b7BLOCK_N so masking is unnecessary at this size).",
+    "large_guidance": "- The dominant cost is a 128\u00d732768\u00d732768 GEMM (~275 GFLOP) whose output is immediately reduced to a scalar per row. Rewrite as a single persistent kernel where each program owns one (or a few) rows of M and streams over N in BLOCK_N chunks: load x-row tile once into registers/SMEM, walk N tiles, for each tile compute `acc[BM,BN] = x @ W[:,n:n+BN] + b`, fuse pool2+sum into a running scalar per row, and finally write one value per row. This removes the atomic, removes the partial-output materialization, and turns the problem into a streaming GEMV-like pattern that is bandwidth-bound on W.\n- Since each W element is used exactly once per batch row and W is 4 GB (32768\u00b2\u00b74 = 4 GiB), the kernel is W-bandwidth limited. Optimize for W reuse across M: make BLOCK_M as large as register/SMEM allow (e.g. BM=128 covers the whole batch in one program-row) so a single sweep over N loads W once and serves all 128 rows \u2014 speedup vs. current SPLIT_N=4096 (8 redundant W reads) should be ~8\u00d7.\n- Consider splitK only if BM=128 single-program-row underutilizes the 128 SMs of the 4090; a 2D grid of (1 row-group, ~128 N-tiles) with a final cross-program reduce via atomics on the per-row scalar is a reasonable fallback. Keep the bias add, pool kernel=2, sum, and scale all in the epilogue of the same kernel.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 17,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 44,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        8
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4444273092053943,
+    "max_reward": 0.4444273092053943,
+    "avg_reward": 0.4444273092053943,
+    "score": [
+        1,
+        1,
+        0.4665253009445028
+    ],
+    "small_guidance": "- The fused maxpool+mean+clamp kernel is already lightweight; the bottleneck is `nn.ConvTranspose3d` (cudnn). Try wrapping `fused_maxpool_mean_clamp_kernel` in `triton.autotune` over `BLOCK \u2208 {256, 512, 1024}`, `num_warps \u2208 {2, 4, 8}`, `num_stages \u2208 {2, 3}` keyed on `pooled_total` \u2014 likely shaves only the tail though.\n- Fuse the `* scale` multiplication into the convT3d epilogue (or into the maxpool load) so the intermediate tensor isn't traversed twice; right now scale is baked into the pool kernel correctly but conv output is still a full materialization.\n- Pre-scale `conv_transpose.weight` and `bias` by `self.scale` once at init (legitimate \u2014 it's a constant fold of a scalar mul into the conv weights, not eliminating an op), removing the separate multiply pass.",
+    "large_guidance": "- The convT3d dominates (~19.4ms vs 9ms baseline means cudnn is winning). Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)` computing the outer product with the `(OC, KD, KH, KW)` weight and `tl.atomic_add`-ing into the output grid, with `stride`/`padding` handled in index math. The existing `convt3d_scatter_kernel` skeleton is in the file but unused \u2014 wire it up, then fuse the bias+scale into its epilogue.\n- Better: since maxpool kernel=2 directly follows, fuse convT3d \u2192 scale \u2192 maxpool \u2192 global-mean \u2192 clamp into a single pass that scatters into a pooled accumulator (track per-(N,OC,Dp,Hp,Wp) running max in registers/shared), eliminating the full (N,OC,OD,OH,OW) materialization which is 128\u00d716\u00d731\u00d763\u00d763 \u2248 250M elements.\n- If atomics on fp32 are too slow on Ada, use the im2col-gather form for convT3d: for each output voxel, gather contributing input \u00d7 weight pairs (transposed indexing) and accumulate in registers \u2014 turns the scatter into a GEMM-like tile and avoids atomics entirely. Tune `BLOCK_OC=32`, `BLOCK_SPATIAL=64`, `num_warps=4`.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 45,
+    "global_best_node_id": 20,
+    "global_best_score": [
+        1,
+        1,
+        16.336806567370672
+    ]
+}

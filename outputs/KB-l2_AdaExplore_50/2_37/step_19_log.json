@@ -1,0 +1,27 @@
+{
+    "node_id": 19,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness issue: small numeric diffs (~1e-3) suggest the GroupNorm uses a numerically less stable variance formula (E[x\u00b2]-E[x]\u00b2) in fp32 plus single-pass. Switch to a two-pass approach: compute mean first, then variance as sum((x-mean)\u00b2)/C, keeping reductions in fp32. Also ensure input to GEMM accumulator and norm are fp32 throughout.\n- Validate that `BLOCK_C = next_pow2(64) = 64` correctly masks; the issue may be that gamma/beta loads use `mask=mask, other=0.0` which is fine, but `(x - mean) * rstd` is computed over all BLOCK_C lanes including masked-out \u2014 set masked x to mean (or 0) and ensure masked lanes don't contribute. For C=64 exactly power-of-two this is moot, so the bug is elsewhere \u2014 likely the variance formula precision.\n- For GEMM, try adding `GROUP_M=8` block swizzle and configs with `BLOCK_K=64` for K=1024 to improve L2 reuse; current best configs likely 128x128x32 or 128x256x32 with num_warps=8.",
+    "large_guidance": "- Fuse the entire pipeline more aggressively: since GroupNorm reduces over C=64 channels (one group), and the GEMM produces N=4096 outputs per row, design a persistent row-wise kernel that computes one row of `Y = swish(XW^T)+b`, holds it in SRAM/registers, then performs GroupNorm reductions per group of 64 channels and writes the normalized output \u2014 eliminating the intermediate Y tensor write/read (M*N=128M elements saved per direction).\n- Alternatively, split-K GEMM writing directly into a per-row, per-group partial sum buffer, then a second small kernel finalizes mean/var/normalize. With G=64 groups of 64 channels each and N=4096, per-program tiles aligned to channel-group boundaries (BLOCK_N=64 or 128, multiple of C=64) allow in-kernel partial reductions for mean/sum-of-squares before storing.\n- Use two-pass numerically stable GroupNorm (mean then centered variance), and consider tf32/fp32 accumulation explicitly via `tl.dot(..., allow_tf32=False)` if precision is the failure cause.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 20,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

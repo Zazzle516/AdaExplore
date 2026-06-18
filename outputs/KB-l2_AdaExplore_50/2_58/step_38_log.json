@@ -1,0 +1,29 @@
+{
+    "node_id": 38,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        7
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.47563767695412834,
+    "max_reward": 0.47563767695412834,
+    "avg_reward": 0.47563767695412834,
+    "score": [
+        1,
+        1,
+        0.7240108348715584
+    ],
+    "small_guidance": "- The current kernel iterates `oc` in the outermost loop and recomputes the input gather for every OC; swap so OC is the *inner* axis (vectorized as `BLOCK_OC = OC = 16`) and (kd,kh,kw,ic) outer \u2014 load `xv` once per (ic, kd, kh, kw, w-tile) and broadcast against a `[BLOCK_OC]` weight vector to get a `[BLOCK_OC, BLOCK_W]` accumulator, then LSE-reduce across OC at the end with a single `tl.max` + `tl.sum(tl.exp(...))`. This cuts input loads by ~16\u00d7.\n- Try `BLOCK_W=64`, `num_warps=8`, `num_stages=3`, and merge `(n, d_out, h_out)` into program_id(0) with `(w-tile)` as program_id(1) for a flatter grid; also lift the `d_in/h_in` validity and offsets out of the `kw`/`ic` loops (they're invariant) so only `w_in` index math runs in the hot path.\n- Cache the OC weight slice per (ic,kd,kh,kw) into a register vector with a single `tl.load(w_ptr + base + tl.arange(0, OC))` instead of re-loading scalar `wv` per oc inside the static loop.",
+    "large_guidance": "- Rewrite as a **scatter-add input-stationary** ConvTranspose3d: one program per `(n, ic, d_in, h_in, w_in_tile)`, loading the input once and the full `(OC, KD, KH, KW)` weight slab for that ic, then scattering `x * w` into the output grid via `tl.atomic_add`. This matches the natural data flow of conv-transpose (avoids the expensive `(d_out+PD-kd)%SD==0` gather predicate and the OC-outer recomputation), and OC=16 fits perfectly in registers.\n- Because the model reduces over OC immediately (LSE) and OC=16 is small, an alternative high-headroom design is a **two-pass fused kernel**: pass-1 computes the full conv-transpose into a `(N, OC, D_out, H_out, W_out)` scratch with a tuned im2col-GEMM-style direct kernel (BLOCK_M over output spatial, BLOCK_N over OC, BLOCK_K over IC*KD*KH*KW), then pass-2 fuses LSE+HardSwish+bias+clamp in a tiny channel-reduction kernel. This separates the two regimes (compute-bound conv vs. memory-bound epilogue) so each can be tuned independently \u2014 the current single-kernel design forces OC-serial accumulation which leaves the tensor cores idle.\n- Use channels-last (NDHWC) for both input and weight so the IC/OC contiguous axes feed coalesced loads and let you use `tl.dot` for the IC\u00d7OC inner product instead of a scalar fma chain.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 39,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.3267919485553208
+    ]
+}

@@ -1,0 +1,27 @@
+{
+    "node_id": 3,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The atomic_add accumulator is initialized as fp32 but multiple programs along pid_n race-add into the same M rows; this is fine numerically but the bug is that `tl.where(pooled == neg_inf, 0.0, pooled)` does not guard against the case where N is exactly divisible by BLOCK_N but a MaxPool window straddles a tile boundary \u2014 actually here KERNEL_SIZE=2 divides BLOCK_N so windows are tile-local. Real issue: the mask logic on `mask_n` sets out-of-bounds lanes to -inf, but when N is divisible by BLOCK_N all lanes are in-bounds so that's fine. The actual correctness failure is likely `out` not being zero-initialized across re-runs combined with non-deterministic atomic ordering \u2014 verify by switching to a two-pass design (compute pooled tile, store to a (M, N/k) buffer, then a second kernel sums per row).\n- Add `BLOCK_N` configs that are multiples of `KERNEL_SIZE*2` and ensure `BLOCK_N % KERNEL_SIZE == 0` is enforced in the autotune key/prune; current configs all satisfy this but document it.\n- Pass `SCALE` as a runtime arg (or only multiply once in a final pass) instead of inside each tile's atomic-add \u2014 multiple atomics each pre-scaled accumulate scaled partials, which is correct, but a single post-scale after a deterministic reduction avoids fp drift across trials.",
+    "large_guidance": "- Replace the atomic-add scatter with a two-stage design: stage 1 is a tiled GEMM that writes a `(M, N/KERNEL_SIZE)` pooled tile to global memory (fused matmul+bias+maxpool, one program per (M-tile, pooled-N-tile), no atomics); stage 2 is a row-wise reduction kernel that sums each row of length `N/KERNEL_SIZE` and multiplies by `scale`. This removes the cross-program reduction race and is what's almost certainly causing the numerical mismatch on 1/5 trials.\n- Alternatively, use a split-K-free persistent design: one program per M-tile that loops over all N tiles internally, keeping a per-row scalar accumulator in registers; this eliminates atomics entirely and lets `tl.dot` run with larger BLOCK_N (e.g. 256) and num_stages=4. Grid becomes `cdiv(M, BLOCK_M)` only.\n- Given M=128, K=N=32768: the GEMM is 128\u00d732768\u00d732768 \u2248 275 GFLOP \u2014 bandwidth-bound on weight reads. Pre-transpose W into K-major layout once in `__init__` so the inner-K load is contiguous, and use BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, num_warps=8, num_stages=4 with the persistent-per-row design.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 4,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

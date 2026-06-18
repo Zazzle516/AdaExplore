@@ -1,0 +1,29 @@
+{
+    "node_id": 40,
+    "parent_node_id": 5,
+    "context_node_ids": [
+        21
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The output formula is wrong: reference is `sigmoid(x)*scale + x`, kernel computes `sig*SCALE + acc` which is correct \u2014 but the max diff ~0.0017 with avg 0.0003 suggests TF32 accumulation error on K=8192. Disable TF32 (`allow_tf32=False`) or accumulate in fp32 with fp32 loads (already fp32) and verify atol passes; if tolerance is 5e-2 then 0.0017 should pass \u2014 the actual failure may be that `weight_t = weight.t().contiguous()` is captured at init but `nn.Linear` initializes weights and they don't change, so that's fine. Double-check stride args: with `weight_t` contiguous shape (K,N), stride_wk=N, stride_wn=1 \u2014 correct.\n- The mod-M / mod-N trick (`% M`, `% N`) on offsets combined with masked loads is fine for in-bounds but the K-loop uses `offs_k[None,:] < K - k*BLOCK_K` which is correct. Keep autotune configs but add `allow_tf32=False` to the `tl.dot` to eliminate TF32 precision loss as a possible correctness fail cause.\n- Verify `scaling_factor` is passed as `tl.constexpr` (it is via `SCALE=float(...)`) \u2014 good. Add a config with BLOCK_M=64, BLOCK_N=128, BLOCK_K=64, num_warps=4, num_stages=4 for the M=1024,N=8192,K=8192 shape.",
+    "large_guidance": "- Structure is sound (tiled GEMM with fused bias+sigmoid+scale+residual epilogue). A redesign should keep this shape but ensure fp32 accumulation without TF32 if precision is the issue, and consider a split-K variant only if occupancy is low \u2014 M=1024/BLOCK_M=128 gives 8 row-tiles \u00d7 64 col-tiles = 512 programs, plenty of parallelism, so split-K is unnecessary.\n- Persistent kernel with a fixed number of programs == #SMs (128 on 4090) iterating over (pid_m, pid_n) tiles could reduce launch/scheduling overhead, but the current 512-tile grid already amortizes well.\n- Pre-transpose weight once at init (already done) and store as the kernel-friendly layout; consider also pre-padding N/K to multiples of BLOCK to drop the mask in the inner loop for slight speedup.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 41,
+    "global_best_node_id": 33,
+    "global_best_score": [
+        1,
+        1,
+        1.3821075773541527
+    ]
+}

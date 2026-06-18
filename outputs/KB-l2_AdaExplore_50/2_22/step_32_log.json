@@ -1,0 +1,31 @@
+{
+    "node_id": 32,
+    "parent_node_id": 26,
+    "context_node_ids": [
+        10,
+        25,
+        26
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.6129386356150437,
+    "max_reward": 0.6129386356150437,
+    "avg_reward": 0.6129386356150437,
+    "score": [
+        1,
+        1,
+        1.8567437438241103
+    ],
+    "small_guidance": "- The GEMM dominates (M=1024, N=8192, K=8192 \u2248 137 GFLOPs per call). Add larger tile configs to the autotune list: `BLOCK_M=256, BLOCK_N=256, BLOCK_K=32/64, num_warps=8, num_stages=3` and `BLOCK_M=128, BLOCK_N=256, BLOCK_K=128, num_warps=8, num_stages=3`, and drop the smaller (64-M) configs that won't win at M=1024.\n- Cache `Wt` and `b` once in `__init__` (move them onto CUDA at construction); the current `_get_wt` still calls `.cuda()` and `b.detach().contiguous().cuda()` on every forward, adding host-side overhead. Also store `Wt` as fp16 and load+upcast inside the kernel to halve weight bandwidth (8192\u00d78192\u00d74B = 256MB of weight traffic per call is significant).\n- For the LSE kernel, since N=8192 fits, make it persistent single-pass with `BLOCK_N=8192` (one tile, no loop) and use the online-softmax recurrence so you fuse max+sum in a single pass; this kernel is tiny but the two-pass + masked loads are wasted work.",
+    "large_guidance": "- Consider storing the intermediate in shared/registers only \u2014 i.e. a single fused persistent kernel where each program owns a row-tile of M and reduces across the full N inline (compute the row's GEMM output tile-by-tile along N, accumulate running max/sumexp on the fly, never write the [M,N] intermediate). With N=8192 this eliminates a 1024\u00d78192\u00d72B = 16MB write+read round-trip and is the biggest remaining win.\n- Alternatively, do a split-K / split-N GEMM that writes the [M,N] tile directly to shared memory of a per-row reducer via atomics on (max, sumexp) pairs \u2014 but the fused-persistent approach above is cleaner on a 4090.\n- Convert the weight to fp16 (or bf16) at init and run the GEMM in mixed precision with fp32 accumulator; on Ampere/Ada this roughly doubles tensor-core throughput and halves weight bandwidth, with clamp+LSE providing plenty of numerical headroom.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 33,
+    "global_best_node_id": 28,
+    "global_best_score": [
+        1,
+        1,
+        3.627338205272988
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 5,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        4
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4679276120052197,
+    "max_reward": 0.4679276120052197,
+    "avg_reward": 0.4679276120052197,
+    "score": [
+        1,
+        1,
+        0.6604027990430623
+    ],
+    "small_guidance": "- The K loop has fixed IC=64 and BLOCK_K up to 64, so K can be a single pass. Add configs with BLOCK_K=64 and remove the inner ic_start loop overhead by using `tl.static_range` when BLOCK_K==IC; also add a `GROUP_M` swizzle for better L2 reuse across (pid_m, pid_n).\n- Add larger tiles like BLOCK_M=128/BLOCK_N=256 and BLOCK_M=64/BLOCK_N=256 with num_warps=8, num_stages=3; the output is huge (64*254*254=4.1M rows) so wider N tiles cut redundant weight loads.\n- Avoid the final `permute(0,3,1,2).contiguous()` \u2014 write the output directly in NCHW by changing the store index math (or store to a pre-allocated NCHW buffer), eliminating a full 4M*128 fp32 transpose pass.",
+    "large_guidance": "- Rewrite as an implicit-GEMM conv where the M dimension is tiled along (N, OH, OW) with the OW dimension contiguous inside a tile (e.g. BLOCK_OW=32, BLOCK_M=BLOCK_OW). This lets you reuse the same input row across 3 horizontally-adjacent taps via register shifting, cutting input gathers by ~3x vs. the current per-tap independent loads.\n- Skip the NHWC pre-permute of x: launch the kernel directly on the NCHW input by computing strided offsets (channel stride = IH*IW). With IC=64 contiguous-across-channels not required if you tile K along the channel axis with vectorized loads per (n,h,w). Likewise store directly into NCHW output to remove the post-permute.\n- Fuse both Mish activations into the epilogue (already done) but use the fast approximation `mish(x) \u2248 x * tanh(softplus(x))` with `softplus = max(x,0) + log1p(exp(-|x|))` to avoid the exp blowup branch; and consider a persistent-CTA scheme where each program iterates over multiple (pid_m, pid_n) tiles to amortize weight reloads of the 128*9*64 weight tensor (~295KB fits in L2 easily, but per-SM reuse improves with persistence).",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 6,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.6700203155339807
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 6,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        3,
+        4
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.09541046375595273
+    ],
+    "small_guidance": "- The current kernel reduces N inside each program but uses `allow_tf32=False`, which halves throughput on Ampere; flip to `allow_tf32=True` (inputs are fp32 with rand values, well within 5e-2 tol) and add larger-K configs (BLOCK_K=128/256) to amortize the N-loop.\n- Tile M is tiny (M=1024) while N=8192, so prefer wide-N tiles: try `BLOCK_M=64, BLOCK_N=256, BLOCK_K=128, num_warps=8, num_stages=4` and `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64`. Drop the small BLOCK_M=32 configs.\n- Hoist the bias add outside the N-tile inner accumulation: just accumulate `tl.sum(tl.dot(...), axis=1)` per N-tile into `row_acc` and add `sum(bias)` once at the end (bias is loaded redundantly otherwise). Also remove the redundant `tl.where(mask_n,...)` since masked `tl.load` already zeros.",
+    "large_guidance": "- Reformulate as a single GEMV: the row-sum of `x @ W^T + b` equals `x @ v + sum(b)` where `v = W.sum(dim=0)` \u2014 BUT that violates the safety contract (collapses the linear into a matvec at init). Instead, keep the full GEMM but switch strategy to: one program per M-row tile streaming K in the outer loop and N in the inner loop, accumulating a (BLOCK_M,) row-sum register directly via `tl.sum(tl.dot(x_tile, W_tile^T), axis=1)`. This avoids materializing the (BLOCK_M, BLOCK_N) tile across the K loop and lets us use bigger BLOCK_N.\n- Pre-transpose W to (K, N) layout once in `__init__` so the inner-loop loads of W are contiguous along K (the tl.dot's K axis), eliminating the `tl.trans(w)` and giving coalesced loads.\n- Consider a split-N persistent kernel with atomics into the (M,) output if launch occupancy becomes the bottleneck \u2014 with M=1024 and BLOCK_M=64 there are only 16 programs, far below the 4090's 128 SMs, so split-K/N parallelism would massively improve SM utilization.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 7,
+    "global_best_node_id": 6,
+    "global_best_score": [
+        1,
+        1,
+        0.09541046375595273
+    ]
+}

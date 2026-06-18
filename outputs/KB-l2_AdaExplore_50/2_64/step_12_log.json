@@ -1,0 +1,29 @@
+{
+    "node_id": 12,
+    "parent_node_id": 10,
+    "context_node_ids": [
+        10
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The bug: the partial buffer is sized to ntiles for BLOCK_N=128 (64 tiles), but autotune may select BLOCK_N=256 which writes only 32 tiles into `pid_n=0..31`. The finalize kernel reads all 64 tile slots \u2014 slots 32..63 are still the initial -inf/0, which is fine for sum, BUT the per-tile `row_max` written by a BLOCK_N=256 kernel covers 256 columns, so the partial layout mismatches. Restrict autotune configs to a single `BLOCK_N` (e.g. 128) so `pid_n` indexing into `max_partial`/`sumexp_partial` is consistent with `ntiles_n`. Alternatively pass `BLOCK_N` out and size the buffer dynamically, but the simplest fix is to drop all BLOCK_N\u2260128 configs.\n- After fixing, sweep `BLOCK_M \u2208 {64,128,256}`, `BLOCK_K \u2208 {32,64,128}`, `num_warps \u2208 {4,8}`, `num_stages \u2208 {3,4}` with fixed `BLOCK_N=128`, `GROUP_M=8`.\n- Consider fusing the finalize step into a second small kernel that uses one warp per row (current launch of `(M,)` programs each with BLOCK_T=64 is fine; tune num_warps=1).",
+    "large_guidance": "- Rewrite as a **single-pass split-K-free LSE GEMM**: since N=8192 fits comfortably, use one program per row tile (BLOCK_M rows) that iterates over ALL N columns in a K-loop-inside-N-loop structure, maintaining an online LSE accumulator (running max + running sumexp with the standard correction `s = s*exp(old_max - new_max) + exp(x - new_max)`). This removes the partial buffer + finalize kernel entirely and eliminates the BLOCK_N-consistency bug.\n- Persist the row tile: load the BLOCK_M\u00d7K slice of A into registers/shared once, then stream B in BLOCK_N\u00d7BLOCK_K tiles across N, accumulating GEMM, applying bias, and folding into the online LSE state. Final epilogue applies the two LeakyReLUs (degenerates to `x * (1 if x\u22650 else 1e-4)`) and two GELUs, then stores a single fp32 per row.\n- Grid is `(cdiv(M, BLOCK_M),)` \u2014 much simpler, no second kernel, no synchronization-via-DRAM. Autotune over BLOCK_M (32/64/128), BLOCK_N (64/128/256), BLOCK_K (32/64).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 13,
+    "global_best_node_id": 10,
+    "global_best_score": [
+        1,
+        1,
+        1.9067155115511552
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 26,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        23
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5055930985618543,
+    "max_reward": 0.5055930985618543,
+    "avg_reward": 0.5055930985618543,
+    "score": [
+        1,
+        1,
+        0.9711430631352974
+    ],
+    "small_guidance": "- In `fused_apply_lse_kernel`, eliminate the redundant scalar reloads of `gamma_ptr`, `beta_ptr`, `mean_ptr`, `rstd_ptr` inside the `tl.static_range` loop \u2014 you already precompute `a_all`/`b_all` vectors of length `C_CONST`; just keep per-channel scalars as a small Python-side loop reading from those precomputed `[C_CONST]` arrays via `tl.sum(a_all * (c_idx == c), 0)` is wasteful \u2014 instead, drop the vector precompute and only do scalar loads once per `c` (current code does 4 loads per c, should be 2 fused as one `a_s, b_s`).\n- Add autotune configs with larger `BLOCK_HW` (1024, 2048) since H*W=16384 is large and the inner static loop over C=64 amortizes well; also try `num_warps=8, num_stages=3/4` to overlap the long C loop with global loads.\n- Fuse the GN stats kernel's reduction with a wider `BLOCK_HW` (2048 or 4096) since group_size = 4 * 16384 = 65536 and the current 1024 block forces 64 inner iterations per group \u2014 fewer iterations means less loop overhead.",
+    "large_guidance": "- The conv (Conv2d 8\u219264, k=3, 128\u00d7128, batch=128) is now the dominant cost at ~3.18ms baseline vs 3.28ms total \u2014 replace `nn.Conv2d` with a custom Triton im2col-GEMM kernel tiled as (N, OC_tile, H*W_tile) with BLOCK_M=64 (OC), BLOCK_N=128 (spatial), BLOCK_K=72 (IC*kh*kw=72), fusing the conv bias into the epilogue and writing directly into the buffer consumed by the GN-LSE pass.\n- Consider a single mega-fused kernel: conv \u2192 GN stats (via a two-pass scheme where pass 1 = conv+accumulate per-group sums into a scratch, pass 2 = conv-recompute+normalize+tanh+hardswish+residual+LSE in one shot), avoiding the separate `x_conv` materialization (currently N*C*H*W = 128*64*16384*4 = 512MB of traffic for the intermediate).\n- Alternatively keep conv via cuDNN but fuse stats and apply-LSE into one kernel by using a persistent grid over (N, HW_tile) that first reduces over C for stats per group (using shared/atomic), then does the LSE pass \u2014 this removes the separate `gn_stats_kernel` launch and the mean/rstd round-trip through HBM.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 27,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.9741129195974848
+    ]
+}

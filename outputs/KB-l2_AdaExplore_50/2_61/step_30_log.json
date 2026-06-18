@@ -1,0 +1,29 @@
+{
+    "node_id": 30,
+    "parent_node_id": 10,
+    "context_node_ids": [
+        9
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4176029073956347,
+    "max_reward": 0.4176029073956347,
+    "avg_reward": 0.4176029073956347,
+    "score": [
+        1,
+        1,
+        0.24522398601398598
+    ],
+    "small_guidance": "- The conv-transpose kernel's innermost loop over IC=64 reloads x and w per (kd,kh,kw); hoist the IC loop to the outermost level and accumulate over kernel positions inside, or better: tile IC with BLOCK_IC (e.g. 16-32) and use `tl.dot` of a [BLOCK_SP, BLOCK_IC] x [BLOCK_IC, BLOCK_OC] gemm \u2014 this is the dominant cost (~28ms vs 7ms baseline).\n- Add a `triton.autotune` over BLOCK_OC \u2208 {32,64,128}, BLOCK_SP \u2208 {64,128,256}, num_warps \u2208 {4,8}, num_stages \u2208 {2,3} for the conv-transpose kernel \u2014 current 32/128/4w is almost certainly suboptimal for OD*OH*OW=34\u00b3\u224839k and OC=128.\n- In groupnorm, the `weight`/`bias` loads use `mask=mask` but index by `c_global` which is bounded by C; replace with a single channel-wise load per BLOCK iteration and broadcast \u2014 also raise BLOCK to 2048 since group_size = 16 * 34\u00b3 \u2248 629k is large.",
+    "large_guidance": "- Reformulate ConvTranspose3d as a scatter-add (input-stationary): one program per (N, IC-tile, input-spatial-tile) computes the [BLOCK_IC, OC] outer-product with the flipped weight and `tl.atomic_add`s into the 27 output neighborhoods. With stride=1/pad=0 the output halo is small; this turns the K=IC*27 gather-gemm into a streaming write pattern that better matches the small kernel volume.\n- Alternatively, treat it as an explicit GEMM: reshape input to [N*ID*IH*IW, IC], weight to [IC, OC*KD*KH*KW], do a single cuBLAS/`tl.dot` GEMM, then a small col2im scatter-add kernel with fused ReLU. This separates the heavy compute (which cuBLAS does near-peak) from the cheap index gather.\n- Fuse ReLU + GroupNorm into a single pass over the conv-transpose output: after writing y, immediately compute per-(N,group) sum and sum-of-squares via a second persistent kernel that reads y once, then a third pass writes the normalized result. Currently groupnorm reads/writes y twice \u2014 keep one read for stats, one read+write for norm, which is already the case, but make sure ReLU is applied *only* in the conv epilogue and not double-counted.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 31,
+    "global_best_node_id": 22,
+    "global_best_score": [
+        1,
+        1,
+        1.3618264077669902
+    ]
+}

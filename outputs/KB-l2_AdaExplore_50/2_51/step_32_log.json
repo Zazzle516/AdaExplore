@@ -1,0 +1,31 @@
+{
+    "node_id": 32,
+    "parent_node_id": 24,
+    "context_node_ids": [
+        1,
+        23,
+        24
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5838808070361012,
+    "max_reward": 0.5838808070361012,
+    "avg_reward": 0.5838808070361012,
+    "score": [
+        1,
+        1,
+        1.6170166580478345
+    ],
+    "small_guidance": "- The GEMM kernel materializes a full BLOCK_M\u00d7BLOCK_N accumulator only to immediately reduce along N \u2014 replace `tl.sum(acc, axis=1)` accumulation by carrying a `(BLOCK_M,)` row_sum across the K-loop directly: compute `acc_partial = tl.dot(x_tile, w_tile)` then `row_sum += tl.sum(acc_partial, axis=1)` plus a precomputed `(bias - sub)` scalar contribution per N tile, avoiding the redundant where/mask of a full tile.\n- Precompute `bias - sub` once on host (or in a tiny prologue) and have the kernel only touch that fused vector \u2014 saves one load per N tile in the hot loop.\n- Add larger `BLOCK_N` (e.g. 256, 512) configs and try `SPLIT_K` \u2208 {4, 8, 32} \u2014 with M=2048, N=8192, K=8192, the reduction-style GEMM is bandwidth-limited on W, so wider N tiles and fewer splits may reduce W re-reads. Also tune `num_stages=4` for BLOCK_K=64 variants.",
+    "large_guidance": "- The dominant cost is reading the 8192\u00d78192 weight matrix once to compute a per-row scalar `mean(W\u00b7x + b - sub)`. Algebraically this equals `(x \u00b7 w_colsum)/N + mean(b - sub)` where `w_colsum = W.sum(dim=0)` \u2014 but that's an init-time shortcut and forbidden. Instead, exploit the structure at runtime: launch a kernel where each program handles one row of x, streaming through W's columns in tiles and accumulating a single scalar per row (no BLOCK_N output tile needed). One program per row, with K-loop inside an N-loop, accumulating `sum_n( dot(x_row, W[:,n]) ) + sum_n(b_n - sub_n)`. This avoids storing any BLOCK_M\u00d7BLOCK_N tile.\n- Consider a 2D persistent kernel: grid = (M_tiles,) with each program reducing over the entire (N,K) plane for its M tile, using `tl.dot` with `BLOCK_M \u00d7 BLOCK_K` \u00d7 `BLOCK_K \u00d7 BLOCK_N` and immediately reducing along N before writing. Skip the partial-buffer + finalize split entirely; do the GELU and residual add in the same kernel by having each program also load the corresponding x rows once at the end.\n- Fuse the residual-add/GELU pass into the GEMM-reduce kernel so x is read only once total (it's already loaded for the GEMM K-loop) \u2014 eliminates the second kernel launch and the separate read of x in `finalize_and_add_kernel`.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 33,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        1.6320820306383421
+    ]
+}

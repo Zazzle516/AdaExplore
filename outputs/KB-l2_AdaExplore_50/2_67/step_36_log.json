@@ -1,0 +1,32 @@
+{
+    "node_id": 36,
+    "parent_node_id": 34,
+    "context_node_ids": [
+        3,
+        6,
+        33,
+        34
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The kernel currently loads weights as a flat `KSIZE_P2` vector but indexes input with `ic * IH*IW + kh*IW + kw` \u2014 this is correct only if KSIZE_P2 covers all IC*KH*KW = 72 elements. With KSIZE_P2=128 and `k_mask = k_offs < 72`, the math is fine, but the atomic_add across SPLIT=8 programs accumulates rounding error; reduce SPLIT to 1 or 2 and let one program handle the full spatial extent to fix the correctness mismatch (max diff 39.8 suggests more than rounding \u2014 likely a real indexing bug when SPLIT>1).\n- Verify `chunk_start = sp_id * CHUNK` partitioning: when OHOW=64516 and SPLIT=8, CHUNK=8065; ensure no overlap and full coverage. Consider replacing atomic_add with a two-stage reduction (write partials to `(N, OC, SPLIT)` then sum) to avoid float atomic non-determinism.\n- Tune BLOCK_SPATIAL=2048/4096 with num_warps=8, num_stages=2 once correct.",
+    "large_guidance": "- Restructure as an im2col-style GEMM: tile over (N, OC_tile, OHOW_tile) with BLOCK_M=64 (OC), BLOCK_N=128 (spatial), BLOCK_K=32 reducing over IC*KH*KW=72. Fuse GELU on the accumulator and then do a per-program partial sum over the spatial tile, atomic-adding into `out[N, OC]` (or write to a `(N, OC, num_spatial_tiles)` buffer and reduce). This gives proper tensor-core-friendly matmul shapes instead of a per-(N,OC) outer-product loop.\n- Use channels-last input layout (N, IH, IW, IC) so the K dimension (IC) is contiguous; coalesces loads across the GEMM-K axis and dramatically improves bandwidth for the conv gather.\n- Eliminate atomics on the final reduction: have each program compute its spatial-tile partial sum into a scratch tensor, then a tiny second kernel (or `tensor.sum(dim=2)*inv`) produces the (N, OC) output deterministically.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 37,
+    "global_best_node_id": 7,
+    "global_best_score": [
+        1,
+        1,
+        3.185307289749724
+    ]
+}

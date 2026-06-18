@@ -1,0 +1,29 @@
+{
+    "node_id": 45,
+    "parent_node_id": 29,
+    "context_node_ids": [
+        29
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing with avg diff ~2.4e-4, suggesting the GEMM is the culprit: `weight` from `nn.Linear` is `(out, in)` and is contiguous so `weight.stride(0)=K, weight.stride(1)=1`. The current launch sets `stride_bk=weight.stride(1)=1` and `stride_bn=weight.stride(0)=K`, which is correct for B[k,n]=weight[n,k]. But the K-loop mask uses `offs_k[None,:] < K - k*BLOCK_K` for A and `offs_k[:,None] < K - k*BLOCK_K` for B \u2014 `offs_k` is reset each iteration to `tl.arange(0, BLOCK_K)`, however the pointers advance. That mask logic is correct. The likely real bug is the `% M` / `% N` wraparound on `offs_am`/`offs_bn`: when M and N are exact multiples (1024, 8192) it's fine, but the OOB rows still load real data \u2014 acceptable. More likely: the GN kernel uses `CH_PER_GROUP=16` with BLOCK=16; that's fine. Re-examine: max diff ~5e-3 with avg 2.4e-4 is consistent with fp32 accumulation order differences in GN (eps=1e-5, group=16 elements). The tolerance is 5e-2 so it should pass \u2014 but correctness says fail. Likely the bias is being added with wrong indexing when N tile spans past N: `mask=offs_cn < N` is correct. Double-check by using a Welford-style two-pass GN to reduce numerical error, or compute mean/var in fp64 promotion.\n- Add autotune configs with `BLOCK_M=256, BLOCK_N=128` and try `num_stages=2` for the larger tiles; on 4090 the 128x256x32 config is often best for square 1024x8192x8192.\n- For the GN kernel, set `num_warps=1` since CH_PER_GROUP=16 (a single warp handles it); launch with one program per (N, G) but consider batching multiple groups per program to reduce launch overhead (e.g., 8 groups per program).",
+    "large_guidance": "- Fuse the bias+GroupNorm+LeakyReLU+double into the GEMM epilogue is hard because GN reduces across channels within a group (16 channels) which usually live in different N tiles. Instead, redesign so the GEMM writes tiles with `BLOCK_N` a multiple of `CH_PER_GROUP` (it already is: 128 = 8 groups). Then in a second kernel, one program per (row, group) loads exactly 16 contiguous channels \u2014 but pre-reshape/transpose the output so each program touches a tiny contiguous slab. Alternatively, since CH_PER_GROUP=16 is tiny, use a persistent kernel where each program handles many (row, group) pairs to amortize launch.\n- The GEMM is the dominant cost (1024\u00d78192\u00d78192 = 137 GFLOPs). Consider using a split-K strategy with atomic adds for the K=8192 reduction, or use `tl.dot` with `BLOCK_K=64` and `num_stages=4` to better overlap. Also try storing weight transposed once at init so B is naturally row-major for the inner loop.\n- For numerical correctness of GN with tight tolerance, use a Welford online algorithm or compute `var = sum((x-mean)^2)/n` in a second pass rather than `E[x^2] - E[x]^2`, which loses precision.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 46,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

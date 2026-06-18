@@ -1,0 +1,27 @@
+{
+    "node_id": 1,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4235251819980499,
+    "max_reward": 0.4235251819980499,
+    "avg_reward": 0.4235251819980499,
+    "score": [
+        1,
+        1,
+        0.29408275148391133
+    ],
+    "small_guidance": "- The fused tail kernel is already cheap; the 19.4 ms runtime is dominated by `nn.ConvTranspose3d`. Tuning BLOCK_SIZE/num_warps on the tail won't move fast_p meaningfully.\n- If keeping the tail, try BLOCK_SIZE=1024, num_warps=8, and load all C=16 channels into a `[BLOCK, C]` register tile via `tl.arange(0,C)[None,:]` instead of two static_range loops \u2014 one pass for max+sumexp via online LSE.\n- Ensure the conv output is consumed in NCDHW contiguous layout already (it is) so the gather coalesces along s_idx.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: for each input element `(n, ic, d, h, w)`, scatter `input * weight[ic, oc, kd, kh, kw]` into `output[n, oc, d*stride-pad+kd, ...]` with atomic adds, plus bias. With stride=2, padding=1, kernel=3, output shape is [128,16,31,63,63]; tile over (N, OC, output spatial) as a gather-based formulation is also viable: for each output voxel, sum over (ic, kd, kh, kw) of input at the corresponding (possibly fractional) input location, masked to integer alignment.\n- Prefer the gather formulation (one program per output tile, loop over IC*kD*kH*kW, mask by stride-alignment of `(out_idx + pad - k)`) so writes are non-atomic and coalesced. Fuse the LSE+HardSwish+sub+clamp epilogue directly: accumulate all OC outputs in registers per output voxel, then run LSE across OC immediately before storing the single-channel result.\n- This collapses conv_transpose3d + LSE + activation + clamp into one kernel that writes only N*1*D*H*W elements instead of N*16*D*H*W \u2014 massive bandwidth savings on top of replacing cuDNN's transposed conv with a tile that exploits the small kernel (3\u00b3=27) and small IC (3).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 2,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.29408275148391133
+    ]
+}

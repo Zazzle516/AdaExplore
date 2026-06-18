@@ -1,0 +1,30 @@
+{
+    "node_id": 38,
+    "parent_node_id": 28,
+    "context_node_ids": [
+        18,
+        28
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5785809746842305,
+    "max_reward": 0.5785809746842305,
+    "avg_reward": 0.5785809746842305,
+    "score": [
+        1,
+        1,
+        1.5732930411449018
+    ],
+    "small_guidance": "- Add larger autotune tiles now that the safe configs compile: try `BLOCK_M=128, BLOCK_N=64, BLOCK_K=16` and `BLOCK_M=64, BLOCK_N=128, BLOCK_K=16` at `num_warps=8, num_stages=2`, plus a `BLOCK_K=64` variant for the `IC_KHKW=576` reduction so each k-loop covers more of the inner dim. Also key autotune on `N` so per-batch shapes get cached.\n- The current layout effectively gathers `BLOCK_M \u00d7 (BLOCK_N\u00b7POOL_K\u00b2)` (e.g. 64\u00d7256) per K-tile \u2014 that's wide. Reduce `POOL_K2` blow-up by lowering `BLOCK_N` to 32 and raising `BLOCK_M` to 128, so the dot is 128\u00d7K \u00b7 K\u00d7128 (square-ish) and registers/SMEM stay healthy.\n- Hoist the constant `IC*H*W`, `KH*KW`, `H*W` index math into scalars before the K-loop, and precompute `ic_idx`, `kh_idx`, `kw_idx` once per K-tile (already done) \u2014 additionally, swap to channels-last input (`x.permute(0,2,3,1).contiguous()`) so the K-axis stride is 1 and `tl.load` of `x_vals` fully coalesces across `BLOCK_K`.",
+    "large_guidance": "- Restructure as one program per `(N, OC-tile, pooled-spatial-tile)` with the GEMM-K = `IC\u00b7KH\u00b7KW` and GEMM-N = `BLOCK_N` *unpooled* output positions, then do a register-side max-reduce over the `POOL_K\u00b2` lanes per pooled cell instead of allocating a `(BLOCK_M, BLOCK_N\u00b7POOL_K\u00b2)` accumulator. Equivalently: tile pooled output `2\u00d72` directly by unrolling the 4 sub-positions with separate accumulators of shape `(BLOCK_M, BLOCK_N)`, accumulate 4 conv outputs, then reduce. This shrinks register pressure ~4\u00d7 and lets `BLOCK_M=128, BLOCK_N=64` fit easily.\n- Switch input/weight layout to NHWC + OHWI (channels-last) so the `IC` reduction is the contiguous axis. The K-loop then becomes a clean strided GEMM with vectorized 128-bit loads, and the `KH\u00b7KW=9` outer factor can be unrolled (`KH:tl.constexpr=3, KW:tl.constexpr=3`) to eliminate the `kh_idx/kw_idx` divmod entirely.\n- Consider a persistent-CTA / split-N scheme: one program serves multiple `N` per `(OC,SP)` tile, reusing the loaded weight tile across the batch. With `N=128` and weights of size `OC\u00b7IC\u00b79 = 128\u00b764\u00b79 = 73KB`, weight reuse across N is the biggest untapped bandwidth win; current kernel reloads the same weight tile 128\u00d7 per `(OC,SP)` pair.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 39,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        1.903616471861472
+    ]
+}

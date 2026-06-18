@@ -1,0 +1,30 @@
+{
+    "node_id": 21,
+    "parent_node_id": 20,
+    "context_node_ids": [
+        17,
+        20
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM is M=128, N=K=32768 \u2014 very skinny in M. Add autotune configs with BLOCK_M=16 and BLOCK_N=256, BLOCK_K=64/128 (num_warps=8, num_stages=4) so each program does more N\u00d7K work per row tile and the K-loop is deeper for better pipelining.\n- Fuse the maxpool+sum+scale directly into the GEMM epilogue: within each (M-tile, N-tile) accumulator, do a tl.max reshape over KERNEL_SIZE along N, then tl.sum and `tl.atomic_add` into a per-row output. This removes the full Y materialization (128\u00d732768 fp32 = 16 MB write+read) which is likely the dominant cost.\n- If keeping the two-kernel split, store Y in fp16/bf16 (cast in epilogue) to halve the global traffic for pool_sum, and pick BLOCK=4096, num_warps=8 in pool_sum since N_GROUPS=16384 per row.",
+    "large_guidance": "- Rewrite as a single fused \"GEMM \u2192 maxpool(k=2) \u2192 row-sum \u2192 scale\" kernel: one program per row tile (BLOCK_M rows). It streams over N in BLOCK_N chunks, computing the partial GEMM result for that N-tile via tl.dot over the full K, applying bias, doing the kernel_size=2 max reduction across N, summing into a register accumulator, and finally writing one scalar per row. This eliminates the 16 MB intermediate Y entirely.\n- Since M=128 is tiny, consider a persistent split-K design: grid = (M, num_SMs), each program owns a K-slab, computes its partial dot for all N tiles for one row, applies the pool+sum locally, and atomic_adds the partial scalar into out[row]. The final scale_factor is applied once after the atomics. This maximizes SM occupancy on the 4090 (128 SMs) despite the skinny M.\n- Keep W in its original [N, K] layout and load it with N on the outer axis so the kernel_size=2 max can be done on adjacent N lanes without transpose; avoid the upfront W.t().contiguous() copy, which itself is a 4 GB transpose.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 22,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

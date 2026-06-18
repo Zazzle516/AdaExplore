@@ -1,0 +1,27 @@
+{
+    "node_id": 11,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The LayerNorm is being applied along the wrong axis. The reference `nn.LayerNorm(out_channels)` normalizes over the channel dimension, but after permute to `(N, D, H, W, C)` the kernel normalizes each `(N,d,h,w)` row of length C \u2014 that is actually correct. However the bug is likely the `mean = sum_x / C` divides by `C` (a Python int passed as tensor arg) \u2014 ensure `C` is passed as a Python int constexpr or cast to float; also `tl.where(mask, x, 0.0)` should already be zero from the masked load. Verify correctness against eager first.\n- Switch the layout: keep the conv-transpose output in default `(N,C,D,H,W)` and only permute the small LN dims; or fuse the permute into the kernel via strided loads to avoid two `.contiguous()` copies which dominate runtime.\n- Add `@triton.autotune` over `BLOCK_C \u2208 {64,128}` \u00d7 `num_warps \u2208 {2,4,8}` once correctness is restored; with C=64 a single-warp persistent row kernel may be fastest.",
+    "large_guidance": "- The torch `ConvTranspose3d` dominates runtime here \u2014 output shape is `(32,64,32,64,64)` \u2248 268M elements with a 4\u00b3 kernel. Replace it with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)`, compute `input \u00d7 weight` outer product and atomically scatter into the output grid with stride=2, padding=1. Fuse bias add, LayerNorm (channel-wise reduction across OC=64 fits one block), GELU, and scaling into the epilogue \u2014 but note LN requires the full channel sum, so a two-pass strategy (scatter-add conv first into a buffer, then a second kernel for LN+GELU+scale) is the practical fusion boundary.\n- Use `channels_last_3d` memory format for the conv output buffer so that LN's reduction axis (C=64) is contiguous and coalesces; this also lets the LN kernel skip the permute round-trip.\n- For the LN+GELU+scale kernel, since C=64 is small, use a persistent kernel with one program per `(N,D,H,W)` row, BLOCK_C=64 (exact, no mask), num_warps=2. Compute mean and variance in a single pass using `sum(x)` and `sum(x*x)` to avoid re-reading.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 12,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.22965490364583332
+    ]
+}

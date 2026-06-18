@@ -1,0 +1,29 @@
+{
+    "node_id": 16,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        6
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4426979617555429,
+    "max_reward": 0.4426979617555429,
+    "avg_reward": 0.4426979617555429,
+    "score": [
+        1,
+        1,
+        0.4522581844832288
+    ],
+    "small_guidance": "- The conv_transpose3d is the dominant cost (the fused post-kernel is small); current `fast_p\u22480.45` means tuning the post kernel further will not close the gap. If staying small, at least try `BLOCK_W` configs and add a pre-pass that fuses bias+sum_weight into the conv epilogue, but expect marginal gains.\n- Avoid `self.sum_weight.item()` (host sync); pass it as a 0-d tensor pointer or `float(self.sum_weight.detach())` cached once. Also drop `x.contiguous()` since ConvTranspose3d output is already contiguous.\n- Add autotune configs varying `num_warps\u2208{4,8}` keyed on `(C,D,H,W)`, but again headroom is in the conv, not here.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)`, computing the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and `atomic_add`-ing into the output grid at `(d*sD-pD+kd, h*sH-pH+kh, w*sW-pW+kw)`. Handle stride/padding/output_padding in the index math; add bias in a follow-up epilogue.\n- Alternatively, implement it as a gather-style direct kernel: one program per `(N, OC tile, output-spatial tile)`, looping over `(IC, kd, kh, kw)` and reading only input positions `(d+pD-kd)/sD` that divide evenly \u2014 avoids atomics and maps cleanly onto a GEMM tile (M=OC, N=output-tile, K=IC*kD*kH*kW). Use `BLOCK_M=32,BLOCK_N=64,BLOCK_K=16`, `num_warps=4`, `num_stages=2` to stay under the 132KB SMEM budget.\n- Fuse the entire tail (sum_weight add, LayerNorm over W, 2\u00d72\u00d72 avg pool, GELU) into the conv-transpose epilogue: have each program produce a full output row of W, run the LN reduction in registers, then accumulate four LN-rows into a pooled+GELU output row of W/2, eliminating the separate post-kernel and the intermediate `(N,C,D,H,W)` tensor entirely.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 17,
+    "global_best_node_id": 6,
+    "global_best_score": [
+        1,
+        1,
+        0.4546136958607456
+    ]
+}

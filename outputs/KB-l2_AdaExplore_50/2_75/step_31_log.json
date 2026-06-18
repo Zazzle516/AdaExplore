@@ -1,0 +1,29 @@
+{
+    "node_id": 31,
+    "parent_node_id": 26,
+    "context_node_ids": [
+        24
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM (1024\u00d78192\u00d78192) dominates runtime; F.linear via cuBLAS is already strong but try `torch.backends.cuda.matmul.allow_tf32` plus casting weight to TF32 path explicitly, or use a custom Triton GEMM with BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8, num_warps=8, num_stages=3-4 and fuse the bias add into the epilogue (eliminating the separate gn_min_kernel load of pre-bias y).\n- Fuse the GEMM bias directly into a tiled GEMM epilogue and also fuse GroupNorm + min into a follow-on persistent kernel that consumes the GEMM output (already done) \u2014 but consider fusing the final bias add into the gn_min kernel by writing directly to (1, N, M, 1) layout and broadcasting bias, removing the second kernel launch entirely.\n- The add_bias_kernel writes N\u00d7M=8192\u00d71024 elements with strided layout (N outer, M inner). Switching output layout to (M, N) contiguous and broadcasting bias along N would coalesce better; or skip materialization and have gn_min write min_val once then bias-add inline using N-stride store.",
+    "large_guidance": "- Replace F.linear with a custom Triton GEMM kernel that fuses (a) Linear bias, (b) the per-row GroupNorm reduction (two-pass mean/var over the 8192 output features within the same row), (c) affine, (d) row min, in a single persistent kernel per row. The row fits in registers/SMEM for M=1024 rows \u00d7 N=8192 (32KB/row fp32), so a one-program-per-row scheme that streams K=8192 in BLOCK_K chunks accumulating into a full-N register tile is feasible only if N is tiled; alternatively do GEMM into global memory then a single fused gn+min+bias kernel.\n- Collapse gn_min_kernel and add_bias_kernel into one kernel: one program per (row, n_tile) computes min(row) via a two-stage reduction (atomic-min or a small auxiliary buffer) \u2014 but a cleaner design is one program per row producing scalar min, then a tiny broadcast-add kernel with output laid out as (1,N,M,1) contiguous in the last meaningful dim. Currently bias add is over 8M elements and likely cheap; main win is GEMM.\n- Consider an fp16/bf16 accumulate-in-fp32 custom GEMM for the 8192\u00d78192\u00d71024 matmul to beat cuBLAS TF32 fp32, since inputs are fp32 but TF32 already drops precision; using a Triton kernel with `tl.dot(..., allow_tf32=True)` and tuned tile shape (128/256/32, num_warps=8, num_stages=4) plus L2 swizzle is the most promising structural change.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 32,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

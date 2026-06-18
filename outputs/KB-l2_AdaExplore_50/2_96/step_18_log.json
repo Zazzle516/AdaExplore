@@ -1,0 +1,30 @@
+{
+    "node_id": 18,
+    "parent_node_id": 12,
+    "context_node_ids": [
+        10,
+        11
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The compile error is `ic_off = tl.arange(0, IC)` where IC=3 \u2014 `tl.arange` requires a power-of-two size. Replace with `tl.arange(0, 4)` (next pow2) and mask with `ic_off < IC`, or unroll IC with `tl.static_range`.\n- Move the `ic_off = tl.arange(...)` and any constant index math out of the innermost kw/kh loops to the kernel top to reduce redundant work.\n- Add `num_warps=2` (work per program is tiny since IC=3) and `num_stages=2`; the kernel is launched with only N*OC=2048 programs which is fine.",
+    "large_guidance": "- The current design uses one program per (N, OC) and serializes all POD*POH*POW*MP^3*KS^3 work inside it \u2014 that's ~30k\u00d727=800k FMAs per program with no parallelism across output spatial. Redesign to one program per (N, OC, pooled-spatial tile) so the global-avg reduction is a final cross-program sum (atomic add into the (N,OC) output, or a two-stage reduce), exposing far more parallelism on a 24SM GPU.\n- For ConvTranspose3d with stride=2, pad=1, ks=3: each output voxel only receives contributions from at most \u2308KS/STRIDE\u2309^3 = 2^3 = 8 input positions per (ic, oc) pair. Precompute the gather pattern (kd, kh, kw selections satisfying the stride-residue test) at host side and pass as small constexpr tables \u2014 eliminates the (id_r==0) masking branches inside the kernel and shrinks the inner loop from 27 to 8 weight taps per output.\n- Fuse maxpool with the convtranspose epilogue by having the kernel produce, per program, a tile of pooled outputs (pool window = 2^3 = 8 conv outputs reduced via tl.max), then do a final tl.sum over the pooled tile for global-avg, then clamp. This avoids ever materializing the full (N,OC,30,62,62) conv output.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 19,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.46894253048307527
+    ]
+}

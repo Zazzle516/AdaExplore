@@ -1,0 +1,29 @@
+{
+    "node_id": 39,
+    "parent_node_id": 38,
+    "context_node_ids": [
+        38
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.457835975629309,
+    "max_reward": 0.457835975629309,
+    "avg_reward": 0.457835975629309,
+    "score": [
+        1,
+        1,
+        0.577146798941799
+    ],
+    "small_guidance": "- The GEMM uses `input_precision=\"ieee\"` which disables TF32 / tensor-core fast path on a 4090 \u2014 switch to `\"tf32\"` (or remove the arg) to get the 2\u00d7 tensor-core throughput, and re-sweep tiles (try 128\u00d7256\u00d764 num_warps=8 stages=3 and 256\u00d7128\u00d732) for the 16384\u00d74096\u00d74096 shape.\n- The BN apply kernel uses tiny 64\u00d764 tiles with num_warps=4; widen to 128\u00d7128 or 64\u00d7256 (or one program per row of N with BLOCK_N=4096 since N=4096 fits) and num_warps=8, stages=3, so the elementwise pass is bandwidth-bound rather than launch-bound.\n- Fuse the BN-apply epilogue (subtract mean, mul invstd, mul \u03b3, add \u03b2) directly into the GEMM kernel's epilogue at eval time, and at train time precompute `mean/invstd` then do a single fused (x*scale - mean)*invstd*\u03b3+\u03b2 kernel \u2014 eliminating one full read/write of the 16384\u00d74096 tensor.",
+    "large_guidance": "- Restructure as two kernels only: (1) a tiled GEMM that fuses bias + per-N scale + BN affine into the epilogue when running in eval mode, writing the final output directly; (2) at train time, a GEMM-with-scale that also accumulates per-column `sum` and `sum_sq` via atomics or a split-K reduction so BN stats are produced without a second pass over the activations, followed by a single fused normalize-write kernel. This collapses the current 3-pass (gemm \u2192 stats \u2192 apply) BN-train path into 2 passes.\n- For the GEMM itself, target tensor cores: cast operands to fp16/bf16 inside the kernel (or keep fp32 with TF32 `tl.dot`), use BLOCK_M=128 BLOCK_N=256 BLOCK_K=64 with GROUP_M=8, num_warps=8, num_stages=3-4, and pre-transpose B once if stride pattern hurts vectorization. With M=N=K=4096\u00b7{16384,4096} this should be the dominant win.\n- Consider a persistent / split-K GEMM for the K=4096 reduction with a small split factor (2-4) so each SM stays busy across the 16384 M tiles, reducing tail effects on the 4090's 128 SMs.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 40,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.7791481785714286
+    ]
+}

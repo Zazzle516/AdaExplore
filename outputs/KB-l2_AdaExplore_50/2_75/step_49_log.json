@@ -1,0 +1,30 @@
+{
+    "node_id": 49,
+    "parent_node_id": 46,
+    "context_node_ids": [
+        37,
+        46
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM (1024\u00d78192 \u00d7 8192\u00d78192 fp32) dominates runtime at this scale; tuning gn_min/add_bias further yields negligible gains. If staying small, at least add `triton.autotune` over `num_warps\u2208{4,8}`, `num_stages\u2208{2,3}` for `gn_min_kernel` and use `BLOCK_M=128, BLOCK_N=128` with `GROUP_M=8` swizzling for `add_bias_kernel`.\n- Store the bias output as `(1, N, M, 1)` with N contiguous on the inner axis instead of M-inner \u2014 current layout writes strided in N which kills coalescing; switch the output stride so the inner dim matches `offs_m` contiguously, or reshape `(M, N)` then permute at the torch level.\n- Fuse the bias-add directly into `gn_min_kernel`'s epilogue: after computing the scalar min per row, broadcast-add the full bias vector and write `(M, N)` output in one kernel, eliminating the second launch entirely.",
+    "large_guidance": "- Replace `F.linear` with a custom tiled Triton GEMM (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8, num_warps=8, num_stages=3) that fuses the linear bias add. The 1024\u00d78192\u00d78192 fp32 matmul is the runtime floor \u2014 cuBLAS fp32 here is the bottleneck, and a custom kernel can fuse the GroupNorm reduction prelude or at least save the write-read round trip.\n- Fuse GEMM \u2192 GroupNorm \u2192 row-min into a single persistent kernel: each program owns a row (or row tile), computes the full GEMM output for that row into registers/SMEM, runs the per-group mean/var reduction, normalizes, then reduces across all N to produce the scalar min \u2014 no intermediate `gemm_out` materialization saves ~32MB of HBM traffic.\n- Final output is `(1, N, M, 1) = bias + min_per_row`; this is effectively an outer-product broadcast. Emit it via a tiny epilogue kernel reading the scalar mins and bias vector, with N as the contiguous inner dim. Confirm downstream consumers actually need the 4D layout \u2014 if they reduce or reshape, a `(M, N)` layout may be cheaper.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 50,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

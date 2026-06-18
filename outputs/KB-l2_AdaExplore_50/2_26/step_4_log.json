@@ -1,0 +1,29 @@
+{
+    "node_id": 4,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.43664469226243013,
+    "max_reward": 0.43664469226243013,
+    "avg_reward": 0.43664469226243013,
+    "score": [
+        1,
+        1,
+        0.4023187111650485
+    ],
+    "small_guidance": "- The conv_transpose3d dominates runtime (output is 128\u00d764\u00d732\u00d732\u00d732 \u2248 268M elements); the elementwise kernel is already cheap. Tuning BLOCK_SIZE/num_warps further on the tail won't move fast_p past ~0.5. Skip pure elementwise tuning.\n- If staying small: try a vectorized load path (BLOCK_SIZE=8192, num_warps=8, num_stages=3) and ensure tensors are passed in contiguous channels-last-3d so the elementwise pass coalesces, but expect <5% impact.\n- Verify bias semantics \u2014 the reference defines `self.bias` but never uses it in forward; current kernel correctly omits it. Keep it omitted.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: for each input element `x[n,ic,d,h,w]` and kernel tap `(kd,kh,kw)`, scatter `x * W[ic,oc,kd,kh,kw]` into `out[n,oc, d*stride - pad + kd, ...]` using atomic adds, with stride=2, pad=1, output_padding=1 producing exact 32\u00b3 spatial output. Fuse the `+ add_input` and `v * hardswish(v)` epilogue by initializing the output buffer with `add_input` (single copy) and applying the activation in a separate cheap pass \u2014 or better, run the activation as a second kernel after the scatter completes.\n- Alternative (preferred on Ampere): formulate convT3d as a GEMM \u2014 reshape input to `(N*D*H*W, IC)`, weight to `(IC, OC*kd*kh*kw)`, run a tiled GEMM producing `(N*D*H*W, OC*kd*kh*kw)`, then col2im scatter-add into the output grid. This avoids atomic contention in the GEMM phase; only the col2im phase needs atomics (or use a gather-based output kernel where each output voxel sums its contributing taps).\n- Best layout: gather-based direct convT3d kernel \u2014 one program per `(N, OC tile, output spatial tile)`, loop over `(kd,kh,kw,ic)` computing which input voxel contributes (only when `(od+pad-kd) % stride == 0` and in bounds), accumulate into registers, then fuse bias-free `+ add_input` load and hardswish epilogue before the single store. This eliminates atomics entirely and fuses the full forward into one kernel.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 5,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.4023187111650485
+    ]
+}

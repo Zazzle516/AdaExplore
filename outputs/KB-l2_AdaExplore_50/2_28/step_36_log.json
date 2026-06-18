@@ -1,0 +1,29 @@
+{
+    "node_id": 36,
+    "parent_node_id": 21,
+    "context_node_ids": [
+        21
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing with avg_diff ~1e-4 \u2014 likely the InstanceNorm semantics are off. Re-check: `x.unsqueeze(1).unsqueeze(1)` produces shape `(B, 1, 1, out_features)`, and `InstanceNorm2d(out_features)` is constructed with `num_features=out_features` but receives C=1. With `affine=False` (default), PyTorch's InstanceNorm2d actually normalizes over the spatial dims `(H, W)` per `(N, C)` \u2014 so it reduces over `1 * out_features` for each `(n, 0)`. Your kernel matches this. The diff may be due to using `BLOCK_N >= next_pow2(8192) = 8192` with `num_warps=16` (unsupported on Ampere \u2014 max is 8). Drop to `num_warps=8` and verify.\n- Use a 2-pass or Welford reduction in fp32 inside the norm kernel; current single-pass `sum(x)` then `sum((x-mean)^2)` should be fine, but ensure the load is cast to fp32 before reduction (already done). Try `num_stages=3`.\n- Add autotune to `fused_norm_addmul_kernel` over `num_warps \u2208 {4, 8}` keyed on `N`; for N=8192, `BLOCK_N=8192` with `num_warps=8` is the sweet spot.",
+    "large_guidance": "- The GEMM `(1024, 8192) @ (8192, 8192)` dominates runtime (~137 GFLOPs). Consider a split-K GEMM since K=8192 is large and M=1024 is moderate; or use a persistent GEMM with a larger tile (BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_stages=4) and pre-transpose the weight into a `(K, N)` contiguous buffer at init to make the B-load fully contiguous on the inner axis.\n- Fuse the bias add + the entire instance-norm + add-y + mul-y into the GEMM epilogue is impossible (norm needs full row), but you *can* fuse bias+row-reduction prep by emitting a partial row-sum from the GEMM and only re-reading once. Alternatively, split into: (1) GEMM writing fp32 output, (2) single-pass Welford norm kernel that also fuses `(normed + y) * y`. Make sure the norm kernel processes one row per program with persistent threads.\n- For RTX 4090 (Ada, not Ampere as stated), prefer `tf32` dot or fp16 accumulation paths via `tl.dot(..., allow_tf32=True)` to get higher throughput on the GEMM.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 37,
+    "global_best_node_id": 28,
+    "global_best_score": [
+        1,
+        1,
+        0.8257900886245404
+    ]
+}

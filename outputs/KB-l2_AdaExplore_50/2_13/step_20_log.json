@@ -1,0 +1,29 @@
+{
+    "node_id": 20,
+    "parent_node_id": 19,
+    "context_node_ids": [
+        19
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.43979035824079304,
+    "max_reward": 0.43979035824079304,
+    "avg_reward": 0.43979035824079304,
+    "score": [
+        1,
+        1,
+        0.4282704554865424
+    ],
+    "small_guidance": "- The ConvTranspose3d (B=16, OC=64, D=32, H=W=128, k=3, s=1, p=1) dominates; the fused tail kernel is already cheap. Tuning BLOCK_C/BLOCK_D or num_warps on the tail kernel will not move fast_p \u2014 leave it alone and focus effort on the conv.\n- If staying with torch's conv, at least try `x = x.to(memory_format=torch.channels_last_3d)` and `self.conv_transpose.to(memory_format=torch.channels_last_3d)` in `__init__`/`forward` to let cuDNN pick a faster algo; also cache `bias.view(C)` once.\n- For the fused tail, since C=64 and D=32 are both small powers of two, drop the masks (compile-time `BLOCK_C==C`, `BLOCK_D==D`) and try num_warps=2 to cut launch overhead on the B*H*W=262144 grid.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton kernel. With stride=1, padding=1, kernel=3, ConvTranspose3d is equivalent to a regular Conv3d with the weight flipped on the spatial axes and dims swapped \u2014 implement it as a direct gather-style conv3d: one program per (N, OC tile, output spatial tile), looping over IC * 27 taps with a small register accumulator. This avoids the scatter-add cost and matches a standard im2col-GEMM pattern.\n- Fuse the depth-mean directly into the conv kernel: have each program iterate `d` over the full D=32 output range, accumulate into a single `(BLOCK_OC, BLOCK_HW)` accumulator (no per-d store), then divide by D in the epilogue. This eliminates the D=32\u00d7 write/read traffic of the intermediate `(B,64,32,128,128)` tensor (~64 MB \u2192 ~2 MB) and is the biggest single win available.\n- After the depth-collapsed accumulator, fuse bias-add, channel softmax, tanh, and scale in the same kernel by tiling programs as (B, HW-tile) with the full C=64 channel axis resident in registers/SMEM \u2014 C is small enough to hold all 64 channels per HW position. Use channels_last layout for the conv weight load and BLOCK_HW=64 or 128, num_warps=4, num_stages=3.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 21,
+    "global_best_node_id": 10,
+    "global_best_score": [
+        1,
+        1,
+        2.7991154262516913
+    ]
+}

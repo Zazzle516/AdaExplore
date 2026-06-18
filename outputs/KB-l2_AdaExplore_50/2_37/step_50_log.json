@@ -1,0 +1,29 @@
+{
+    "node_id": 50,
+    "parent_node_id": 49,
+    "context_node_ids": [
+        49
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure likely comes from writing GroupNorm output back into `Y` in-place while reading from it: the kernel reads `y` then stores `out` to the same `y_ptrs`, which is fine, but `y_f_masked` uses `mask_c` correctly. More likely culprit: the gemm epilogue uses `offs_am = ... % M` and `offs_bn = ... % N` which wraps for out-of-bounds tiles, then the store mask filters \u2014 this is OK. Check `self.group_norm.weight/bias` are on GPU; if not, move them in `__init__` via `.cuda()` or ensure forward moves them. Add `self.group_norm.weight.data` device sync.\n- The actual bug is probably that the GroupNorm kernel grid uses `pid_m` up to `M=32768` and `pid_g` up to `G=64`, which is fine, but `BLOCK_C = next_power_of_2(64) = 64`, so loads are exact. Re-examine: `out = (y_f - mean) * invstd * gamma + beta` \u2014 `gamma` and `beta` were loaded with `mask_c, other=0.0`, so masked lanes get `beta=0`, but those lanes are masked at store \u2014 OK. Try `num_warps=4` for the GN kernel and verify weights/bias are contiguous and on CUDA.\n- Tune autotune to include `BLOCK_M=64, BLOCK_N=256, BLOCK_K=64` and `BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, num_stages=3, num_warps=8` for K=1024.",
+    "large_guidance": "- Fuse GroupNorm into the GEMM epilogue is hard because the reduction is across N within a group (64 channels), while GEMM tiles N at 128+. Instead, redesign with two kernels: (1) GEMM+swish+bias writing to Y, (2) a GroupNorm kernel with one program per `(row, group)` using `BLOCK_C = C` (=64) \u2014 make BLOCK_C a true constexpr and avoid the mask entirely since C is a power of 2 and \u2264 BLOCK_C.\n- Consider laying out Y as `[M, G, C]` explicitly (which it already is by contiguous N=G*C) and load the C=64 channels as a single contiguous vector per program. Use `num_warps=2` (64 lanes) and persist the row to combine multiple groups per program for better launch efficiency: one program handles all G groups for a row, reducing launch count from M*G=2M to M.\n- The current GN kernel writes back fp32 `out` but `Y` is fp32 so OK. Verify GN affine params are moved to CUDA \u2014 the issue may be that `self.group_norm.weight` lives on CPU at first forward call if the module wasn't `.cuda()`'d; ensure forward calls `.to(x.device)` on params or register them properly.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 51,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

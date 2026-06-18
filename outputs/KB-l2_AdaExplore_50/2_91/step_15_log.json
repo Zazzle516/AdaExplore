@@ -1,0 +1,29 @@
+{
+    "node_id": 15,
+    "parent_node_id": 12,
+    "context_node_ids": [
+        12
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.07291122754491018
+    ],
+    "small_guidance": "- Increase `BLOCK_OW` to 64 or 128 and add a `triton.autotune` over `BLOCK_OW \u2208 {32,64,128}`, `num_warps \u2208 {4,8}`, `num_stages \u2208 {2,3}`; the current 32-wide tile under-utilizes the 128x128 output spatial grid and leaves the dot too small.\n- The inner `tl.dot(tl.trans(w_vals), x_vals)` is `[OC_C=128, IC=64] x [IC=64, BLOCK_OW=32]` \u2014 load weights as `[OC_C, IC_C]` directly (swap the layout so no `tl.trans` is needed) and reuse the weight tile across the kh/kw static unroll by hoisting the `ic_offs` math.\n- Cache the weight slice once per `(kh, kw)` outside any data-dependent guard and use `tl.multiple_of` / `tl.max_contiguous` hints on `iw` and `offs_ow` so the gather loads coalesce.",
+    "large_guidance": "- Switch from a gather-style transposed conv to the canonical **scatter-add as input\u00d7weight outer product into the output grid**: launch over `(N, IC tile, IH*IW tile)`, compute the `[OC, KH*KW]` contribution and atomically (or via deterministic accumulation with one program per output tile) add into the proper `(oh, ow)` locations. This matches the stride-2 / pad-1 / out-pad-1 geometry naturally and removes the modulo+divide validity checks per output pixel.\n- Alternatively, materialize the conv as an **implicit-GEMM with channels-last layout**: one program per `(N, OH tile, OC tile)`, K-loop over `IC * KH * KW`, with index math hoisted; this gives a real GEMM tile (e.g. 64\u00d7128\u00d732) that uses tensor cores via `tl.dot` on fp16/bf16 accumulators, currently the dot is tiny because BLOCK_OW=32.\n- Split the pipeline into **two kernels**: (1) a tuned conv-transpose GEMM writing `[N, OC, OH, OW]`, (2) a fused softmax-bias-scale-sigmoid over the channel axis with one program per `(N, oh, ow)` tile and channel-vectorized reduction. The current monolithic kernel forces `OC_C=128` to be resident in every program, ballooning register pressure and limiting occupancy \u2014 separating concerns lets each kernel pick its own optimal tile.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 16,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.0969527027027028
+    ]
+}

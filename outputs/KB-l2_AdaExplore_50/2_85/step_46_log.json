@@ -1,0 +1,30 @@
+{
+    "node_id": 46,
+    "parent_node_id": 34,
+    "context_node_ids": [
+        33,
+        34
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4981153875523704,
+    "max_reward": 0.4981153875523704,
+    "avg_reward": 0.4981153875523704,
+    "score": [
+        1,
+        1,
+        0.9094519473070557
+    ],
+    "small_guidance": "- The current kernel uses one program per `(N, G)` = 128*16 = 2048 programs but each does CPG=4 channels \u00d7 H_out=32 rows of work sequentially; split the per-channel/per-row work across more programs by using a 3D grid `(N*G, CPG, H_out)` or `(N*G, CPG)` so the GPU has more parallelism and shorter critical paths.\n- The inner `for ph in range(P)` loads a full `W_C=128` row P=4 times per `oh`; instead load all H rows once into shared registers for the channel (H*W=16384 fp32 is too big), or restructure so each `(oh)` iteration reuses loads \u2014 alternatively process `BLOCK_OH` output rows together so adjacent `ih` rows are loaded once and pooled across.\n- Add autotune configs varying `BLOCK_SIZE` smaller (256) since GROUP_SIZE = 4*128*128 = 65536 and current 4096-8192 blocks loop only 8-16 times; try `num_warps=4` with persistent register tiles, and consider storing the normalized+scaled channel into shared memory once then doing maxpool as a second pass.",
+    "large_guidance": "- Restructure as two fused kernels: (1) compute per-group mean/rstd into a small `(N, G)` tensor with one program per group using a tight reduction kernel; (2) a separate fused-elementwise+maxpool+clamp kernel parallelized over `(N, C, H_out, W_out)` tiles that loads mean/rstd, applies affine+scale, pools the P\u00d7P window, and clamps. This removes the serial per-channel/per-row loop inside one giant program and exposes far more parallelism.\n- For the pool kernel, use a 2D tile over `(H_out_tile, W_out_tile)` per program (e.g. 8\u00d732 outputs = pool window 32\u00d7128 inputs) with `channels_last`-friendly indexing so each thread handles one output element via a P\u00d7P register reduction; this gives ~128*64*32*32/256 \u2248 32k programs which saturates the 4090.\n- Also consider folding the conv into a custom Triton im2col-GEMM kernel since at H=W=128, kh=kw=3, batch=128 the conv likely dominates the remaining runtime; with the current GN+pool+clamp already fused, replacing `nn.Conv2d` is the next big headroom move.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 47,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        0.9287336140344138
+    ]
+}

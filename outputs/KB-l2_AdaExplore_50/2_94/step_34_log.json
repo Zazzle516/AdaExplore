@@ -1,0 +1,29 @@
+{
+    "node_id": 34,
+    "parent_node_id": 33,
+    "context_node_ids": [
+        33
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing (max diff ~0.0026). The likely cause is the GroupNorm kernel using `num_warps=1` with `ROWS_PER_PROG=4` and `GROUP_SIZE=32` \u2014 fine functionally, but check the `eps` arg: it's passed as a Python float positional, which can be unstable. Pass `eps` as `tl.constexpr` (or cast to fp32 explicitly) and verify the reduction matches PyTorch's `GroupNorm` (which normalizes over `C//G` features per group per row \u2014 current layout matches, but double-check that `bias_total` cache is invalidated correctly when params update).\n- Use a more numerically stable Mish: `sp = tl.where(acc > 20.0, acc, tl.log(1.0 + tl.exp(acc)))` and `tanh` via the stable form `2*sigmoid(2*sp) - 1` to avoid exp overflow that may bias outputs.\n- For GEMM autotune, add a `BLOCK_M=64, BLOCK_N=64, BLOCK_K=64` config and try `num_stages=4` variants; M=1024, N=8192, K=8192 favors larger N tiles (256) with GROUP_M=8.",
+    "large_guidance": "- Keep the two-kernel split (fused GEMM+bias+hardtanh+mish, then GroupNorm) \u2014 it's the right factoring. A redesign should make the GroupNorm kernel persistent: one program per (row, group) with the 32-element group fully in registers, computing mean/var in a single pass via `sum(x)` and `sum(x*x)` and the identity `var = E[x\u00b2] - E[x]\u00b2`, removing the two-pass subtract.\n- Consider fusing GroupNorm's load directly with the GEMM epilogue when N tile aligns to group boundaries: have the GEMM kernel write tiles and a second pass reduce per-group. Alternatively, since `GROUP_SIZE=32` is tiny and `M=1024`, launch one program per (row_block of e.g. 16 rows, group) with `num_warps=4` and process all 256 groups' worth of work with high occupancy.\n- Verify the `_cached_wt` path: if eval-mode parameters are ever updated externally, the cache becomes stale and produces wrong outputs \u2014 this could explain the correctness failure. Drop the cache or key it on parameter `data_ptr()`.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 35,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

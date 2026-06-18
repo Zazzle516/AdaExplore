@@ -1,0 +1,27 @@
+{
+    "node_id": 19,
+    "parent_node_id": 9,
+    "context_node_ids": [],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure stems from accumulating row_acc in float32 via tl.sum after masking but the bias is added inside the n-tile loop before masking \u2014 this is fine, but the issue is likely that `wT = w.t().contiguous()` is correct yet the kernel reads `wT` with stride (N, 1) where stride_wk=N and stride_wn=1; verify by switching to using `w` directly with swapped strides (stride_wk=1, stride_wn=K) to avoid the extra transpose copy and confirm layout.\n- Add configs with larger BLOCK_N (256) and BLOCK_K (128) since K=N=8192 is huge; e.g. BLOCK_M=32, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4 to better amortize the K-loop.\n- The avg_difference ~0.013 suggests a systematic numerical issue, possibly from fp32 tl.dot with tf32 \u2014 pass `allow_tf32=False` to tl.dot or use `input_precision='ieee'` since summing 8192 fp32 products then summing across 8192 N elements amplifies tf32 error well above the 5e-2 tolerance.",
+    "large_guidance": "- Recognize that sum(linear(x), dim=1) = x @ W.sum(0).T + b.sum() algebraically \u2014 BUT this is exactly the forbidden shortcut. Instead, redesign as a fused two-stage kernel: stage 1 computes per-row partial sums of (x @ W^T + b) using a 2D grid over (M_tile, N_tile) writing partial sums to a (num_m_tiles, num_n_tiles) buffer; stage 2 reduces across N tiles. This keeps the full GEMM work but parallelizes across N.\n- Alternatively, use a single-program-per-row persistent kernel where each program iterates the full K and N dimensions, accumulating row_acc directly \u2014 but split N across multiple programs per row with atomic_add into a (M,) output to expose more parallelism (current kernel only has M/BLOCK_M = 32 programs for M=1024,BLOCK_M=32, which underutilizes the GPU).\n- Ensure the dot product uses IEEE fp32 (disable tf32) or accumulate in higher precision chunks, since the downstream reduction collapses to a single scalar per row and tf32 error compounds across K=8192.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 20,
+    "global_best_node_id": 11,
+    "global_best_score": [
+        1,
+        1,
+        0.6167747552424558
+    ]
+}

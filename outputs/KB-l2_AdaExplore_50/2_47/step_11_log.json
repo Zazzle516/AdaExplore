@@ -1,0 +1,29 @@
+{
+    "node_id": 11,
+    "parent_node_id": 10,
+    "context_node_ids": [
+        10
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.42940845472266526,
+    "max_reward": 0.42940845472266526,
+    "avg_reward": 0.42940845472266526,
+    "score": [
+        1,
+        1,
+        0.34261975146198825
+    ],
+    "small_guidance": "- The autotune space declares `BLOCK_N`/`BLOCK_K` but the launcher hard-codes `BLOCK_M=64` outside the configs \u2014 promote `BLOCK_M` into the autotune configs (try 32/64/128) so the OC tile can be co-tuned with `BLOCK_N`; with OC=64, a single `BLOCK_M=64` program covers all channels and frees the grid for larger spatial tiles.\n- Hoist the per-`(kd,kh,kw)` weight gather: load the full `(BLOCK_M, IC)` weight slab once per `(kd,kh,kw)` (or once per kh,kw with a kd inner loop) and reuse it across the spatial tile; currently the w load is inside the IC loop and re-reads identical weights. Equivalently, swap loop order so IC is the outermost K-accumulation and (kd,kh,kw) are static \u2014 this turns the GEMM-K dim into `IC*KD*KH*KW=864` which `tl.dot` can chew through with fewer redundant loads.\n- Add larger `BLOCK_N` configs (256, 512) with `num_warps=8`, `num_stages=3`, and consider `BLOCK_K=16` since IC=32 means BLOCK_K=32 already covers the channel dim in one shot \u2014 a smaller BLOCK_K only helps if IC grows.",
+    "large_guidance": "- Restructure as an implicit-GEMM with K = `IC*KD*KH*KW` (=864) as the contraction axis and N = `OD*OH*OW` (=120000) as the spatial axis: one program computes a `(BLOCK_M_oc, BLOCK_N_spatial)` output tile and iterates K in `BLOCK_K` chunks, computing `(ic, kd, kh, kw)` from the flat k index. This lets `tl.dot` run on a true GEMM shape and eliminates the triple-nested static loop with redundant weight loads.\n- Switch the output (and input) to channels-last (`NDHWC`) so the spatial axis is the contiguous one for the store and for the input gather along the K dim \u2014 this fixes the current strided per-channel loads/stores which are killing bandwidth on a 16\u00d764\u00d730\u00d762\u00d762 tensor.\n- Fuse bias + Mish + Tanh in the epilogue (already done) but also persist the program across the batch dim (`pid_b` loop inside the kernel) so the weight tile, once loaded, is reused across all N batches \u2014 weight reuse is the biggest single win since W is only 64\u00b732\u00b727\u00b74 B = 221 KB and fits comfortably in L2.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 12,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.001503888888889
+    ]
+}

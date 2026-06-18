@@ -1,0 +1,29 @@
+{
+    "node_id": 40,
+    "parent_node_id": 37,
+    "context_node_ids": [
+        37
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM dominates (M=N=K=8192, ~1.1 TFLOPs of work). Add larger autotune configs tuned for 4090: `BLOCK_M=128,BLOCK_N=256,BLOCK_K=64,num_warps=8,num_stages=3` and `BLOCK_M=256,BLOCK_N=128,BLOCK_K=64,num_warps=8,num_stages=3`, and consider `BLOCK_K=128` variants since K=8192 is huge \u2014 deeper K tiles cut loop overhead.\n- Avoid the `weight.t().contiguous()` materialization on every forward \u2014 it's an 8192x8192 fp32 transpose (256 MB) on the hot path. Either cache `w_t` as a buffer in `__init__`, or change the kernel to load B with `stride_bk=1, stride_bn=K` (i.e. consume the original row-major weight directly with swapped strides).\n- In `gn_min_kernel`, NUM_GROUPS=512, GROUP_SIZE=16 \u2192 tile is [512,16]=8192 elements per row, fine. Bump `num_warps=16` is invalid; try `num_warps=4` with `num_stages=3`. Also fuse the final bias-add into `gn_min_kernel` by writing directly into the [1,N,M,1] output (each row produces one scalar broadcast across N) \u2014 eliminates the third kernel entirely.",
+    "large_guidance": "- Cache the transposed weight once at `__init__` (register as a buffer) so the GEMM kernel sees a K-contiguous B without per-forward transpose. Alternatively, write a GEMM that takes `weight` in its native `[N,K]` layout (B is `weight`, loaded as `b_ptrs = W + offs_n[None,:]*K + offs_k[:,None]`) \u2014 this removes the 256 MB transpose copy that currently runs every forward.\n- Collapse the post-GEMM pipeline into a single kernel: after the GEMM writes `gemm_out [M,N]`, launch one program per `(m_tile, n_tile)` of the final `[1,N,M,1]` output that (a) reads the row's already-computed GN-min scalar from a small `[M]` scratch and (b) adds bias[n]. Better: split into two kernels only \u2014 `gemm_bias` and a fused `gn_min_addbias` that reads `gemm_out`, computes per-row min after GN, and scatters `min[m] + bias[n]` into the output in one pass.\n- Since GN+min reduces a full [M,N]=[1024,8192] tensor to [M], and the next op broadcasts back to [M,N], consider a persistent reduction kernel: one program per row, two-pass over groups using `BLOCK_GS=GROUP_SIZE`, computing per-group `(mean, invstd)` then a streaming min over normalized values \u2014 this avoids the [NUM_GROUPS, GROUP_SIZE] full-row materialization in registers (currently 8192 fp32 per program = heavy register pressure on 4090).",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 41,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

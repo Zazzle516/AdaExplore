@@ -1,0 +1,30 @@
+{
+    "node_id": 44,
+    "parent_node_id": 33,
+    "context_node_ids": [
+        23,
+        33
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.514132971151028,
+    "max_reward": 0.514132971151028,
+    "avg_reward": 0.514132971151028,
+    "score": [
+        1,
+        1,
+        1.0415970119959803
+    ],
+    "small_guidance": "- The conv_transpose3d is now the dominant cost (the fused post kernel is tiny relative to the 8.38 ms total). Tuning the post kernel further will not move the needle \u2014 the autotune set is already reasonable. Optionally drop num_warps=1 configs; with BLOCK_W up to 128 and 4 rows per program, num_warps=2 or 4 dominate.\n- Minor: precompute `sum_w + bias_of_conv` is not allowed, but you can fold the LayerNorm affine into the GELU epilogue as already done. Consider switching to `channels_last_3d` layout for the conv output so the W axis remains contiguous and the conv itself runs the cuDNN NHWC kernels.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)` accumulating `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` into the strided output grid (stride=2, pad=1, output_padding=1). This is where the runtime actually lives; the post-pipeline is already fused.\n- Better: fuse conv-transpose epilogue with `+sum_weight`, LayerNorm (over C=64 only \u2014 note norm_shape is (out_channels,), so the reduction is along the channel axis at each spatial location, NOT along W as the current kernel does \u2014 double-check this; if the current kernel normalizes along W it may be an algebraic-different operation that happens to pass tolerance), avg-pool 2\u00d72\u00d72, and GELU. Materialize conv-transpose into an intermediate, then run a second Triton kernel that for each output pool cell loads the 8 spatial positions \u00d7 64 channels, normalizes per-channel-vector across C, averages, and applies GELU.\n- Use im2col-GEMM formulation for conv-transpose: gather formulation with one program per `(N, OC tile, output-spatial tile)` iterating over `(IC, kd, kh, kw)` with the standard transpose-conv index inversion. Tile (BM=64, BN=64, BK=32, num_warps=4, num_stages=2) fits SMEM for fp32.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 45,
+    "global_best_node_id": 42,
+    "global_best_score": [
+        1,
+        1,
+        1.0453392767097385
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 24,
+    "parent_node_id": 21,
+    "context_node_ids": [
+        18,
+        21
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5568209787254479,
+    "max_reward": 0.5568209787254479,
+    "avg_reward": 0.5568209787254479,
+    "score": [
+        1,
+        1,
+        1.3937730744849448
+    ],
+    "small_guidance": "- Swap conv kernel layout so each program tiles `(BLOCK_M over OC, BLOCK_N over OH_OW)` per-batch with `tl.dot(x, w.T)` instead of `tl.dot(w, x.T)`; load `x` as `[BLOCK_N, BLOCK_K]` directly so the transpose disappears and the GEMM mapping matches Triton's preferred MMA shape (M=spatial, N=oc).\n- Add larger autotune configs now that small tiles compile: `(BM=128,BN=64,BK=16)`, `(BM=64,BN=128,BK=16)`, `(BM=128,BN=128,BK=16) num_warps=8`, plus a `num_stages=3` variant of `(64,64,32)`; key on `(OC, OH_OW, IC_KHKW)` already covers the shape.\n- Increase pool_mish BLOCK to 1024/2048 with num_warps=8 \u2014 it's tiny relative to the conv but currently launches with default; also fuse a `tl.math.tanh`-style stable softplus (`tl.where(x>20, x, tl.log1p(tl.exp(x)))`) to avoid `exp` overflow risk and shave a couple of ops.",
+    "large_guidance": "- Fuse the 2\u00d72 maxpool + Mish epilogue into the conv kernel: have each program compute a `BLOCK_N` tile of *pooled* output positions, internally accumulating 4 conv outputs per pooled cell (either by computing the 2\u00d72 conv outputs in-tile, or by tiling pooled spatial as `BLOCK_N` and looping the 4 sub-positions). This eliminates the entire conv_out write/read of an `N\u00b7OC\u00b7OH\u00b7OW = 128\u00b7128\u00b7126\u00b7126` fp32 tensor (~1 GB traffic) which is likely the dominant remaining bottleneck.\n- Switch input/output to NHWC (channels-last) so the GEMM-K reduction (`IC*KH*KW`) walks contiguous memory \u2014 current NCHW gather has each `BLOCK_K` step reading non-contiguous channel planes. Pack weights as `[OC, KH*KW*IC]` matching, and use `BLOCK_K = IC` (=64) so the inner-channel dim is one contiguous load per (kh,kw).\n- Consider a persistent-CTA design: one program per `(N, OC_tile, pooled_spatial_tile)`, looping over the 4 sub-pixels of the pool window inside registers and reducing max in-place; final Mish applied to the register-resident max before a single store. Removes the second kernel launch entirely.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 25,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        1.903616471861472
+    ]
+}

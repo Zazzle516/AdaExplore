@@ -1,0 +1,29 @@
+{
+    "node_id": 5,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness fails because in training mode the kernel computes Mish (softplus\u2192tanh\u2192mul) but then feeds that into `self.bn` which expects raw conv output statistics; this changes BN running stats and output. Either always compute the fused activation path AND let BN see the post-activation tensor (this is actually what the reference does \u2014 reference also calls bn on the post-activation tensor), so re-check: the bug is more likely the activation accuracy. Recompute Mish using `tl.softplus` semantics via `tl.log1p(tl.exp(x))` guarded, and use `tanh(sp)` directly as `2*sigmoid(2*sp)-1` to avoid the `(e^{2sp}-1)/(e^{2sp}+1)` overflow when `sp` is large; clamp `sp` before `exp(2*sp)`.\n- After fixing numerics, drop unsafe autotune configs (`128\u00d7128\u00d716` with stages=2 is fine but borderline) and add a `64\u00d7128\u00d732, warps=8` config; key autotune on `(OC, M_TOTAL, IC_KHKW)` as is.\n- Avoid the NHWC\u2194NCHW permute round-trips: write the output directly in NCHW by changing the store index math, eliminating two contiguous copies per forward.",
+    "large_guidance": "- Keep the implicit-GEMM im2col conv+Mish fusion, but make BN truly fused in eval and correct in train: in train mode, compute conv+Mish in the kernel, then run a separate small BN reduction kernel (per-channel mean/var over N\u00b7OH\u00b7OW) and a second elementwise kernel to apply affine + update running stats \u2014 this avoids the NHWC\u2192NCHW\u2192cuDNN-BN round trip.\n- Switch the data layout end-to-end to NHWC (channels-last) so the GEMM-N dimension (OC) is contiguous on both load and store, and the BN reduction is a contiguous stride-1 reduction over channels. Store output directly without a permute.\n- Consider a persistent-CTA conv kernel with one program per (OC tile, spatial tile) that iterates N internally, improving L2 reuse of weights since OC\u00d7IC\u00d7KH\u00d7KW = 128\u00b764\u00b79 is tiny (~288 KB) and fits easily; weights can be staged once per program.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 6,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.34309302
+    ]
+}

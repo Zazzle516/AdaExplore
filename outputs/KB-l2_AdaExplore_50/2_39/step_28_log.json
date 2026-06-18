@@ -1,0 +1,27 @@
+{
+    "node_id": 28,
+    "parent_node_id": 27,
+    "context_node_ids": [],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing (avg_diff ~3e-4) likely because the eval-path fused constant `B = (b * scale - running_mean) * gamma * inv + beta` is wrong: BN normalizes `(x*scale) - running_mean`, so the bias term must be `(b*scale - running_mean) * gamma * inv + beta`, but `b*scale` is per-output-feature already \u2014 verify the broadcast and ensure `scale` is shape `(N,)` not `(1,N)`. More importantly, double-check that `self.bn.running_var` and the eps live on the same device/dtype path used to build A/B (cast to fp32 before rsqrt to match torch's reference precision).\n- The training-path stats kernel uses biased var (`s2/M - mean^2`) for the *current-batch* normalization which is correct, but the running_var update should be unbiased \u2014 confirm `M/(M-1)` factor and that update happens before normalization read. Also `bs[:N] = scale; bs[N:] = b*scale` \u2014 BN running_mean update should use the post-`(linear+scale)` mean which is what bn_stats reads from `y`, OK.\n- Add larger autotune tiles for M=16384, N=4096, K=4096 (e.g. `BLOCK_M=128,BLOCK_N=256,BLOCK_K=64,num_warps=8,num_stages=3` and `256x128x64`); K=4096 benefits from BLOCK_K=64 with num_stages=3-4 to overlap loads.",
+    "large_guidance": "- Eval path: collapse the entire forward into a single GEMM-with-epilogue kernel by pre-computing on host once per call `A=(scale*gamma)*rsqrt(var+eps)` and `B=(b*scale - running_mean)*gamma*rsqrt(var+eps)+beta`, both shape (N,), and fuse `acc*A+B` into the store. This is what the current kernel attempts; the redesign should focus on a persistent split-K or larger tiles (128x256x64) and use `tl.dot(..., out_dtype=tl.float32)` with B pre-transposed to make the K loads contiguous along K.\n- Training path: instead of three kernels (GEMM \u2192 stats \u2192 apply), do a two-pass design: kernel 1 = GEMM with scale+bias epilogue writing y AND atomically/blockwise accumulating per-N partial sums and sum-of-squares into workspace tiles; kernel 2 = small reduction over M-tiles to produce mean/var and then apply normalization in-place. This avoids re-reading the entire MxN tensor a third time.\n- Consider channels-last/transposed weight layout: store `W^T` once at init (`out_features, in_features` is already that, but ensure the inner `tl.load` of W is along K contiguously \u2014 currently `stride_wk` is the inner stride which is correct since Linear weight is `[N,K]` row-major). Verify and possibly swap the indexing so `w` is loaded as `[BLOCK_K, BLOCK_N]` directly without the `[None,:]/[:,None]` swap.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 29,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.7791481785714286
+    ]
+}

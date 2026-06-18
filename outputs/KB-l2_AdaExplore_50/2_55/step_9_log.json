@@ -1,0 +1,29 @@
+{
+    "node_id": 9,
+    "parent_node_id": 8,
+    "context_node_ids": [
+        8
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The current kernel uses BLOCK_M tiles as small as 16-64 but reloads X for every BLOCK_N step across the full K=32768 axis \u2014 hoist the K loop outside the N loop (compute the full M\u00d7N row once, or stream X once and accumulate pooled sums per N-tile). Add autotune configs with larger BLOCK_M (64, 128) and BLOCK_N (256) with num_stages=4, num_warps=8 to amortize X loads.\n- Add a `tl.max_contiguous` / `tl.multiple_of` hint on offs_k and offs_n and ensure W is pre-transposed (K-contiguous) once in `__init__` so the inner `tl.dot` loads B as `[BLOCK_K, BLOCK_N]` contiguously instead of strided.\n- Cache the bias load outside the K loop (already done) but also try fusing pool+sum reduction with `tl.reshape` into `(BLOCK_M, POOLED, KERNEL_SIZE)` using KERNEL_SIZE=2 specialization \u2014 replace max+sum with a single pairwise max over even/odd lanes via `tl.maximum(acc[:, ::2], acc[:, 1::2])` to halve the reduction work.",
+    "large_guidance": "- The reference is dominated by a 128\u00d732768\u00d732768 GEMM (~275 GFLOPs). The current design redundantly re-loads X across every BLOCK_N step of N=32768 \u2014 restructure as a split-K / persistent GEMM: one program per (BLOCK_M \u00d7 BLOCK_N) tile with a standard GROUP_M swizzle, write partial pooled-sums to a small workspace, then a tiny second kernel reduces across N tiles and applies scale. This recovers full L2 reuse of X.\n- Alternative: keep single-kernel fusion but make it row-persistent \u2014 one program per BLOCK_M rows, stream K once into shared/registers (K=32768 is too big to keep resident, so tile K outermost), and for each K-tile sweep all N tiles accumulating pooled partial sums in a `(BLOCK_M, N/BLOCK_N)` register buffer. This trades N-tile register pressure for eliminating repeated X loads.\n- Since pool kernel_size=2 and the pooled+sum reduces N down to a scalar per row, consider fp16/bf16 inputs for `tl.dot` with fp32 accumulator (cast X and W to bf16 on the fly or store W as bf16 in init) \u2014 this doubles tensor-core throughput on the 4090 and the loose 5e-2 tolerance easily accommodates it.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 10,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

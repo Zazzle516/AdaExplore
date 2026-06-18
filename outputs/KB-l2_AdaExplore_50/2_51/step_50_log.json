@@ -1,0 +1,31 @@
+{
+    "node_id": 50,
+    "parent_node_id": 49,
+    "context_node_ids": [
+        13,
+        48,
+        49
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure stems from atomic-add accumulation order: `tl.atomic_add` on fp32 produces non-deterministic, slightly-different sums across runs, but more importantly the kernel zeros masked-out positions before summing \u2014 that's fine, but multiple programs along N atomically add partial sums to the same row, and the GELU output is then broadcast-added to all in_features positions, so any small drift gets amplified. Replace the atomic-add scheme with a two-stage reduction: write per-(row, n-tile) partials to a `(B, num_n_tiles)` buffer, then a second kernel reduces along the tile axis deterministically.\n- Alternatively, since `mean(y) = (1/N)\u00b7(x\u00b7sum(W, dim=0) + sum(bias - subtract))` algebraically \u2014 but that violates the safety contract. Instead, keep the GEMM but use one program per row block spanning the full N (BLOCK_N = OUT_F or large), so a single program owns the row sum and no atomics are needed.\n- Increase `BLOCK_F` in the residual kernel only after correctness is fixed; current 4096 with num_warps=8 is fine.",
+    "large_guidance": "- Redesign as a single fused kernel per row: each program handles one (or a few) rows of B, loops over K in BLOCK_K chunks and N in BLOCK_N chunks, accumulating a scalar row-sum of `(x\u00b7W^T + bias - subtract)` directly in registers. This eliminates atomics, eliminates the intermediate (B, out_features) materialization, and makes the reduction deterministic. Since output is just (B,), the GEMM's N dimension is purely a reduction axis here.\n- Better: split-K style \u2014 grid = (B, num_n_tiles), each program computes its row's partial sum over its N-tile (full K loop inside), writes to `partials[B, num_n_tiles]`. Then a tiny second kernel sums along tile axis and fuses mean/GELU/residual-broadcast-add into the final output write. Deterministic, no atomics, good occupancy.\n- Fuse the final stage (mean \u2192 logsumexp-of-singleton \u2192 GELU \u2192 broadcast-add to original_x) into the residual kernel as already done, but compute the GELU scalar once per row in a register rather than reloading rowsum per BLOCK_F tile.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 51,
+    "global_best_node_id": 36,
+    "global_best_score": [
+        1,
+        1,
+        1.66307092995426
+    ]
+}

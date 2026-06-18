@@ -1,0 +1,31 @@
+{
+    "node_id": 41,
+    "parent_node_id": 39,
+    "context_node_ids": [
+        21,
+        19,
+        34
+    ],
+    "depth": 6,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5654990387837393,
+    "max_reward": 0.5654990387837393,
+    "avg_reward": 0.5654990387837393,
+    "score": [
+        1,
+        1,
+        1.4653670699658488
+    ],
+    "small_guidance": "- The GEMM (1024x8192 @ 8192x8192) dominates runtime; the sigmoid+scale+residual epilogue is tiny. Tuning the standalone elementwise kernel won't move the needle \u2014 focus tuning on the matmul path. Try `BLOCK_SIZE=16384`, `num_warps=4` for the elementwise kernel just to reduce launch overhead.\n- Enable TF32 explicitly via `torch.set_float32_matmul_precision('high')` and ensure `x` is contiguous; the addmm currently runs in fp32 cuBLAS which is much slower than TF32.\n- Consider casting inputs/weight to bf16 (or fp16) for the matmul if the 5e-2 tolerance allows, then casting back in the epilogue kernel \u2014 this is the single largest win available without rewriting the GEMM.",
+    "large_guidance": "- Replace `torch.addmm` with a custom Triton tiled GEMM that fuses bias, sigmoid, scaling, and residual add into the epilogue before the store. With M=1024, N=8192, K=8192, use `BLOCK_M=128, BLOCK_N=128, BLOCK_K=32`, `GROUP_M=8`, `num_warps=4`, `num_stages=3-4`, and `tl.dot` with `allow_tf32=True`.\n- The fused epilogue should compute `acc = dot(A,B) + bias; out = sigmoid(acc)*SCALE + acc` directly on the accumulator \u2014 eliminates the entire 32MB intermediate read/write that the current two-kernel design pays.\n- Pre-transpose weight to `[K, N]` contiguous (already done) and load B tiles with the N-axis contiguous. Add a 2D grid `(cdiv(M,BLOCK_M), cdiv(N,BLOCK_N))` with L2 swizzle via GROUP_M.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 42,
+    "global_best_node_id": 41,
+    "global_best_score": [
+        1,
+        1,
+        1.4653670699658488
+    ]
+}

@@ -1,0 +1,27 @@
+{
+    "node_id": 1,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.44328491483515986,
+    "max_reward": 0.44328491483515986,
+    "avg_reward": 0.44328491483515986,
+    "score": [
+        1,
+        1,
+        0.45710054739006833
+    ],
+    "small_guidance": "- The runtime is dominated by `nn.ConvTranspose3d` + `nn.MaxPool3d`; tuning BLOCK/num_warps on the trivial reduction kernel (which operates on a tiny N*C=2048 outputs) cannot close the gap. If staying small, at least fuse the `* scale` into the reduction (already done via scale multiply) and consider fusing maxpool into the same kernel to skip one full pass.\n- Try `num_warps=2` with BLOCK matched to spatial size (D*H*W \u2248 16*16*16=4096 after maxpool) and `num_stages=2` to reduce launch/occupancy overhead on the tail reduction.\n- Replace the python-side `self.maxpool(x)` call by folding it into a fused maxpool+mean+scale+clamp kernel: one program per (N, C), iterate the post-conv tensor in BLOCK chunks, take max within each pool window and accumulate the mean in registers \u2014 eliminates one full read/write of the post-conv tensor.",
+    "large_guidance": "- The dominant cost is `ConvTranspose3d`. Per the skills, implement it as a scatter-add of `input \u00d7 kernel` outer product into the output grid, handling stride=2/padding=1 in the index math. One program per (N, OC tile, output-spatial tile); accumulate contributions from all (IC, kd, kh, kw) into the output tile.\n- Better: since the entire downstream pipeline is (scale \u2192 maxpool(2) \u2192 global-avg \u2192 clamp) \u2014 a pure reduction to a scalar per (N, C) \u2014 never materialize the full ConvTranspose3d output. Write a kernel where each program owns one (N, OC) pair and accumulates, in registers, the post-pool sum directly: enumerate maxpool output cells, for each cell compute the max over the 2\u00d72\u00d72 window of ConvTranspose values (each value is itself a small sum over IC \u00d7 in-kernel taps that hit that output coordinate), then accumulate into the running sum. This collapses three full tensor materializations into a single fused kernel writing N*C scalars.\n- Use channels_last (NDHWC) layout for the input so the IC reduction is contiguous; precompute per-output-coordinate the list of valid (kd,kh,kw,id,ih,iw) tap quadruples at init (small static table since stride/padding/kernel are fixed) and pass as a constexpr index table to avoid recomputing the transposed-conv index math at runtime.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 2,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.45710054739006833
+    ]
+}

@@ -1,0 +1,31 @@
+{
+    "node_id": 39,
+    "parent_node_id": 30,
+    "context_node_ids": [
+        22,
+        29,
+        30
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- Add larger-tile configs aimed at this square 128\u00d732768\u00d732768 GEMM: `BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, num_warps=4, num_stages=4` and `BLOCK_M=128, BLOCK_N=256, BLOCK_K=32, num_warps=8, num_stages=4`. Since M=128 is tiny, prefer `BLOCK_M=16` or `BLOCK_M=32` with very wide `BLOCK_N` (256/512) and deep `BLOCK_K` (64/128) so the few M tiles each fetch B more efficiently. Drop GROUP_M to 1 (only 1-8 M-blocks total \u2014 swizzle is useless and hurts L2 reuse on B).\n- Mark `K % BLOCK_K == 0` and remove masking in the K loop (already the case); also `tl.multiple_of`/`max_contiguous` the K offsets to encourage 128-bit vector loads on B.\n- Consider a split-K variant (atomic-add accumulate) since K=32768 is huge relative to M=128 \u2014 a 2- or 4-way split-K with `num_warps=8` would expose more SMs (currently grid = ceil(128/BM)*ceil(32768/BN), e.g. 2\u00d7128=256 tiles, fine, but each tile streams 32768 K serially \u2014 split-K shortens the critical path).",
+    "large_guidance": "- Reframe as a skinny-M GEMM (M=128): one program per N tile, fully persistent across the K dimension with split-K reduction. Use `BLOCK_M=128` (entire M in-register), `BLOCK_N=128\u2013256`, `BLOCK_K=32\u201364`, splitting K across the grid and using `tl.atomic_add` into an fp32 partial buffer, then a tiny epilogue kernel does bias+swish+scale. This converts the kernel from compute-light/bandwidth-bound (B is 4 GiB, read once = ~70 ms minimum at 600 GB/s; current 4.68 ms is suspiciously low \u2014 verify) to fully bandwidth-saturating.\n- Alternatively, fuse epilogue into the split-K final partial: launch a 2D persistent grid `(num_n_tiles,)` where each program loops over its K-shard, then a second pass merges. Keep weight pre-transposed as is.\n- Store the weight in fp16/bf16 (cast once at init) and do `tl.dot` with TF32/FP16 accumulate to fp32 \u2014 halves the 4 GiB B-tensor bandwidth, which dominates this workload. Bias/swish/scale stay in fp32 in the epilogue.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 40,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

@@ -1,0 +1,27 @@
+{
+    "node_id": 9,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.46076625440451024,
+    "max_reward": 0.46076625440451024,
+    "avg_reward": 0.46076625440451024,
+    "score": [
+        1,
+        1,
+        0.6013215988372093
+    ],
+    "small_guidance": "- The post kernel is tiny (~64 channels per (B,H,W) point); the bulk of 34ms is the torch ConvTranspose3d. Further tuning of `_post_kernel` (e.g., processing multiple HW points per program, `num_warps=2`) gives at most a fraction of a millisecond \u2014 not enough to close the 14ms gap.\n- If staying small, try `BLOCK_HW=8` so one program handles 8 spatial points \u00d7 64 channels (a [8,64] tile), with `num_warps=2`, `num_stages=2`, to amortize launch overhead on the B\u00b7H\u00b7W = 262144 grid.\n- Fold the mean-over-depth into a single kernel that reads conv output and writes the post-softmax-tanh-scale result, avoiding the intermediate (B,C,1,H,W) tensor write/read.",
+    "large_guidance": "- The dominant cost is `nn.ConvTranspose3d` over (16,16,32,128,128) \u2192 (16,64,32,128,128). With stride=1, padding=1, kernel=3, ConvTranspose3d is equivalent to a regular Conv3d with flipped weights (no upsampling). Replace it with a custom Triton conv kernel: one program per (N, OC tile, output spatial tile), implicit im2col over the 3\u00d73\u00d73 = 27 taps, GEMM-style accumulation with BLOCK_OC=32/64, BLOCK_SPATIAL=64, BLOCK_K=IC (16).\n- Fuse the depth-mean directly into the conv epilogue: accumulate over D inside the kernel (or have each program own a (H,W) tile and loop over all D output positions, summing into a single accumulator per (oc, h, w)), then divide by D, add bias, and store a (B, C, H, W) tensor \u2014 eliminating the full 32\u00d7 depth materialization.\n- Then run softmax-over-C + tanh + scale as a second small kernel on the (B,C,H,W) reduced tensor (already what the current post kernel does). The big win is killing the 32\u00d7 depth materialization plus using a tuned conv tile instead of cuDNN's transposed-conv path.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 10,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        1.9889868269230768
+    ]
+}

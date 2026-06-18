@@ -1,0 +1,27 @@
+{
+    "node_id": 26,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM with M=128, N=K=16384 is heavily N-skewed and M-light: drop small-N tiles and add `BLOCK_M=16/32, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4` configs; with M=128 you only need 4-8 row tiles, so prioritize larger K-pipelining over M tiling.\n- Add a `GROUP_M` block-swizzle (e.g. 8) in `linear_kernel` to improve L2 reuse of the weight tiles across the N grid dimension.\n- In `softmax_kernel`, since N=16384 fits, use a single-pass online softmax (track running max + rescale running sum) to cut 3 passes over 16384 cols down to 2; bump `BLOCK_SIZE` to 4096 with `num_warps=8, num_stages=2`.",
+    "large_guidance": "- Fuse bias+softmax into the GEMM epilogue via a split-K / persistent design: since each row's full N=16384 reduction is needed for softmax, use a persistent kernel where one program owns an entire row (or a row tile of M=8/16) and streams K in chunks, accumulating the full output row in registers/SMEM, then performs the row-max + exp + normalize in-place before storing. This eliminates the 128\u00d716384 intermediate write+read between linear and softmax (the dominant memory traffic at this shape).\n- Alternatively, since M=128 is tiny, use a split-N strategy: tile (M=128, N_tile=512) per program with full K reduction inside, write tile out, then a separate row-wise softmax that reads the materialized matrix once \u2014 but combine bias add into the GEMM epilogue (already done) and ensure the matmul output is written in a layout that the softmax reads coalesced.\n- Pre-transpose / store weight as (K, N) contiguous once at init so the inner-K load of W is a contiguous vector load rather than the current strided `stride_wn` outer / `stride_wk` inner pattern (weight is `(N, K)` row-major, so `stride_wn=K, stride_wk=1` \u2014 current code loads `[BLOCK_K, BLOCK_N]` which strides across N; transposing avoids this).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 27,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

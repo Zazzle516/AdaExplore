@@ -1,0 +1,29 @@
+{
+    "node_id": 47,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4146229923135174,
+    "max_reward": 0.4146229923135174,
+    "avg_reward": 0.4146229923135174,
+    "score": [
+        1,
+        1,
+        0.2206396865865184
+    ],
+    "small_guidance": "- The current forward still calls `F.conv_transpose3d` (the custom conv kernel is defined but unused). Wire `conv_transpose3d_triton` into `forward` so the heavy op actually runs through the Triton path, then absorb the BN affine and both avg-pools into the conv epilogue (single fused kernel: conv-transpose \u2192 BN scale/shift \u2192 /64 reduction over a 4\u00d74\u00d74 window).\n- The fused BN+pool kernel reloads `scale`/`shift` with `mask=mask` per-element using `c` as the index \u2014 replace with `tl.load(scale_ptr + c, mask=mask, other=0.0)` is fine but hoist it outside the 64-iter window loop (currently it's after the loop, that's OK; verify), and change BLOCK to 512/1024 with `num_warps=8` since the work per element is just 64 adds.\n- Add `@triton.autotune` over `(BLOCK_SPATIAL, num_warps, num_stages) \u2208 {(64,4,2),(128,4,2),(128,8,2),(256,8,2)}` keyed on `(OC, OD*OH*OW, IC*KD*KH*KW)` for the conv-transpose kernel.",
+    "large_guidance": "- Rewrite the conv-transpose as a scatter-add GEMM: for each `(N, IC tile, ID*IH*IW tile)` compute the outer product with `weight[IC, OC, KD,KH,KW]` and scatter-add into `out[N, OC, OD, OH, OW]` using stride/padding index math. With `stride=2, KD=KH=KW=3`, the gather formulation does ~27\u00d7 redundant validity checks per output; scatter does exactly `IC\u00b7KD\u00b7KH\u00b7KW` mults per input voxel and is the natural shape for ConvTranspose. Use `atomic_add` only across the IC reduction or accumulate per-program in a register tile.\n- Better: fuse the entire pipeline into one kernel by noting the output is `AvgPool(4) \u2218 BN \u2218 ConvTranspose`. Launch one program per `(N, OC, pooled_spatial_tile)` of shape `(OD/4, OH/4, OW/4) = (16,16,16)`. Each program computes a 4\u00d74\u00d74 conv-transpose output block, multiplies by the BN scale/shift, sums and divides by 64 \u2014 the intermediate 64-element block stays in registers, eliminating the 64\u00d716\u00d764\u00d764\u00d764 fp32 store/reload between conv and pool (~1 GB of traffic). This is the big win.\n- Use channels-last (NDHWC) layout for the conv-transpose output tile so the `OC` axis is the GEMM-N dimension and loads coalesce; keep weight reshaped to `(IC*KD*KH*KW, OC)` once at init.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 48,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        0.36042383585251137
+    ]
+}

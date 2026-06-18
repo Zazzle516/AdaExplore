@@ -1,0 +1,30 @@
+{
+    "node_id": 44,
+    "parent_node_id": 2,
+    "context_node_ids": [
+        1,
+        2
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The kernel is incorrect: it computes `sum_n(bias[n] + sum_k x[m,k]*w[n,k])` correctly in principle, but the accumulator `c` is masked only on N; rows beyond M are also masked but offs_m is broadcast into `tl.dot` without masking the K-loads on m. More importantly, the numerical mismatch (~0.05 abs) suggests an fp32 accumulation precision issue from summing 8192 outputs per row \u2014 switch to two-stage reduction using fp32 throughout (already fp32) and verify weight load layout: `w_ptrs = w_ptr + offs_n[None,:]*stride_wn + offs_k[:,None]*stride_wk` gives a (BLOCK_K, BLOCK_N) tile \u2014 confirm this matches `tl.dot(x:(M,K), w:(K,N))`. Looks correct, so the issue is likely the loose tolerance vs. the reference's per-op rounding order.\n- Add bias contribution once outside the N-loop as `sum(bias)` precomputed at host or reduce bias separately to avoid accumulating it inside the masked tile (cleaner numerics).\n- Try larger BLOCK_N (256) with num_warps=8, num_stages=4 to reduce N-loop iterations; also try persistent grid with one program per row group.",
+    "large_guidance": "- Redesign as a two-stage reduction: stage 1 computes `y[m,n] = x[m,:] @ w[n,:] + b[n]` partial row sums via a standard tiled GEMM where each program handles a (BLOCK_M, BLOCK_N) output tile and atomically adds (or writes to a partial buffer) the row-sum of its tile to `out[m]`. Stage 2 is a noop since downstream ops on a size-1 dim are identity. This separates the GEMM tile shape from the N-sweep and lets autotune pick true GEMM-optimal tiles.\n- Alternatively, exploit the algebraic identity that `sum_n linear(x)[m,n] = x[m,:] @ (sum_n w[n,:]) + sum(b)` \u2014 but this is a graph-level shortcut that violates the safety contract; do NOT do this. Keep the full GEMM at runtime.\n- Use split-K or a 2D grid `(cdiv(M,BLOCK_M), cdiv(N,BLOCK_N))` writing partial row sums to a `(num_n_tiles, M)` buffer, then a tiny second kernel reduces along the n-tile axis. This gives much better occupancy than the current single-program-per-row-group design that serializes the entire N dimension.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 45,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        0.8826896197781255
+    ]
+}

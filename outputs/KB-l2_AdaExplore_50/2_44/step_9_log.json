@@ -1,0 +1,30 @@
+{
+    "node_id": 9,
+    "parent_node_id": 8,
+    "context_node_ids": [
+        7,
+        8
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.43885615716332743,
+    "max_reward": 0.43885615716332743,
+    "avg_reward": 0.43885615716332743,
+    "score": [
+        1,
+        1,
+        0.42056329659745095
+    ],
+    "small_guidance": "- The current kernel computes the full conv-transpose output then reduces; since the final result is just per-channel mean, fuse the spatial sum directly into the conv accumulator: skip writing the `partial` tensor and have each program accumulate over its HW tile then atomic-add into a `(N, OC)` buffer. This removes the second kernel and a large intermediate.\n- Increase `BLOCK_HW` to 256 and try `BLOCK_OC=128, BLOCK_IC=64` configs with `num_warps=8, num_stages=3`; the inner `tl.dot((BLOCK_OC,BLOCK_IC) \u00d7 (BLOCK_IC,BLOCK_HW))` is the bottleneck and benefits from larger tiles given OH*OW = 256*256 = 65536.\n- Move the `IC` loop to the outermost position (over kh,kw inner) so the input gather is reused \u2014 currently `ic` is innermost inside `(kh,kw)`, causing redundant weight/input pointer arithmetic per kw iteration.",
+    "large_guidance": "- Switch from the gather-style \"for each output, find contributing inputs\" formulation to a scatter-add formulation that mirrors true conv-transpose: one program per `(N, IC tile, input-spatial tile)`, compute `input \u00d7 weight` outer product, scatter-add into a `(N, OC)` accumulator (the mean reduction makes the spatial scatter target collapse to a single per-channel scalar via atomic adds, or per-program-local reduction then one atomic per OC). This avoids the `(h_num % SH)==0` masking that wastes ~75% of threads in the current gather kernel with stride=2.\n- Since the final output is `(N, OC, 1, 1)`, fuse aggressively: each program computes `\u03a3_{h,w,kh,kw} x[n,ic,h,w] * w[ic,oc,kh,kw] * valid(oh,ow)` for its tile and atomically accumulates into `out[n,oc]`. The `valid(oh,ow)` mask depends only on (h,w,kh,kw,stride,padding,OH,OW) and excludes very few border positions \u2014 most (kh,kw) contribute a full input sum scaled by weight. Keep the full multiply-add count by iterating every (n, ic, h, w, oc, kh, kw); do not pre-reduce x or w.\n- Use channels-last input layout (NHWC) so IC is contiguous for the GEMM-K dimension, enabling vectorized loads in the outer-product kernel; add an autotune over `BLOCK_IC`/`BLOCK_OC`/`BLOCK_HW_IN` with `num_warps\u2208{4,8}`.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 10,
+    "global_best_node_id": 9,
+    "global_best_score": [
+        1,
+        1,
+        0.42056329659745095
+    ]
+}

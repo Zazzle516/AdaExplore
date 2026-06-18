@@ -1,0 +1,29 @@
+{
+    "node_id": 4,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4548883063908686,
+    "max_reward": 0.4548883063908686,
+    "avg_reward": 0.4548883063908686,
+    "score": [
+        1,
+        1,
+        0.5528285277246654
+    ],
+    "small_guidance": "- Add `triton.autotune` over conv3d configs sweeping `BLOCK_OC \u2208 {16,32}`, `BLOCK_SP \u2208 {64,128,256}`, `num_warps \u2208 {4,8}`, `num_stages \u2208 {2,3,4}`; current 16\u00d7128 is likely under-tiled given OC=16 (one program covers OC fully \u2014 try `BLOCK_OC=16, BLOCK_SP=256` first).\n- Hoist `IC*KD*KH*KW`, `ID*IH*IW`, `KH*KW`, and the per-(kd,kh,kw) weight base out of the inner `ic` loop; precompute spatial input base `(od*IH*IW + oh*IW + ow)` once and add `(kd*IH*IW + kh*IW + kw)` per kernel tap so the inner load is a single add.\n- In `fused_gn_min_clamp_kernel`, the two `min(y, min_value)` then `max(y, min_value)` collapses to `y = min_value` whenever `y < min_value`; just compute `y = tl.maximum(tl.minimum(y, min_value), min_value)` once (equivalent to clamping at `min_value` exactly since min_value==max for that branch) \u2014 and increase `BLOCK_SIZE` to 2048 with `num_warps=8` since GROUP_SIZE=2\u00d762\u00d762\u00d714\u2248108k per group.",
+    "large_guidance": "- Rewrite conv3d as an implicit-GEMM: one program per `(N, OC_tile, OHW_tile)` with a single OD loop outside, doing `tl.dot` over a K-tile of `IC*KD*KH*KW` (BLOCK_K=32 or 64). With OC=16, pad/tile so `BLOCK_M=16` uses `tl.dot` on 16\u00d7K \u00d7 K\u00d7BLOCK_N \u2014 current code is pure FMA accumulation with no tensor-core usage, which is the main reason conv3d dominates the 5.23 ms.\n- Switch the conv output layout to channels-last (N, OD, OH, OW, OC) so the fused GroupNorm can stream contiguously over the (channels_per_group \u00d7 spatial) reduction; alternatively keep NCDHW but have conv3d write directly into a layout that lets GN do one program per (N, group) with coalesced loads along the spatial axis (already the case) \u2014 the bigger win is fusing the conv epilogue with GN's first-pass sum/sum_sq when feasible (write conv output AND accumulate per-group partial sums in the same kernel via atomics or a second reduction pass).\n- Consider folding the conv bias and GN affine: since GN normalizes per group, the conv bias cannot be folded into GN weight directly, but the conv epilogue can write `(x+bias)` and the GN kernel can absorb its affine into the clamp epilogue (already done). Focus rewrite effort on the conv \u2014 it's the dominant cost.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 5,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.5528285277246654
+    ]
+}

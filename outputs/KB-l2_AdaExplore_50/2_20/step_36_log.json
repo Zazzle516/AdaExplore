@@ -1,0 +1,30 @@
+{
+    "node_id": 36,
+    "parent_node_id": 33,
+    "context_node_ids": [
+        31,
+        32
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4302693657365737,
+    "max_reward": 0.4302693657365737,
+    "avg_reward": 0.4302693657365737,
+    "score": [
+        1,
+        1,
+        0.34972226732673267
+    ],
+    "small_guidance": "- The epilogue kernel is already trivially memory-bound; further tuning of BLOCK_SIZE/num_warps won't close the gap because `conv_transpose3d` dominates runtime (~10ms vs 3.5ms baseline suggests the ConvTranspose3d itself is slower than cuDNN's path \u2014 likely the bias added overhead is small). Try BLOCK_SIZE=4096, num_warps=4, num_stages=2 to reduce register pressure on the simple elementwise op.\n- Compute `c_idx` only once per row by launching grid as `(N*C, S_tiles)` so bias load is broadcast and not gathered per-element.\n- Verify cuDNN is being used for ConvTranspose3d (channels_last_3d memory format may help, but cuDNN often prefers NCDHW for transposed conv).",
+    "large_guidance": "- The torch `ConvTranspose3d` is the dominant cost (epilogue is ~1% of work). Replace it with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)`, computing the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and `tl.atomic_add` into the output grid at strided/padded positions. Fuse conv bias + custom bias + the `(2x+b)*x + x` epilogue directly into a final pass.\n- Alternative: implement ConvTranspose3d as a gather-style GEMM where each output voxel `(n, oc, od, oh, ow)` loops over input positions whose strided projection lands on it (i.e., iterate over `kd,kh,kw` and check divisibility by stride). This avoids atomics. Tile as `(N*OC, output-spatial)` GEMM with `K = IC * (kd*kh*kw / stride^3)` effective taps per output. Fuse epilogue (bias + algebraic combination) into the same kernel.\n- Fold the conv bias and the parameter bias together at forward time (`combined_bias = conv_bias + self.bias.view(-1)`) and have the custom kernel apply `(2*x + combined_bias)*x + x` in the epilogue, eliminating the separate elementwise pass entirely.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 37,
+    "global_best_node_id": 30,
+    "global_best_score": [
+        1,
+        1,
+        0.7022256262425447
+    ]
+}

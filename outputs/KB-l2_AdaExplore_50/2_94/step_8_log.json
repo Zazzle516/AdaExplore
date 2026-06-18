@@ -1,0 +1,27 @@
+{
+    "node_id": 8,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness fails with avg_diff ~2e-4 \u2014 likely the GroupNorm reads `y` while only part of the GEMM grid output is materialized at the boundary, or more likely: tanh formula `(e^{2sp}-1)/(e^{2sp}+1)` is fine but `softplus` for negative `acc` \u2208 [-1,0] gives small values where `exp(2*sp)` is close to 1; numerical precision is OK. The real bug is likely `extra_bias` shape \u2014 bias is `(out_features,)` so fusing is valid, but check that `fused_bias` is contiguous fp32. Force `fused_bias = (self.linear_bias + self.extra_bias).contiguous()`.\n- More likely root cause: the reference applies Mish *after* Hardtanh, which clamps to [-1,1], but the running stats / numerics of `tl.exp(2*sp)` lose precision. Use `tl.sigmoid` based form: `mish(x) = x * tanh(softplus(x))`, compute `tanh` via `2*tl.sigmoid(2*sp) - 1` for better stability, or use the identity `mish(x) = x - x * 2/(exp(2*softplus(x))+1)`. Even better, since input is clamped to [-1,1], precompute via a stable form and ensure all intermediates stay fp32.\n- Verify the GroupNorm kernel: `gamma_ptr + grp * C + offs` is correct since gn_weight is `(out_features,)` laid out as `[g0c0..g0cC-1, g1c0..]`. Looks right. Add `tl.debug_barrier()` is unnecessary. The 2e-4 diff is too large for fp32 reduction noise on 32-element groups; suspect the bias fusion order \u2014 confirm reference adds `self.bias` (extra) after linear bias which is what fused_bias does. So the bug is numerical in mish path.",
+    "large_guidance": "- Keep the two-kernel design (fused GEMM+bias+hardtanh+mish, then GroupNorm) \u2014 it's the right structure. For a redesign, consider fusing GroupNorm into the GEMM epilogue only when BLOCK_N covers a full group (C=32 here, so BLOCK_N must be a multiple of 32 and groups must align): each program handles `BLOCK_M` rows \u00d7 `BLOCK_N` cols where BLOCK_N = k*C, then per-group reduce within registers and normalize before store. This eliminates a full read/write of an 8192\u00d71024 tensor.\n- Alternative: persistent GEMM with split-K disabled, BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3 \u2014 K=8192 is large, so deeper pipelining helps. Pre-transpose W once if strides hurt.\n- For GroupNorm with C=32 (very small), launch one program per row handling all G=256 groups in parallel via 2D tiling: BLOCK_G groups \u00d7 C lanes, doing reductions across the C axis only \u2014 better occupancy than 256k tiny programs.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 9,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

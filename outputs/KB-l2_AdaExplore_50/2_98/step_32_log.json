@@ -1,0 +1,29 @@
+{
+    "node_id": 32,
+    "parent_node_id": 29,
+    "context_node_ids": [
+        29
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.6004258986910327,
+    "max_reward": 0.6004258986910327,
+    "avg_reward": 0.6004258986910327,
+    "score": [
+        1,
+        1,
+        1.7535136642010192
+    ],
+    "small_guidance": "- Eliminate the second `row_max_reduce_kernel` launch by sizing `BLOCK_N == N` (8192) in one program per row \u2014 fuse matmul-pool-gelu-scale-max into a persistent row-kernel that keeps the full accumulator in registers/shared memory and emits a single scalar per row, removing the partial-tile write/read round-trip.\n- Add larger-N autotune configs (e.g. `BLOCK_N=512` with `BLOCK_M=32/64`, `num_warps=8`, `num_stages=3-4`) so the pool's 16-wide reduction happens over more pooled outputs per tile and reduces the number of M\u00d7N tiles (currently `M=1024, N=8192` \u21d2 many tiles); also try `BLOCK_K=128` to amortize K-loop overhead since K=8192.\n- Pre-bake `1.0/POOL_K` as a `tl.constexpr` and use the `tanh` approximation via `tl.tanh` (or keep the manual exp form but on the smaller pooled tensor \u2014 already done); ensure bias load is hoisted once and reused via the swizzle's L2 reuse.",
+    "large_guidance": "- Redesign as a **persistent one-program-per-row** kernel: each program owns one M row (or a small group of rows), streams the full K=8192 by N=8192 GEMM in `BLOCK_N` chunks along N, and maintains a running scalar `row_max` in registers. For each N-chunk: compute partial dot (loop over K in `BLOCK_K` tiles), add bias, pool (divide BLOCK_N by 16), GELU, scale, then `tl.max` into the running scalar. This removes the partial-tile materialization and the second reduction kernel entirely.\n- Alternatively, split-M tiling with `BLOCK_M=16-32` and `BLOCK_N=N` (the entire row) using `tl.dot` and accumulating across K \u2014 at N=8192, a single tile per row is feasible if `BLOCK_M` is small enough (shared-memory budget ~16\u00d78192\u00d74B = 512KB exceeds limits, so chunk N but keep row-max in registers as above).\n- Consider tf32 (`tl.dot(..., allow_tf32=True)`) and/or fp16 storage for `weight_T` with fp32 accumulate \u2014 the GEMM (1024\u00d78192\u00d78192 \u2248 137 GFLOPs) is the dominant cost, and tf32 on Ampere/Ada gives ~2x throughput while staying within the 5e-2 tolerance.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 33,
+    "global_best_node_id": 15,
+    "global_best_score": [
+        1,
+        1,
+        1.7535136642010192
+    ]
+}

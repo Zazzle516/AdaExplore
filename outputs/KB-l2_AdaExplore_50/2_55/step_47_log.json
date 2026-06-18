@@ -1,0 +1,29 @@
+{
+    "node_id": 47,
+    "parent_node_id": 46,
+    "context_node_ids": [
+        46
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness bug is atomic_add accumulation over the N grid: each pid_n computes a partial sum across BLOCK_N output columns, but the maxpool reshape `(BLOCK_M, BLOCK_N//KERNEL_SIZE, KERNEL_SIZE)` only pools within a tile \u2014 this is correct only if BLOCK_N is a multiple of KERNEL_SIZE AND tile boundaries align with kernel_size boundaries (true here since KERNEL_SIZE=2 and BLOCK_N is even). However the real issue is likely the autotuner choosing BLOCK_N values where the per-tile pool windows still align \u2014 verify, and add a guard/assert that BLOCK_N % KERNEL_SIZE == 0 in all configs.\n- More likely cause of mismatch: `torch.zeros` + `atomic_add` is fine for correctness, but the kernel atomically adds `partial` once per (pid_m, pid_n) \u2014 that's correct. Re-examine: bias is added every K-tile? No, bias is added once after the K-loop \u2014 correct. The bug may be that `_wt_cache` is captured before bias/weight initialization or stale across calls; force recompute every forward or hook into parameter updates. For benchmark, weights are fixed, so cache is OK.\n- Add `tl.assume`/masking on `offs_n < OUT_FEAT` for the weight and bias loads (currently unmasked) \u2014 if OUT_FEAT isn't divisible by BLOCK_N this reads OOB and corrupts results.",
+    "large_guidance": "- Restructure as a two-stage kernel: stage 1 is a standard tiled GEMM writing the full [B, OUT_FEAT] matmul+bias output (or fused with maxpool to [B, OUT_FEAT/2]); stage 2 is a row-wise reduction kernel that does maxpool+sum+scale per row with one program per batch row and BLOCK_SIZE over the pooled axis. This avoids cross-tile atomic accumulation entirely and removes the alignment hazard.\n- Alternatively, since M=128 is small and N=K=32768 is large, use a split-K-free design with one program per batch row group (BLOCK_M=16 or 32) that streams the full N axis in a persistent loop, fusing matmul\u2192bias\u2192pool\u2192sum\u2192scale entirely in registers and writing one scalar per row with a single non-atomic store. Grid becomes just `(cdiv(B, BLOCK_M),)`.\n- Cache `wt = weight.t().contiguous()` once in `__init__` (registered as a buffer) rather than lazily per-forward, and ensure bias/weight are moved to CUDA at construction; this avoids the `_wt_cache` device-check overhead and any staleness risk.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 48,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

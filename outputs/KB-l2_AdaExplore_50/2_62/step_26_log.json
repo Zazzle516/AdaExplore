@@ -1,0 +1,30 @@
+{
+    "node_id": 26,
+    "parent_node_id": 18,
+    "context_node_ids": [
+        3,
+        18
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The matmul (1024\u00d78192 \u00d7 8192\u00d78192) dominates runtime; the GN+LeakyReLU+double kernel is already memory-bound and small. Focus tuning on autotuning the addmm path \u2014 try `torch.matmul` with `tf32` enabled (`torch.backends.cuda.matmul.allow_tf32 = True`) or cast to fp16/bf16 for the matmul if precision permits under 5e-2 tolerance.\n- For the GN kernel: with ch_per_g=16 and gpp=16, BLOCK=256 \u2014 bump `num_warps` to 4 and try `num_stages=2`; also consider gpp=32 (BLOCK=512) to halve grid-y launches per row.\n- Wrap the GN kernel in `triton.autotune` over (gpp \u2208 {8,16,32}, num_warps \u2208 {2,4,8}, num_stages \u2208 {1,2,3}) keyed on (C, num_groups).",
+    "large_guidance": "- The matmul is ~99% of runtime here (1024\u00d78192\u00d78192 \u2248 137 GFLOPs per forward). Replace `torch.addmm` with a custom tiled Triton GEMM using `tl.dot`, BLOCK_M=128/BLOCK_N=128/BLOCK_K=32, GROUP_M=8 swizzle, and fuse the bias-add directly into the epilogue. This is where the headroom lives.\n- Go further and fuse GroupNorm's reduction into the GEMM epilogue: since each output row's groups are contiguous in N, a persistent GEMM that writes a full row tile can compute per-group sum/sum\u00b2 on the accumulator before storing, then apply affine + LeakyReLU + \u00d72 in one pass. This eliminates the full read-back of the 1024\u00d78192 matmul output.\n- If full fusion is too complex, at minimum use tf32/bf16 `tl.dot` accumulation in fp32 with bias+nothing-else epilogue, then keep the current GN kernel \u2014 that alone should cut runtime several-fold.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 27,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

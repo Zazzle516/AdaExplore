@@ -1,0 +1,30 @@
+{
+    "node_id": 15,
+    "parent_node_id": 14,
+    "context_node_ids": [
+        13,
+        14
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.648736000865801,
+    "max_reward": 0.648736000865801,
+    "avg_reward": 0.648736000865801,
+    "score": [
+        1,
+        1,
+        2.1520720071428574
+    ],
+    "small_guidance": "- Expand the autotune grid for `conv_transpose_pool_kernel` with `num_warps=8` and `num_stages=3/4`; current configs cap at 4 warps which under-utilizes the 8 pool-position accumulators per program. Also try issuing one program per `(N, pd, ph)` and looping `pw` internally to amortize the weight loads further.\n- In `fused_softmax_sub_swish_max_kernel`, sweep `BLOCK_S` \u2208 {32, 128, 256} and `num_warps` \u2208 {2, 4, 8}; with C=16 and a tile of [16, BLOCK_S], larger BLOCK_S improves occupancy and the channel-axis reductions stay cheap.\n- Precompute the `kd/SD`, `kh/SH`, `kw/SW` divisibility and bounds once per pool program and reuse across pool offsets (od0, od0+1) \u2014 avoid redoing `id_num % SD == 0` twice for the same kd. Hoist `IH*IW`, `ID*IH*IW` strides into scalars.",
+    "large_guidance": "- Switch the conv-transpose+pool kernel from a per-output-pixel gather to a scatter-add over input \u00d7 kernel: tile over `(N, IC, ID, IH, IW)` input voxels, compute the 27 output coordinates each contributes to, and atomically/locally accumulate. Since pool is 2\u00d72\u00d72 and stride is 2, every kd/kh/kw maps to a fixed pool cell \u2014 you can directly accumulate into the 8 pool accumulators without divisibility checks, eliminating the predicate overhead currently dominating the inner loop.\n- Alternatively, restructure as an im2col-style GEMM: one program per `(N, pool-spatial tile, OC tile)`, with the K dimension being `IC * KD * KH * KW`. Use a real `tl.dot` on `[BLOCK_M, BLOCK_K] x [BLOCK_K, BLOCK_N]` tiles. Right now the kernel is doing scalar FMAs across BLOCK_OC=16 with no tensor-core utilization.\n- Fuse the entire pipeline (conv_transpose + maxpool + softmax + sub + swish + channel-max) into a single persistent kernel per `(N, pool-spatial tile)`: produce all OC channels for that tile in registers, immediately do the softmax/sub/swish/max reduction across channels, and write one scalar per output. This eliminates the intermediate `pooled` tensor (N\u00b7OC\u00b7PD\u00b7PH\u00b7PW = 128\u00b716\u00b74\u00b78\u00b78 \u2248 524k writes+reads).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 16,
+    "global_best_node_id": 15,
+    "global_best_score": [
+        1,
+        1,
+        2.1520720071428574
+    ]
+}

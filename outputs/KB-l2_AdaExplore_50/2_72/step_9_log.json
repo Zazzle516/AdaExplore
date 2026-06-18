@@ -1,0 +1,29 @@
+{
+    "node_id": 9,
+    "parent_node_id": 7,
+    "context_node_ids": [
+        7
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4146229923135174,
+    "max_reward": 0.4146229923135174,
+    "avg_reward": 0.4146229923135174,
+    "score": [
+        1,
+        1,
+        0.2206396865865184
+    ],
+    "small_guidance": "- The conv_transpose3d call is the dominant cost (~26ms vs 5.8ms baseline means the torch op + extra fused kernel is slower than baseline); tuning BLOCK / num_warps on the tail BN+pool kernel will not close the gap. If staying small, at least merge the two avg_pool(2) ops correctly (currently done as 4x4x4) and switch input layout to channels_last_3d so the BN scale/shift gather is contiguous.\n- Use `@triton.autotune` over `{BLOCK: 128, 256, 512, 1024}` \u00d7 `{num_warps: 4, 8}` \u00d7 `{num_stages: 2, 3}` keyed on `(N*C*OD*OH*OW)`, and broadcast `scale[c]`/`shift[c]` via a per-program channel computation rather than a masked load with `mask=mask` (the current `tl.load(scale_ptr + c, mask=mask)` is correct but unnecessary; drop the mask to avoid extra predication).\n- Precompute `scale = gamma/sqrt(var+eps)` and `shift = beta - mean*scale` once at init (eval-only path) and cache as buffers; current code recomputes them every forward.",
+    "large_guidance": "- Replace `F.conv_transpose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)`, compute the `input \u00d7 weight` outer product and scatter-add into the output grid with stride=2, padding=1 index math. This is where the real headroom is \u2014 the torch op alone likely consumes >20ms of the 26ms.\n- Fuse BN (eval-time folded scale/shift) and the combined 4\u00d74\u00d74 average pool directly into the conv-transpose epilogue: after producing each output tile, accumulate into a pooled output buffer using atomic adds on the pooled location, or alternatively design the kernel as gather-style \u2014 one program per pooled output voxel, looping over the 4\u00d74\u00d74 window of conv-transpose outputs and computing each from scratch (this avoids materializing the full DxHxW conv-transpose output, but must still perform full multiply-add count IC\u00b7KD\u00b7KH\u00b7KW per output element to respect the contract).\n- Use channels_last_3d memory format end-to-end and tile GEMM-style with `BLOCK_OC \u00d7 BLOCK_SPATIAL` against `IC*KD*KH*KW` as the K dim; start with safe tiles `(BM=32, BN=32, BK=16)` num_warps=4 num_stages=2, then sweep upward via autotune.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 10,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        0.36042383585251137
+    ]
+}

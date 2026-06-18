@@ -1,0 +1,29 @@
+{
+    "node_id": 22,
+    "parent_node_id": 2,
+    "context_node_ids": [
+        2
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.48019857951085576,
+    "max_reward": 0.48019857951085576,
+    "avg_reward": 0.48019857951085576,
+    "score": [
+        1,
+        1,
+        0.7616382809645597
+    ],
+    "small_guidance": "- The GEMM-reduce kernel does redundant work: it materializes the full (BLOCK_M, BLOCK_N) tile and reduces along N every iteration. Skip the `tl.where(mask_n, ...)` (bias/sub already masked-loaded as 0) and accumulate `row_sum += tl.sum(acc, 1)` directly; also try larger BLOCK_M (128/256) with BLOCK_N=64 since N is fully reduced \u2014 wider M tiles amortize the K loop loads of x.\n- Add autotune configs with BLOCK_K=128 and num_stages=4 \u2014 K=8192 is huge and the inner K loop benefits from deeper pipelining; also try (BLOCK_M=128, BLOCK_N=64, BLOCK_K=64, num_warps=4) which reduces the cost of the per-N-tile epilogue.\n- The second kernel launches B*ceil(K/BLOCK) programs just to add a scalar to x \u2014 fuse the residual-add with a simple elementwise kernel using a 1D grid over B*K (BLOCK=4096, num_warps=8) and gather `g` via `tl.load(row_sum_ptr + row_idx)`; this halves launch overhead and improves coalescing.",
+    "large_guidance": "- The key insight: mean over N of (Wx+b-sub) is `(1/N) * (x \u00b7 sum_n(W[n,:]) + sum(b) - sum(sub))`. **Do not** precompute these sums at init time (safety contract). Instead, run a Triton kernel that at runtime computes `col_sum_W = sum over rows of W` (a reduction kernel over W), plus `sum(b)-sum(sub)` scalars, then a second kernel computes `g = GELU((x \u00b7 col_sum_W + C)/N)` per row and fuses the residual add. This executes every operator at runtime but avoids materializing the (B,N) GEMM output entirely \u2014 turning an 8192\u00d78192\u00d72048 GEMM into an 8192-element reduction of W plus a (B,K) matvec.\n- Alternative legitimate redesign: keep the full GEMM but split-K across programs using atomic adds into row_sum, with one program per (M_tile, K_split). This parallelizes the K=8192 reduction that currently serializes inside each program and should significantly improve SM occupancy on the 4090.\n- Fuse the final residual-add + GELU broadcast into the row-sum-producing kernel's epilogue when feasible (persistent kernel that holds row_sum in registers and immediately writes `x[m,k] + GELU(row_sum[m]/N)`), eliminating the second kernel launch entirely.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 23,
+    "global_best_node_id": 10,
+    "global_best_score": [
+        1,
+        1,
+        1.5925164056531704
+    ]
+}

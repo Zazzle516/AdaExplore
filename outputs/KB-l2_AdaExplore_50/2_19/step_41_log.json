@@ -1,0 +1,29 @@
+{
+    "node_id": 41,
+    "parent_node_id": 36,
+    "context_node_ids": [
+        36
+    ],
+    "depth": 5,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.41005390546614473,
+    "max_reward": 0.41005390546614473,
+    "avg_reward": 0.41005390546614473,
+    "score": [
+        1,
+        1,
+        0.18294472009569376
+    ],
+    "small_guidance": "- The conv_transpose kernel uses `tl.static_range` over IC=64 with KH=KW=3, producing 576 unrolled iterations per program \u2014 try reducing to a runtime loop over IC and only `static_range` over KH/KW (9 iters) to shrink code size and improve I-cache/scheduler behavior. Also try BLOCK_W=64 with num_warps=2 or BLOCK_W=256 with num_warps=8.\n- For ConvTranspose2d with stride=1, the gather pattern is identical to a regular conv2d on padded input with the weight flipped \u2014 restructure to reuse a standard conv-style GEMM tile (BLOCK_OC \u00d7 BLOCK_HW) loaded once per (kh,kw,ic) block, instead of the current per-(N,OC,H_out) program that re-walks all IC\u00d7KH\u00d7KW per output row.\n- Fuse a partial GroupNorm reduction into the conv epilogue by writing per-(N,group) running sum/sumsq to a small workspace, eliminating the first full reread of `gelu_out` in the GN kernel.",
+    "large_guidance": "- Rewrite the conv_transpose as an im2col-style tiled GEMM: one program per (N, OC-tile, output-spatial-tile) with BLOCK_M=64 (OC), BLOCK_N=128 (HW), BLOCK_K=32 (IC), looping over (kh,kw) outside and accumulating with `tl.dot`. Stride=1 padding=0 ConvT is equivalent to conv2d with the flipped kernel on a 1-pixel-padded input \u2014 exploit that to use direct conv math instead of the current scalar gather. This should be 5\u201310\u00d7 faster than the current per-output-element kernel.\n- Use channels-last (NHWC) layout for the conv output so GroupNorm's reduction over CPG\u00d7HW can stride contiguously over the C axis within a group. Allocate the gelu output as NHWC and have GN consume it directly.\n- Make GroupNorm a single-pass Welford kernel with one program per (N, group), persistent over CPG channels, using a 2D tile [BLOCK_C, BLOCK_HW] with `tl.dot`-free vectorized loads; fold weight/bias into scale/shift in registers and write back NCHW (or keep NHWC if downstream is happy). At HW=66564 and CPG=8, the group has ~530K elements \u2014 tile the reduction with BLOCK=4096 and num_warps=8.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 42,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        1.4057149448529411
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 43,
+    "parent_node_id": 42,
+    "context_node_ids": [
+        41,
+        42
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4616027542687454,
+    "max_reward": 0.4616027542687454,
+    "avg_reward": 0.4616027542687454,
+    "score": [
+        1,
+        1,
+        0.6082227227171492
+    ],
+    "small_guidance": "- The current epilogue kernel is already memory-bound and near the bandwidth limit; further BLOCK_SIZE/num_warps tuning won't close the 0.6\u21921.0+ gap. If staying small, try adding a `BLOCK_SIZE=32768, num_warps=16` config and precompute `c_idx` only for valid lanes (mask early) to shave a div/mod, but expect <5% gain.\n- Conv3d is the dominant cost (~85% of 8.98ms). Tuning the activation+bias tail cannot reach `fast_p\u22651.0`; the conv must be replaced or BN/bias-folded.",
+    "large_guidance": "- Replace `nn.Conv3d` with a custom Triton im2col-style GEMM kernel: one program per `(N, OC tile, output-spatial tile)`, with the K dimension being `IC*KD*KH*KW=216`. Fuse ReLU\u2192LeakyReLU\u2192GELU\u2192Sigmoid\u2192bias-add directly in the epilogue on the accumulator before storing \u2014 avoids an extra full read/write of the 64\u00d732\u00d730\u00d762\u00d762 output tensor (~470MB). Note ReLU followed by LeakyReLU(0.01) on a non-negative value is identity, and applying these on the accumulator costs only a few flops.\n- Use channels_last3d layout (`memory_format=torch.channels_last_3d`) so the IC axis is contiguous along GEMM-K; this makes the im2col gather coalesced. Start with safe tiles `(BLOCK_M=32, BLOCK_N=64, BLOCK_K=32), num_warps=4, num_stages=2` and autotune up. SMEM check: `(32\u00b732+32\u00b764)\u00b74\u00b72 = 24KB`, well under 132KB.\n- Pre-flatten `bias` to a length-OC vector at init and broadcast via `tl.load(bias_ptr + oc_offsets)` in the epilogue. Output shape must be the full `(N, OC, D-2, H-2, W-2)`; do not collapse any spatial axis or fold bias into weight in a way that skips the conv multiply-adds.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 44,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        1.9646906654676257
+    ]
+}

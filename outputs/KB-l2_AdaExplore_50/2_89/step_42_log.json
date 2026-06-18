@@ -1,0 +1,29 @@
+{
+    "node_id": 42,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        21
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.42672986215344944,
+    "max_reward": 0.42672986215344944,
+    "avg_reward": 0.42672986215344944,
+    "score": [
+        1,
+        1,
+        0.32052136276595744
+    ],
+    "small_guidance": "- The post-conv kernel is already cheap; the dominant cost is `ConvTranspose3d`. Tuning BLOCK_N further won't materially help. If staying small, try adding `channels_last_3d` memory format on the conv output so the C-axis gather in the fused kernel is contiguous, and add autotune configs with BLOCK_N in {512, 1024} num_warps=8.\n- Consider fusing the bias of `conv_transpose` and pool/softmax post-op so the conv output is read once; but this only saves a small fraction of the runtime.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: for each input element, scatter `input \u00d7 weight` outer product into the output grid handling stride=2, padding=1, output_padding=1. This is where ~95% of the 18.8ms is spent (baseline 6ms is mostly cuDNN convT3d too, but our overhead vs baseline suggests cuDNN beats us \u2014 we need to be at least competitive).\n- Alternatively, implement convT3d as a gather GEMM: one program per (N, OC tile, output-spatial tile), loop over (IC, kd, kh, kw), gather valid input positions (those mapping back through stride). Fuse the bias add directly into the epilogue, and since the next op is MaxPool3d(2,2), consider fusing the entire pipeline: have the conv kernel emit pooled outputs directly by tiling output in 2\u00d72\u00d72 blocks and doing the max in registers before storing \u2014 eliminating an entire intermediate tensor read/write of shape (128,16,32,64,64).\n- Full fusion: one mega-kernel that produces the final (N, D_out, H_out, W_out) tensor directly from conv input + weight + bias + subtract, with convT3d\u2192pool\u2192softmax\u2192sub\u2192swish\u2192max-over-C all in registers. The output is tiny (128\u00d78\u00d716\u00d716 = 256K elements) so the kernel can be output-stationary with one program per output tile, looping over IC and kernel taps.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 43,
+    "global_best_node_id": 41,
+    "global_best_score": [
+        1,
+        1,
+        6.9823888991888765
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 32,
+    "parent_node_id": 28,
+    "context_node_ids": [
+        25,
+        28
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness bug is the atomic_add accumulating into `out` across N-tiles combined with non-deterministic ordering plus the use of `tl.zeros` initialization \u2014 but the real issue is likely that `out_flat = out.view(M)` is fine, however `atomic_add` is being called with float32 partial sums many times and the result has huge error. More importantly, multiple `pid_n` programs race on the same `out_ptr + offs_m`; this is correct in principle but you can eliminate it by collapsing the N reduction inside a single program: launch grid only over M, and have each program loop over all N tiles internally, accumulating into a register vector of shape `[BLOCK_M]`, then do a single non-atomic store.\n- After removing atomics, set `allow_tf32=True` (input is fp32 but tolerance is 5e-2) for ~2x throughput on the dot, and tune `BLOCK_M=64, BLOCK_N=128, BLOCK_K=32` with `num_warps=4, num_stages=4`.\n- Since the final output is per-row scalar, you don't need to materialize the full `(BLOCK_M, BLOCK_N)` GEMM tile \u2014 keep the accumulator but immediately reduce along N each K-loop iteration is wrong; instead accumulate the full GEMM tile then reduce, but loop N internally to avoid atomics.",
+    "large_guidance": "- Reformulate the whole op as `out[m] = scale * sum_k x[m,k] * (sum_n W[n,k])`. Wait \u2014 that's an algebraic shortcut and is forbidden by the safety contract. Instead, recognize that the result is a per-row reduction of a GEMM; design the kernel as one program per row-tile (`BLOCK_M` rows), looping internally over **both** K and N. Accumulate a `[BLOCK_M]` register vector: for each N-tile, compute the `[BLOCK_M, BLOCK_N]` GEMM via `tl.dot` over K, then `tl.sum(axis=1)` and add to the row accumulator. This eliminates all atomics and all cross-program races.\n- Grid becomes 1D of size `cdiv(M, BLOCK_M)`; each program does the full work for its rows. Use `BLOCK_M=32 or 64`, `BLOCK_N=128`, `BLOCK_K=64`, `num_warps=8`, `num_stages=3`. This also lets you fuse the `/2` and `*scaling_factor` as a single scalar epilogue on the final `[BLOCK_M]` vector before one coalesced store to `out[M]`.\n- Memory-traffic-wise this is bound by reading x (M*K) once and W (N*K) `cdiv(M, BLOCK_M)` times. With M=1024 and BLOCK_M=64, W is read 16x \u2014 acceptable. Allow tf32 in `tl.dot` since tolerance is 5e-2.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 33,
+    "global_best_node_id": 27,
+    "global_best_score": [
+        1,
+        1,
+        0.8119585150360703
+    ]
+}

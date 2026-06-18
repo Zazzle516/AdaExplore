@@ -1,0 +1,29 @@
+{
+    "node_id": 25,
+    "parent_node_id": 22,
+    "context_node_ids": [
+        22
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The runtime (4.03 ms) is dominated by the `addmm` (1024\u00d78192\u00d78192 GEMM), not the GN+LeakyReLU+double kernel. Tuning BLOCK/num_warps of the GN kernel will not move the needle. Cache `wt = weight.t().contiguous()` once at init (it currently rebuilds whenever data_ptr changes, and `.t().contiguous()` is itself expensive on first call).\n- For the GN kernel itself: with `ch_per_g = 16`, current `GROUPS_PER_PROG=64` (BLOCK=1024, nw=8) is reasonable; try `groups_per_prog=32` with `num_warps=4, num_stages=2` to reduce register pressure and increase occupancy on small reductions.\n- Fold the `x + x` into the epilogue as `y2d * 2.0` (already done implicitly via `y+y`), and skip the `.contiguous()` between addmm and GN \u2014 addmm output is already contiguous.",
+    "large_guidance": "- Replace `torch.addmm` with a custom tiled Triton GEMM (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8, num_warps=8, num_stages=3-4) \u2014 this is where >95% of the runtime lives. M=N=K=8192 with batch M-dim 1024 is a textbook tl.dot target.\n- Fuse the bias add into the GEMM epilogue. Optionally, since each GN group is only 16 channels and num_groups=512, you could try fusing the per-row GN reduction by having the GEMM emit a full row tile (BLOCK_N=8192 is too wide, but a persistent row-resident kernel that computes a row's worth of output in one program could fuse GEMM+GN+LeakyReLU+double). If that's too ambitious, just do GEMM+bias and keep the existing GN kernel.\n- Consider tf32 for the GEMM (`allow_tf32=True` / `tl.dot(..., allow_tf32=True)`) \u2014 RTX 4090 has strong tf32 throughput and the loose 5e-2 tolerance accommodates it easily.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 26,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

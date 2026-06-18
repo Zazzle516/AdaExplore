@@ -1,0 +1,29 @@
+{
+    "node_id": 26,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        23
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The split-K kernel uses `tl.atomic_add` into an output initialized to zero, but the bias-swish-scale post-pass reads/writes that same buffer \u2014 make sure the GEMM fully completes (it does via separate launch) and that bias is added exactly once. The correctness failure (avg diff ~39) suggests the atomic accumulation is racing or the K-tile masking is wrong: `tl.arange(0, BLOCK_K)[None, :] < k_remaining` should be relative to the current `k` offset within the SPLIT_K stripe, not the absolute remainder. Fix the K-tail mask to use `(offs_k + (k - pid_k*BLOCK_K))[None, :] < K` style indexing.\n- Once correct, drop SPLIT_K (K=32768 is large but M=128 is small; split-K helps only when M*N tiles underfill the SM). Try a non-split GEMM with BLOCK_M=64, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4 and fuse bias+swish+scale into the epilogue of the GEMM directly \u2014 eliminate the second kernel entirely.\n- Add a GROUP_M=8 swizzle for L2 reuse across N tiles within each row group.",
+    "large_guidance": "- Rewrite as a single fused GEMM-bias-swish-scale kernel: one program per (BLOCK_M, BLOCK_N) tile, K-loop accumulating in fp32, then epilogue `acc = (acc+bias) * sigmoid(acc+bias) * scaling_factor` before the store. No atomics, no second pass.\n- With M=128 and N=32768, prefer BLOCK_M=128 (covers full M in one row of programs) and BLOCK_N=128 or 256; this gives 128 or 256 programs total \u2014 plenty for a 128-SM GPU. K=32768 is the heavy axis, so use BLOCK_K=64 with num_stages=4 to pipeline global loads.\n- Store the weight transposed and contiguous (already done) so the inner B load is a contiguous BLOCK_K x BLOCK_N tile; load bias once per program into a BLOCK_N register vector and broadcast in the epilogue.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 27,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

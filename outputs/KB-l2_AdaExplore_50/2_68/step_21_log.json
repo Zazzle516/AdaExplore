@@ -1,0 +1,30 @@
+{
+    "node_id": 21,
+    "parent_node_id": 18,
+    "context_node_ids": [
+        11,
+        18
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The SPLIT_K>1 path is buggy: the GEMM kernel does `tl.atomic_add(out_ptrs, acc, ...)` for each split, then the epilogue kernel adds bias and applies `min(.,C)-C` once \u2014 but each split contributes its partial sum, so the bias/clamp is applied to the full sum correctly only if epilogue runs after all atomics. That part is fine, but `tl.atomic_add` on fp32 with non-deterministic ordering plus `BLOCK_M/BLOCK_N` tiles that wrap via `% M`/`% N` (the masked-modulo trick) can write garbage to wrapped rows/cols. Drop SPLIT_K configs entirely, or guard the atomic_add store with a real `(offs_m_o<M)&(offs_n_o<N)` mask AND avoid the modulo wrap when SPLIT_K>1.\n- Remove the `% M` / `% N` index wrap on `offs_m`/`offs_n` used for loading \u2014 for K=16384, M=128, N=16384 these are all multiples of common block sizes so masking isn't needed, but the wrap interacts badly with atomic accumulation. Use plain `pid_m*BLOCK_M + tl.arange(...)` and rely on the store mask.\n- Since M=128 is tiny, prune autotune configs to BLOCK_M=64 or 128 only, BLOCK_N in {128,256}, BLOCK_K in {32,64,128}, SPLIT_K=1 (K=16384 is large but M is so small that one program per (M,N) tile already gives plenty of parallelism: 2*128 = 256 tiles, enough for a 4090). Try num_warps=8, num_stages=4 with BLOCK_K=128.",
+    "large_guidance": "- Shape is M=128, N=16384, K=16384 \u2014 this is a \"skinny\" GEMM where M is tiny. A standard tiled GEMM with BLOCK_M=128 means only `ceil(N/BLOCK_N)` programs (e.g. 64\u2013128), underutilizing the 4090's 128 SMs at the edges. Redesign as a Split-K GEMM with deterministic two-stage reduction: stage 1 writes per-split partial sums to a `[SPLIT_K, M, N]` workspace (no atomics), stage 2 reduces along SPLIT_K and fuses bias + `min(.,C)-C` + store. This avoids the atomic-add correctness hazard while exposing K-parallelism.\n- Alternatively, since M=128 fits in a single tile, use a persistent-N kernel: one program per N-tile, looping over K with BLOCK_K=128\u2013256, keeping the full M=128 rows resident. Fuse bias and the `min - C` epilogue in the same kernel. Grid size = `cdiv(N, BLOCK_N)` \u2248 64\u2013256, num_warps=8.\n- Pre-transposing the weight to `weight_t` is correct, but verify it's stored as `(K, N)` row-major contiguous so the inner load over N is coalesced; currently `stride_wk = N, stride_wn = 1` \u2014 confirm and document.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 22,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

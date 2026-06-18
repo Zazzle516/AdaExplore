@@ -1,0 +1,29 @@
+{
+    "node_id": 13,
+    "parent_node_id": 10,
+    "context_node_ids": [
+        10
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.45280400354939526,
+    "max_reward": 0.45280400354939526,
+    "avg_reward": 0.45280400354939526,
+    "score": [
+        1,
+        1,
+        0.5356330292825106
+    ],
+    "small_guidance": "- The fused conv+softmax+pool kernel recomputes the full conv for each of the P^3=8 pool positions; OC=16, IC=3, K=3 makes the inner GEMM tiny. Try BLOCK_C=16 (=OC) with num_warps=2 and num_stages=3, and hoist the bias load + weight tile [OC, IC*KD*KH*KW] outside the pool-window loops so the 8 conv evaluations share one weight load.\n- Add a `triton.autotune` over (num_warps \u2208 {1,2,4}, num_stages \u2208 {2,3,4}) keyed on (N, OD, OH, OW); the program is very small (1 output voxel \u00d7 16 channels) so 1\u20132 warps may be optimal and free up occupancy.\n- Restructure the grid so program_id covers (n, od, oh) and have each program loop over OW (or tile a few OWs together) \u2014 this amortizes weight loads across spatially adjacent outputs that share input rows.",
+    "large_guidance": "- Rewrite as an im2col-style GEMM: precompute (or implicitly index) the unfolded input [N*D_conv*H_conv*W_conv, IC*KD*KH*KW] and do a tiled matmul against weight^T [IC*KD*KH*KW, OC]. With OC=16 the N-tile of the GEMM is the full channel dim, so use BLOCK_M=64 (spatial), BLOCK_N=16 (OC), BLOCK_K=27 (IC*K^3) \u2014 one shot, no recompute across the pool window.\n- Split into two kernels with a small intermediate: (1) conv-only GEMM writing a [N, OC, D_conv, H_conv, W_conv] buffer in channels-last so OC is contiguous; (2) a fused softmax+maxpool(4) kernel that, for each (n, od, oh, ow), gathers the 4\u00d74\u00d74=64 pre-softmax vectors of length OC, applies softmax per voxel, and reduces max over the 64 voxels. This avoids the 8\u00d7 conv recomputation that currently dominates.\n- Alternatively, fuse conv+softmax+pool but at the granularity of one program per (n, od, oh, ow) that first computes and caches all P^3 conv outputs (P^3 \u00d7 OC = 128 fp32 in registers/SMEM), then does softmax+max in a single pass \u2014 eliminates the redundant weight\u00d7input work without an intermediate tensor.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 14,
+    "global_best_node_id": 9,
+    "global_best_score": [
+        1,
+        1,
+        0.7670958700808058
+    ]
+}

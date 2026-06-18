@@ -1,0 +1,30 @@
+{
+    "node_id": 29,
+    "parent_node_id": 28,
+    "context_node_ids": [
+        27,
+        28
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.41974699275960276,
+    "max_reward": 0.41974699275960276,
+    "avg_reward": 0.41974699275960276,
+    "score": [
+        1,
+        1,
+        0.2629126902667226
+    ],
+    "small_guidance": "- The post kernel is fine; ConvTranspose3d dominates. Don't spend more tuning on the post kernel \u2014 at most increase ROWS to 32-64 and try num_warps=8 to reduce launch overhead, but expected gain is small.\n- If staying with torch's ConvTranspose3d, keep channels_last_3d but verify cuDNN actually picks an NHWC algorithm (it often doesn't for ConvTranspose3d on Ampere); a plain contiguous input may be faster \u2014 benchmark both.\n- Fuse the bias scalar load as a `tl.constexpr` or 0-d tensor read once outside the row loop (already effectively done); no further win here.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton kernel implemented as scatter-add of the `input \u00d7 weight` outer product into the output grid, handling stride=2 / padding=1 correctly. This op is ~95% of the 21.7 ms runtime and is the only path to large speedup.\n- Tile the GEMM as one program per `(N, OC_tile, output_DHW_tile)`; gather contributions from `(IC, kd, kh, kw)` along the K dimension. Use BLOCK_OC=32-64, BLOCK_SPATIAL=64-128, BLOCK_K=16-32; autotune over a small grid. Channel axis contiguous (channels_last_3d) so IC loads coalesce.\n- Fuse the entire epilogue (logsumexp over OC, HardSwish, bias subtract, clamp) directly into the conv-transpose kernel's accumulator before store \u2014 since the reduction is over the OC dimension we're already tiling, keep the full OC accumulator in registers per output voxel, then reduce and write a single fp32 per voxel. This eliminates the intermediate `[N, OC, D', H', W']` tensor entirely (huge memory traffic win).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 30,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.3267919485553208
+    ]
+}

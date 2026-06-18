@@ -1,0 +1,29 @@
+{
+    "node_id": 14,
+    "parent_node_id": 11,
+    "context_node_ids": [
+        11
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5664424770316228,
+    "max_reward": 0.5664424770316228,
+    "avg_reward": 0.5664424770316228,
+    "score": [
+        1,
+        1,
+        1.473150435510888
+    ],
+    "small_guidance": "- The current kernel only parallelizes over N\u00d7OC_tile\u00d7pool_spatial_tile (128 \u00d7 2 \u00d7 small) \u2014 grid is too small for a 4090. Add more parallelism by tiling OC finer or splitting the batch with `num_programs` >> SM count; also try larger `BLOCK_N` (e.g. 128/256) since each spatial tile now does 4 dot products and ALU is the bottleneck.\n- Add autotune configs with `BLOCK_M=128, BLOCK_N=128, BLOCK_K=16, num_warps=8, num_stages=2` and `BLOCK_M=64, BLOCK_N=256, BLOCK_K=16` (within SMEM budget) \u2014 current best configs are likely the smaller ones, leaving compute on the table.\n- Hoist the `n_offset` and reuse `x_base` across the 4 pool positions by loading a single (BLOCK_K, BLOCK_N+1, +IW) tile once and indexing \u2014 currently 4 separate `tl.load`s per K-iter quadruple the gather traffic; consolidating to 2 row-loads (row0 = [x00|x01 pair], row1 = [x10|x11]) cuts redundant address math and lets stages overlap better.",
+    "large_guidance": "- Switch to a layout where the GEMM-N axis is the **post-pool** output spatial tile but each thread accumulates the 2\u00d72 conv pre-pool values into vector registers from one shared K-tile load: load `x[ic, ih:ih+KH+POOL-1, iw:iw+KW+POOL-1]` once per (k, spatial) tile and reuse it for all KH\u00b7KW\u00b7POOL\u00b7POOL contributions. This eliminates the 4\u00d7 redundant input gathers in the current design.\n- Consider an implicit-GEMM where weights are pre-packed to `[OC, IC*KH*KW]` (already the natural layout) and the input is gathered with an im2col index map sized to the **pre-pool** output, then a second small in-register max over the 2\u00d72 pool window fuses the pool into the epilogue \u2014 the present kernel already does this conceptually but launches one program per (N, OC-tile, pool-tile); making it persistent across N (loop N inside one program) amortizes weight loads since weights are reused across all 128 batches.\n- Alternatively, since OC=128, OH=OW=126 (POH=POW=63), make a single big GEMM with M=OC, N=N\u00b7POH\u00b7POW=128\u00b763\u00b763\u2248508k, K=IC\u00b7KH\u00b7KW=576, using standard split-K-free GEMM tiles (128\u00d7128\u00d732) and fold hardswish/pool/mish in epilogue with a 2\u00d72 max reduce \u2014 this gives a much larger M\u00b7N grid and better SM occupancy than the current per-batch launch.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 15,
+    "global_best_node_id": 12,
+    "global_best_score": [
+        1,
+        1,
+        1.6815885468451244
+    ]
+}

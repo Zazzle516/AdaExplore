@@ -1,0 +1,29 @@
+{
+    "node_id": 28,
+    "parent_node_id": 27,
+    "context_node_ids": [
+        27
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing (max_diff ~2e-3 > tol 5e-2? actually tol is 5e-2 so should pass \u2014 but trials show 0/5). Likely the eval branch is being tested with freshly-initialized running_mean=0, running_var=1, but the reference Model also uses BN in eval mode with same defaults, so the numeric mismatch ~2e-3 suggests an off-by-something. Verify the eval folding: PyTorch BN eval uses `(x-running_mean)/sqrt(running_var+eps)*gamma+beta`. The current `scale=(gamma*inv_std)/divide_value` and `shift=(beta - mean*gamma*inv_std)/divide_value + bias/divide_value` looks correct. The issue may be that `b_lin` (linear bias) is *not* being folded into `shift` \u2014 it is added to `acc` inside the GEMM kernel, then `acc*scale+shift` is applied, which gives `(Wx+b_lin)*scale+shift` instead of `((Wx+b_lin)-mean)*inv_std*gamma+beta+bias)/div`. That is correct only if `shift` accounts for `b_lin`. It does not \u2014 `shift` should be `(beta - mean*gamma*inv_std + extra)/div` and `b_lin` must be multiplied by `scale`, not added raw before scale. Fix: fold `b_lin` into `shift` as `(b_lin - mean)*gamma*inv_std/div + (beta+extra)/div` and drop the bias-add inside the GEMM, OR keep bias-add and remove `mean` subtraction adjustment. This is the correctness bug.\n- Once correctness is fixed, drop the separate epilogue kernel \u2014 the eval-path single fused kernel is already the right design; make the train path also use the fused kernel by computing mean/var first, then launching `fused_linear_bn_swish_kernel`. The current train path does GEMM twice's worth of memory traffic.\n- Add larger autotune tiles (e.g. BLOCK_M=256/BLOCK_N=256/BLOCK_K=64, num_warps=8, num_stages=4) for the M=1024,N=8192,K=8192 shape.",
+    "large_guidance": "- Restructure into a two-kernel design for training: (1) a single fused GEMM that writes Y = x@W\u1d40 + b_lin and simultaneously accumulates per-column partial sums of Y and Y\u00b2 into a workspace via atomics or a second pass; (2) a finalize+epilogue kernel that computes mean/var from the partials, then re-reads Y and writes swish(((Y-mean)*inv_std*gamma+beta+bias)/div). This avoids re-running the GEMM and keeps Y resident only once. For eval, keep the single fused kernel that folds BN into scale/shift as constants.\n- Eliminate the precomputed `Wt` transpose \u2014 instead, load B with `stride_bk=1, stride_bn=K` directly from `weight` (shape [N,K]) using a transposed-tile load pattern in the K-loop. This removes a one-time but non-trivial copy and keeps weight contiguous as PyTorch stores it.\n- For the column reduction in the train path, use a split-K style reduction with atomic adds into a small (N,) buffer rather than a serial loop over M inside one program; with M=1024 this is small but launching `cdiv(N,BLOCK_N)` programs each looping M=1024 wastes parallelism \u2014 instead tile both M and N and atomic-add partial sums.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 29,
+    "global_best_node_id": 16,
+    "global_best_score": [
+        1,
+        1,
+        1.306364364810914
+    ]
+}

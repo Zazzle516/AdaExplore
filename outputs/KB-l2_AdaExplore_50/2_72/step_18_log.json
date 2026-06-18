@@ -1,0 +1,29 @@
+{
+    "node_id": 18,
+    "parent_node_id": 15,
+    "context_node_ids": [
+        15
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4145216885088404,
+    "max_reward": 0.4145216885088404,
+    "avg_reward": 0.4145216885088404,
+    "score": [
+        1,
+        1,
+        0.2198039301979331
+    ],
+    "small_guidance": "- The current kernel uses BLOCK_M=64 with a tl.dot over [64, BLOCK_K] \u00d7 [BLOCK_K, BLOCK_N], where the M axis spans a 4\u00d74\u00d74 pooled output block. Since the post-conv values within each 4\u00d74\u00d74 block all share the same (n, oc), but require independent index math per element, try increasing BLOCK_N to 32 and adding configs with BLOCK_K=192 (full IC*KD*KH*KW=81 padded) so the entire reduction fits in one pass and no K-loop is needed \u2014 but K_REAL=81 is already < 128 so the K loop is degenerate; the bottleneck is the dot size (64\u00d7128 \u00d7 128\u00d716 = small).\n- Add autotune configs with BLOCK_N=64 (OC=16 padded to 64 wastes lanes but lets tl.dot hit min 16x16x16); the current BLOCK_N=16 may be below tl.dot's minimum efficient shape. Also try num_warps=1 since the per-program work is tiny.\n- Reduce launch overhead: PD_OD*PD_OH*PD_OW = 16*16*16 = 4096, times N=64 = 262144 programs, each doing trivial work. Coalesce multiple output voxels per program (e.g., process 2 or 4 (pd,ph,pw) tiles per program) to amortize index setup and weight reload.",
+    "large_guidance": "- The current strategy launches ~262K programs each computing one pooled 4\u00d74\u00d74 output via a 64\u00d7K \u00d7 K\u00d716 GEMM with sum-reduce over M \u2014 this is the wrong tiling. The pooled output is only OC\u00d7PD_OD\u00d7PD_OH\u00d7PD_OW = 16\u00d716\u00d716\u00d716 = 65536 elements per batch. Restructure as one program per (N, OC-tile, pooled-spatial-tile) where the GEMM accumulates *across* output positions in N (or across IC*KD*KH*KW as K) with proper im2col GEMM shape. With OC=16 and tiny per-program work, consider a persistent kernel that processes many (n, pooled-voxel) tuples per program.\n- Better: reformulate as a direct scatter-add ConvTranspose3d into a global output buffer where each input voxel \u00d7 kernel position scatters to 27 output voxels, and fold the BN+avg-pool(4\u00d7) directly: each output voxel contributes 1/64 weight to one pooled cell. So compute, per (n, ic, id, ih, iw, kd, kh, kw, oc): the contribution `x * w * scale[oc] / 64` atomic-added into `out[n, oc, (id*2-pd+kd)//4, ...]`. This sums all 64 contributions per pooled cell naturally via atomics, eliminating the wasteful 64\u00d7K dot.\n- Alternatively, im2col-GEMM: materialize the conv-transpose output explicitly with one program per (N, OC, OD-tile) at the proper 65\u00d765\u00d765 size as a tiled GEMM (M=OC, K=IC*KD*KH*KW, N=output-spatial-tile), then fuse the BN+two-avgpool epilogue as a 4\u00d74\u00d74 reduction within the same kernel. Use channels_last layout for OC contiguity so the small OC=16 dimension is the GEMM-M and reads coalesce.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 19,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        0.36042383585251137
+    ]
+}

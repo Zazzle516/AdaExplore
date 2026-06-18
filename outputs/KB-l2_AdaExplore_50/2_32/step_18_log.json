@@ -1,0 +1,29 @@
+{
+    "node_id": 18,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5304564618999665,
+    "max_reward": 0.5304564618999665,
+    "avg_reward": 0.5304564618999665,
+    "score": [
+        1,
+        1,
+        1.1762658106747232
+    ],
+    "small_guidance": "- Add larger tiles to autotune (e.g. BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, num_warps=8, num_stages=2 \u2014 fits SMEM at ~96KB) and a BLOCK_M=256, BLOCK_N=64, BLOCK_K=16 variant; current best is likely a small tile and reduction width IC*KH*KW=576 benefits from wider K.\n- Reorder the loop nest so the OC tile is the outer loop and the K loop is inner with proper k-stage pipelining; currently each oc_tile re-walks the full IC_KH_KW input gather, which redundantly reloads x. Hoist the input gather: load x tile once into registers per K block, then accumulate against multiple OC tiles by looping OC in the inner position.\n- Replace the integer div/mod (`k_idx // (KW*IC)`, `% (KW*IC)`, `//IC`, `%IC`) with a triple nested loop over (kh, kw) outside and a single contiguous IC-K loop inside, so address math is hoisted and BLOCK_K maps directly to channels (coalesced NHWC loads).",
+    "large_guidance": "- Restructure as one program per (N, output-spatial tile) that streams all OC through registers and folds the channel-min into the OC loop without ever materializing the full (BLOCK_M \u00d7 OC) tile: keep a running `min_acc[BLOCK_M]` and for each OC tile compute partial GEMM, scale, add bias, reduce-min along N, update min_acc. This is what the kernel does, but combine it with hoisting the im2col gather: load the input patch for the BLOCK_M output tile once (shape [BLOCK_M, IC*KH*KW] effectively, tiled over K) and reuse across all OC tiles \u2014 current code reloads x for every oc_tile, costing ~OC/BLOCK_N \u00d7 the input bandwidth.\n- Switch the K-dimension layout so KH\u00b7KW is the outer loop and IC is the contiguous inner BLOCK_K axis (KH=KW=3 \u2192 only 9 iterations of an outer (kh,kw) loop, each doing a clean coalesced IC-strided load). This eliminates the divmod and lets BLOCK_K=64 cover IC fully in one step.\n- Consider a persistent-CTA design where each program owns a fixed output-spatial tile across all N (or vice versa) so the weight tile stays resident in SMEM across batches; weight is only 128\u00b7576\u00b74 \u2248 288KB total, small enough to cache aggressively across the grid.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 19,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        1.1762658106747232
+    ]
+}

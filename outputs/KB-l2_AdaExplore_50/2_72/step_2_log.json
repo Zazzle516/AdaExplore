@@ -1,0 +1,29 @@
+{
+    "node_id": 2,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.42925364532781063,
+    "max_reward": 0.42925364532781063,
+    "avg_reward": 0.42925364532781063,
+    "score": [
+        1,
+        1,
+        0.3413425739544373
+    ],
+    "small_guidance": "- The conv_transpose kernel currently parallelizes only over (N, output-spatial tile) with OC fully inside one program (OC_C=16 broadcast). This is fine, but BLOCK_N=128 with K_TOTAL=3*3*3*3=81 static-unrolled iterations is heavy on registers. Try BLOCK_N=64 with num_warps=2 and num_stages=3, or BLOCK_N=256 with num_warps=8, and autotune over these.\n- Wrap conv_transpose3d_gemm_kernel in `@triton.autotune` keyed on (OC, spatial, K_TOTAL) with configs {(BLOCK_N=64,nw=2),(128,4),(256,8)} \u00d7 {num_stages=2,3}. Also try splitting the program grid as (N*spatial_tiles, OC_tile) so multiple SMs work per batch \u2014 currently with N=64 and ~10k spatial elements / 128 = ~78 tiles, you get 64*78 \u2248 5000 programs which is fine, but per-program work is large.\n- Fold the avg-pool kernel's two passes into a single 4\u00d74\u00d74 reduction (already done) but use BLOCK=512 with num_warps=4 \u2014 the current BLOCK=256 underutilizes; output total = 64*16*8*8*8 = 524288 elements, so increasing BLOCK reduces launch overhead.",
+    "large_guidance": "- The conv_transpose kernel is the bottleneck (runtime 17ms vs baseline 5.8ms \u2192 it's slower than cuDNN's ConvTranspose3d!). The current gather-style \"for each output, sum over all (ic, kd, kh, kw)\" with static_range over K_TOTAL=81 and divisibility checks is wasteful \u2014 most (kd,kh,kw) positions are invalid for any given output due to the stride-2 alignment constraint. Rewrite as a scatter-add: one program per (N, IC tile, input-spatial tile), compute the outer-product input[n,ic,id,ih,iw] \u00d7 weight[ic,oc,kd,kh,kw] and atomically (or via output tiling) add into output[n,oc, id*SD-PD+kd, ...]. This eliminates the divisibility/validity branch entirely.\n- Alternatively, formulate as an im2col-style GEMM where M=OC, N=N*OD*OH*OW tile, K=IC*KD*KH*KW, and use tl.dot with proper BLOCK_M/BLOCK_N/BLOCK_K tiles (e.g. 32,64,32 fitting SMEM budget). The current kernel does NOT use tl.dot \u2014 it does scalar broadcast multiply-add, leaving tensor cores idle.\n- Fuse the BN scale/shift and BOTH 2\u00d72\u00d72 avg-pools directly into the conv_transpose epilogue: each conv_transpose output element is consumed exactly once by the 4\u00d74\u00d74 average. Instead of materializing the full (64,16,66,66,66) tensor (~73M elements), have the conv kernel directly accumulate into the pooled output (64,16,16,16,16) via atomic adds with the 1/64 scale folded in. This saves a massive memory write+read pass.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 3,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.3413425739544373
+    ]
+}

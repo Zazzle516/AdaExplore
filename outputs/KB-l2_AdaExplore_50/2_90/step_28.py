@@ -1,0 +1,69 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import triton
+import triton.language as tl
+
+torch.backends.cudnn.benchmark = True
+torch.backends.cudnn.allow_tf32 = True
+torch.backends.cuda.matmul.allow_tf32 = True
+
+
+@triton.jit
+def fused_epilogue_kernel(
+    x_ptr,
+    sum_ptr,
+    out_ptr,
+    C,
+    SPATIAL,
+    total_elements,
+    BLOCK_SIZE: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    mask = offsets < total_elements
+
+    nc = offsets // SPATIAL
+    c = nc % C
+
+    x = tl.load(x_ptr + offsets, mask=mask, other=0.0)
+    s = tl.load(sum_ptr + c, mask=mask, other=0.0)
+
+    # LeakyReLU(0.2)
+    x = tl.where(x > 0, x, x * 0.2)
+    # Add
+    x = x + s
+    # Clamp
+    x = tl.minimum(tl.maximum(x, -1.0), 1.0)
+    # GELU exact
+    inv_sqrt2 = 0.7071067811865475
+    x = 0.5 * x * (1.0 + tl.erf(x * inv_sqrt2))
+
+    tl.store(out_ptr + offsets, x, mask=mask)
+
+
+class ModelNew(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, sum_tensor_shape):
+        super().__init__()
+        self.conv = nn.Conv3d(in_channels, out_channels, kernel_size)
+        self.sum_tensor = nn.Parameter(torch.randn(sum_tensor_shape))
+
+    def forward(self, x):
+        x = self.conv(x)
+        N, C, D, H, W = x.shape
+        sum_flat = self.sum_tensor.view(-1).contiguous()
+        out = torch.empty_like(x)
+        spatial = D * H * W
+        total = x.numel()
+        BLOCK_SIZE = 8192
+        grid = (triton.cdiv(total, BLOCK_SIZE),)
+        fused_epilogue_kernel[grid](
+            x, sum_flat, out,
+            C,
+            spatial,
+            total,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=8,
+            num_stages=3,
+        )
+        return out

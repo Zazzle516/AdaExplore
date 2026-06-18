@@ -1,0 +1,30 @@
+{
+    "node_id": 33,
+    "parent_node_id": 31,
+    "context_node_ids": [
+        17,
+        30
+    ],
+    "depth": 5,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5818177902097902,
+    "max_reward": 0.5818177902097902,
+    "avg_reward": 0.5818177902097902,
+    "score": [
+        1,
+        1,
+        1.599996769230769
+    ],
+    "small_guidance": "- The ConvTranspose3d dominates runtime (output is 16\u00d7128\u00d720\u00d736\u00d736 \u2248 60M elements); the GAP+affine epilogue is already negligible. Tuning BLOCK_S/num_warps further on `_gap_affine_kernel` will not move the needle. Instead, try enabling TF32 (`torch.backends.cuda.matmul.allow_tf32 = True`) and `torch.backends.cudnn.allow_tf32 = True`, and ensure `channels_last_3d` memory format on the conv input/weight to take a faster cuDNN algo.\n- Also try `cudnn.benchmark` warmup with a fixed input shape (already set) plus pre-pinning the conv weight in `channels_last_3d`.\n- The GAP kernel itself can drop the split-K path (unused) and just keep one tuned config; it's <1% of runtime.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)` computes the input\u00d7kernel outer product and scatter-adds into the output grid, handling stride=1/padding=0 (defaults) so index math is trivial: `out[n, oc, di+kd, hi+kh, wi+kw] += x[n, ic, di, hi, wi] * w[ic, oc, kd, kh, kw]`. With kernel_size=5, stride=1, padding=0, output is just `(D+4, H+4, W+4)`.\n- Better: fuse the entire pipeline into a gather-style kernel that, for each `(n, oc)`, directly accumulates the *sum over output spatial positions* of the conv-transpose output. Since the final op is global average pool, we only need `sum_{do,ho,wo} sum_{ic,kd,kh,kw} x[n,ic,do-kd,ho-kh,wo-kw] * w[ic,oc,kd,kh,kw]`. Swap the sums: `sum_{ic,kd,kh,kw} w[ic,oc,kd,kh,kw] * sum_{di,hi,wi valid} x[n,ic,di,hi,wi]`. **Caution: this collapses the conv into a per-channel input-sum \u00d7 weight-sum and would violate the no-shortcut rule.** So do NOT take this path \u2014 implement the full scatter/gather conv kernel instead.\n- A direct GEMM-style implementation: treat conv-transpose as `Y = W^T @ X_unfold`-style; one program per `(N, OC tile, output-spatial tile)`, gather inputs implicitly. Fuse the `*scale_factor`, BN affine fold, and GAP reduction directly into the conv kernel epilogue: accumulate `sum over output-spatial` of `(A_c * conv_out + B_c)` per `(n, oc)` so the conv output is never materialized. The reduction over output spatial happens in-register, and the kernel writes a single `[N, C]` tensor.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 34,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        1.599996769230769
+    ]
+}

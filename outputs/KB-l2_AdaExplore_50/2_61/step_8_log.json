@@ -1,0 +1,29 @@
+{
+    "node_id": 8,
+    "parent_node_id": 7,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.47409682217714677,
+    "max_reward": 0.47409682217714677,
+    "avg_reward": 0.47409682217714677,
+    "score": [
+        1,
+        1,
+        0.7112987829614604
+    ],
+    "small_guidance": "- The fused ReLU+GN kernel reads x twice (once for stats, once for normalization). Cache the post-ReLU values in shared memory or registers during the first pass to halve global memory traffic \u2014 given S=34\u00b3\u224839304 and C_PER_GROUP=16, the group has ~628K elements which is too large for registers but you can split into multiple programs per group with a two-stage reduction, or use a single-pass Welford to avoid the second read.\n- Try `BLOCK_S=2048` or `4096` with `num_warps=8`, `num_stages=2`; the inner loop is bandwidth-bound and larger blocks reduce loop overhead.\n- The kernel only launches `N*GROUPS = 128` programs on a 128-SM-class GPU \u2014 fine, but each program does serial work over 16 channels \u00d7 39304 elements. Consider parallelizing across channels-within-group via a 2D grid with a tree reduction in shared memory.",
+    "large_guidance": "- The dominant cost is the `nn.ConvTranspose3d` (input 16\u00d764\u00d732\u00b3 \u2192 output 16\u00d7128\u00d734\u00b3 with k=3). At fast_p=0.71 with the GN epilogue already fused, the conv is the bottleneck. Replace it with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)` computing the input\u00d7weight outer product and scatter-adding into the 3\u00b3=27 output positions. With stride=1, padding=0, output spatial is `D_in+2`, so the scatter pattern is simple.\n- Alternatively, since stride=1/pad=0, ConvTranspose3d is equivalent to a regular Conv3d on the zero-padded (pad=2) input with the spatially-flipped weight. Implement as an im2col-style direct conv with a tiled GEMM over `(OC, N*D_out*H_out*W_out, IC*27)` and fuse ReLU+GroupNorm stats into the epilogue (compute partial sums per group during the conv epilogue, then a small second kernel finalizes mean/var and applies affine).\n- Use channels-last (NDHWC) layout so the IC*27 GEMM-K dimension is contiguous, and fuse bias-add (zero here) + ReLU into the conv epilogue store.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 9,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.3333471482889734
+    ]
+}

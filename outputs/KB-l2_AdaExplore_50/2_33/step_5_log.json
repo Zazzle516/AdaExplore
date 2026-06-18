@@ -1,0 +1,29 @@
+{
+    "node_id": 5,
+    "parent_node_id": 2,
+    "context_node_ids": [
+        2
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure is in training: the running stats update uses biased var * M/(M-1), but PyTorch's BN uses biased var for normalization and unbiased for running_var \u2014 that part is right. However, BN normalizes using the *batch* mean/var (which is correct here). Check that `col_stats_kernel` handles M=1024 with BLOCK_M=1024+: the masked sum with `tl.where(mask, y, 0.0)` is correct, but ensure `mean = s / M` uses float M; cast M to float explicitly via `mean = s / M.to(tl.float32)` or pass M as float to avoid int division surprises.\n- Tighten autotune: for M=N=K=8192 on 4090, prefer BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3 \u2014 drop the smaller tile configs that won't win, speeding up autotune.\n- Fuse the eval path's `combined_scale`/`combined_shift` computation into the kernel epilogue by passing gamma, beta, running_mean, running_var, eps directly and computing per-tile, avoiding the extra elementwise launches.",
+    "large_guidance": "- Training path: fuse GEMM+scale and the first reduction pass by having the GEMM kernel atomically accumulate per-column sum and sum-of-squares into global buffers as it writes Y, then a single small kernel finalizes mean/var and a fused BN-apply kernel reads Y back. This eliminates one full pass over the 1024x8192 matrix.\n- Alternative: split-K GEMM with a second small reduction stage; on a 4090 with M=1024, N=8192, K=8192, the GEMM is compute-bound and a persistent-CTA streamK design with `tl.dot` using BLOCK_M=128, BLOCK_N=128, BLOCK_K=64 should approach cuBLAS. Keep W pre-transposed (N-contiguous) at init time so the inner K loop loads W contiguously along N.\n- For eval, collapse to a single kernel: GEMM with epilogue `(acc + bias) * combined_scale + combined_shift`, where combined_{scale,shift} are precomputed once per forward as small [N] tensors \u2014 current design already does this; just remove the redundant autotune-override hack and define the kernel with the final config set once.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 6,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

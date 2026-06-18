@@ -1,0 +1,29 @@
+{
+    "node_id": 20,
+    "parent_node_id": 19,
+    "context_node_ids": [
+        19
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.6175237365774794,
+    "max_reward": 0.6175237365774794,
+    "avg_reward": 0.6175237365774794,
+    "score": [
+        1,
+        1,
+        1.894570826764205
+    ],
+    "small_guidance": "- The GEMM is the dominant cost (M=1024, N=8192, K=8192). Add larger autotune configs that better fit K=8192: e.g. `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4` and `BLOCK_M=64, BLOCK_N=256, BLOCK_K=128, num_warps=8, num_stages=3`, and try `num_stages=4-5` to better overlap the long K-loop loads.\n- Since N=8192 is divisible by all candidate `BLOCK_N`, drop the `mask_m`-based masking on B loads (already absent) and consider removing mask on A by guaranteeing M is padded \u2014 but more importantly, hoist `bias` load outside the K-loop (already done) and try `tl.dot(a, b, out_dtype=tl.float32)` explicitly to ensure tensor-core fp32 accum.\n- Cache `Wt` once at init (preconvert weight to a contiguous transposed buffer in `__init__`) instead of lazily on first forward to avoid the `.t().contiguous()` cost showing up on the first run, and consider storing it in fp16/bf16 with fp32 accumulate to roughly double GEMM throughput on Ada (RTX 4090 has strong fp16 tensor cores).",
+    "large_guidance": "- Runtime is dominated by an 8192\u00d78192\u00d71024 fp32 GEMM. On RTX 4090, fp32 tensor cores are far slower than fp16/bf16. Redesign to do the matmul in bf16 (cast x and W to bf16 once, keep fp32 accumulator in `tl.dot`), then add bias and run the LSE in fp32. This alone can roughly 2\u00d7 throughput while still passing 5e-2 tolerance.\n- Use a split-K or streaming-K GEMM and fuse the per-row LSE reduction into the same kernel: with M=1024 and N=8192, a single program per (M-tile, full-N-row) that streams N in chunks while maintaining online (max, sumexp) eliminates the partials tensor and the second kernel entirely. Output is just M scalars.\n- Alternatively, since the final output is `[M,1]`, consider a persistent kernel: one program per row (or small group of rows), iterate over all N in BLOCK_N chunks doing tiled K-reductions with `tl.dot`, and maintain a running (max, sumexp) per row. This collapses the whole forward (GEMM + bias + LSE + activations) into a single launch and writes only M floats.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 21,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        1.9190169019482592
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 50,
+    "parent_node_id": 49,
+    "context_node_ids": [
+        49
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM (1024x8192x8192) dominates runtime; cuBLAS TF32 via F.linear is likely already efficient, but try `torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction` or pre-transposing the weight once in `__init__` to ensure the fastest cuBLAS path. Also confirm the bias is fused (F.linear does this).\n- For the GN kernel: CH_PER_G = 8192/512 = 16, which is very small per group. Increase GROUPS_PER_PROG to 64 or 128 (since num_groups=512 divides evenly) to amortize launch overhead and improve memory coalescing across the 16-wide inner dim.\n- Pass `eps` and `negative_slope` as `tl.constexpr` to bake them into PTX, and try `num_warps=4` since each program now processes a 64x16 or 128x16 tile (small reduction width).",
+    "large_guidance": "- The matmul is ~137 GFLOPs and at TF32 on a 4090 (~165 TFLOPS TF32) should take ~1ms; the GN+activation tail is bandwidth-bound on 32MB and should be ~0.4ms. Total target \u2248 1.2-1.4ms. To beat cuBLAS, write a custom Triton GEMM with fused bias + GN epilogue is infeasible (GN needs cross-row reduction). Instead, fuse bias + the `2*leaky_relu` scaling trivially \u2014 but keep cuBLAS for the matmul.\n- Consider a split-K or persistent Triton GEMM only if cuBLAS is leaving headroom; otherwise the win is purely in the GN kernel. Rewrite GN to load each row once, compute per-group stats with a single program per row (reduce over channels in tiles of 16 with vectorized loads), and store fused `2*leaky_relu((x-mean)*rstd*gamma+beta)`.\n- Alternatively, use one program per (batch, group-block) with a much larger group-block (e.g. all 512 groups per row in one program \u2192 one program per row), keeping the entire row in registers/SMEM and doing all 512 independent group reductions in a 2D tile of shape [512, 16]. This reduces launches from 1024*16=16K to 1024.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 51,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

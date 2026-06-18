@@ -1,0 +1,29 @@
+{
+    "node_id": 47,
+    "parent_node_id": 40,
+    "context_node_ids": [
+        40
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM is M=128, N=16384, K=16384 \u2014 M is tiny (only 128 rows). Drop the large BLOCK_M configs and bias autotune toward BLOCK_M=32 or 64 with BLOCK_N=128/256 and BLOCK_K=64/128; add configs like `{BLOCK_M:32, BLOCK_N:128, BLOCK_K:128, GROUP_M:1, num_warps:4, num_stages:4}` and `{BLOCK_M:64, BLOCK_N:256, BLOCK_K:64, GROUP_M:1, num_warps:8, num_stages:5}`. With only 4 row-tiles at BLOCK_M=32, GROUP_M=8 collapses to no swizzle \u2014 set GROUP_M=1 or 2.\n- Softmax: N=16384 with BLOCK_SIZE=16384 and num_warps=16 wastes registers. Try num_warps=8, num_stages=1, or split the row across multiple programs with a two-pass (max then sum) online softmax using BLOCK_SIZE=2048-4096 to free registers and improve occupancy.\n- Fuse the softmax max/exp/normalize directly into the GEMM epilogue is hard given N-tile reduction, but you can fuse bias-add already (done); ensure the GEMM output is written in fp32 contiguous and softmax reads coalesced \u2014 confirm `stride_om = N` so the row load is one contiguous segment.",
+    "large_guidance": "- The dominant cost is the 128\u00d716384\u00d716384 GEMM (~68 GFLOPs, memory-bound on the weight read at ~1 GB). Rewrite as a Split-K or streaming-K GEMM: with M=128, a single row-tile program reads the entire 16384\u00d716384 weight once; split the K axis across multiple programs and atomically/segment-reduce, exposing far more parallelism on the 4090's 128 SMs (current grid is only ~64-256 programs).\n- Alternatively, design a persistent \"skinny GEMM\" kernel: one program per N-tile, loading its weight column-block once and streaming all 128 rows of X through registers, with bias+softmax-prep (partial max and sumexp) fused. Then a second small kernel finalizes softmax. This turns the kernel from compute-bound-on-small-M into a pure bandwidth-bound weight stream.\n- Consider storing the weight in fp16/bf16 (cast once at init) and accumulating in fp32 \u2014 halves the 1 GB weight read, which is the bottleneck on a 4090 with ~1 TB/s. Output remains fp32 for the softmax; correctness tolerance (5e-2) easily accommodates this.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 48,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

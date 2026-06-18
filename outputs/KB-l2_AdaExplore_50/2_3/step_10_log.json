@@ -1,0 +1,27 @@
+{
+    "node_id": 10,
+    "parent_node_id": 3,
+    "context_node_ids": [],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The LayerNorm in the reference is over `norm_shape=(out_channels,)` which is the last dim of the (N,C,D,H,W) tensor \u2014 but the channel C is axis=1, not the last axis. Verify: `nn.LayerNorm((C,))` applied to (N,C,D,H,W) actually normalizes the last axis (W=32), not C. The kernel currently normalizes across C, which is why outputs mismatch (~0.14 avg diff). Fix by normalizing across W (the last dim, size 32) per (N,C,D,H) row before pooling.\n- Once the reduction axis is corrected, restructure: one program per `(N, C, do, ho)` tile, load the 2 d-rows \u00d7 2 h-rows \u00d7 W elements, do LN along W (size 32), then sum pairs along W to do the avg-pool's W-axis reduction, then average across the 8-window. Use `BLOCK_W=32`, `num_warps=2`.\n- Pass `sum_weight` as a 0-d tensor pointer (or scalar via `.item()` is fine) but make sure `weight`/`bias` of LayerNorm are length-W (=32 here since norm_shape=(out_channels,)=64? \u2014 re-check: norm_shape is `(out_channels,)=(64,)` and last dim post-convT is W=32). Since norm_shape (64) won't equal W (32), LayerNorm will actually error in the reference unless applied differently \u2014 re-examine reference shapes carefully before redesign.",
+    "large_guidance": "- The dominant cost is `ConvTranspose3d`, not the LN/pool/GELU tail. Even a perfect fusion of the tail leaves the conv-transpose unfused and likely under 1.5\u00d7 speedup. The high-headroom move is to replace `nn.ConvTranspose3d` with a custom Triton scatter-add (or input-stationary gather) kernel that fuses `+ sum_weight` into the epilogue, then keep the existing fused LN+pool+GELU as a second kernel.\n- Carefully re-derive the LayerNorm axis: `nn.LayerNorm(normalized_shape)` normalizes over the **last `len(normalized_shape)` dims**. Here normalized_shape=(64,) and the tensor is (N,64,Do,Ho,Wo) post-conv \u2014 so LN normalizes over the last dim, which is Wo=64 (since stride=2,output_padding=1,padding=1 on W=32 \u2192 Wo=64). Confirm shapes: D'=32, H'=64, W'=64, then pool by 2 \u2192 (32,64,16,32,32). LN reduction axis is W'=64 (last dim), matching the LN weight length 64. The current kernel reduces across C, which is wrong \u2014 redesign must reduce along the last axis.\n- Redesign kernel grid as `(N, C, D'/2, H'/2)` with each program handling 2\u00d72 (d,h) window over a full W'=64 row; load 4 rows of length 64, LN each row over W with the LN affine, sum-reduce W in pairs of 2 (avg-pool W), then average across the 8-window of (2d\u00d72h\u00d72w), apply GELU in epilogue. BLOCK_W=64 fits in registers, num_warps=4.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 11,
+    "global_best_node_id": 6,
+    "global_best_score": [
+        1,
+        1,
+        0.4546136958607456
+    ]
+}

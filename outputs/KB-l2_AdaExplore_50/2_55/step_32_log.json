@@ -1,0 +1,29 @@
+{
+    "node_id": 32,
+    "parent_node_id": 16,
+    "context_node_ids": [
+        16
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Replace `acc[:, 0::2]` / `acc[:, 1::2]` with a reshape-and-reduce: `tl.max(tl.reshape(acc, [BLOCK_M, BLOCK_N // 2, 2]), axis=2)` then `tl.sum(..., axis=1)`. Ensure `BLOCK_N` is constrained to be a multiple of `kernel_size=2` (all current configs already satisfy this).\n- Alternatively, accumulate the pooled-summed scalar directly: compute `pooled = tl.maximum(acc_even, acc_odd)` where the two halves are produced by two separate `tl.dot` calls over disjoint N tiles \u2014 but the reshape path is simpler and keeps one GEMM.\n- After fixing, keep `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4` as the leading config since M=128 fits exactly in one M-tile.",
+    "large_guidance": "- The kernel structure (one program per M-tile, full-N sweep with bias+pool+sum fused into the epilogue and a final scale store) is sound for this shape (M=128, N=K=32768) and should be retained. The only structural issue is the Triton restriction on strided tensor slicing \u2014 use `tl.reshape` to a 3D `[BLOCK_M, BLOCK_N//2, 2]` view then `tl.max` over the last axis instead of `[:, 0::2]`/`[:, 1::2]`.\n- Consider grid swizzling on M only is unnecessary (M is small); instead, since M=128 is tiny, consider splitting the N loop across programs with a 2D grid `(cdiv(M,BLOCK_M), num_n_splits)` and a final `tl.atomic_add` (or two-pass reduction into a scratch buffer) to expose more parallelism \u2014 a single program currently must walk all 32768/BLOCK_N N-tiles serially per row group, leaving most SMs idle.\n- Pre-transpose of weight to (K,N) is already done at init; ensure it stays a registered buffer and that bias is also stored as a buffer to avoid per-call `.contiguous()`/device moves in the hot path.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 33,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

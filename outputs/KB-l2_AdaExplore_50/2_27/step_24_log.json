@@ -1,0 +1,29 @@
+{
+    "node_id": 24,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        23
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.45793541839447105,
+    "max_reward": 0.45793541839447105,
+    "avg_reward": 0.45793541839447105,
+    "score": [
+        1,
+        1,
+        0.577967201754386
+    ],
+    "small_guidance": "- The conv kernel is the bottleneck (B*OC=16384 programs each redoing IC*KD*KH*KW work per spatial tile). Add autotune configs with larger BLOCK_SP (1024, 2048) and try num_warps=4/8, num_stages=2-3 \u2014 current configs cap at 512 and may underutilize the 14\u00d716\u00d716=3584 spatial points per (B,OC) tile.\n- Hoist `pid_b * IC * DHW` and per-(kd,kh,kw) offset constants out; pre-load the entire weight tile for the OC (only IC*KD^3=192 floats) into registers once before the spatial loop instead of issuing tl.load(w_ptr+w_idx) inside the innermost loop.\n- For the GN+mean kernel, tune BLOCK_S to a single tile covering all S=3584 (next_pow2=4096) with num_warps=8 so the reduction is one pass; drop the per-channel `if c_off == k` chain and accumulate into a small register array indexed by static_range.",
+    "large_guidance": "- Recast Conv3D as an implicit-GEMM: one program per (B, OC-tile, output-spatial-tile) with BLOCK_OC\u00d7BLOCK_SP output tile and a K-loop over IC*KD*KH*KW. Load a [BLOCK_OC, BLOCK_K] weight tile and [BLOCK_K, BLOCK_SP] im2col-gathered input tile, then `tl.dot`. With OC=16 (use BLOCK_OC=16) and K=192, this turns the current 16384-program scalar-accumulate loop into a tensor-core GEMM and should be several\u00d7 faster.\n- Fuse hardswish + GroupNorm-stats into the conv epilogue: each program writes conv_out for its (B, OC-tile, SP-tile) and atomically (or via a second small reduction kernel) accumulates per-(B,group) sum and sumsq. Then a tiny second kernel reads sums to compute mean/invstd and per-channel mean*invstd*gamma+beta for the final (B,C) output, avoiding the second full pass over the 14M-element conv_out.\n- Alternatively, since the final output is only (B, C) = (1024, 16) and S=3584 per (B,C), make a single persistent kernel per (B, group) that streams the conv computation in spatial tiles, applies hardswish, accumulates sum/sumsq across the group's channels on the fly, and at the end recomputes-or-stores to finalize GN+mean \u2014 eliminating the conv_out materialization entirely.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 25,
+    "global_best_node_id": 12,
+    "global_best_score": [
+        1,
+        1,
+        0.8509946528898934
+    ]
+}

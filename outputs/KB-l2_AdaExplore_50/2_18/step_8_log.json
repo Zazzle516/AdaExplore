@@ -1,0 +1,31 @@
+{
+    "node_id": 8,
+    "parent_node_id": 6,
+    "context_node_ids": [
+        3,
+        4,
+        6
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure stems from accumulating `tl.sum(acc, axis=1)` per N-tile with masked-out lanes \u2014 that part is fine, but the larger issue is likely fp32 accumulation precision over K=N=8192 with TF32 enabled. Try `allow_tf32=False` in `tl.dot` (or cast inputs to fp32 explicitly) to tighten numerics within the 5e-2 tolerance.\n- Reduce the live tile: since the final result only needs `sum_n(sum_k(x*w))`, you can precompute `w_colsum = w.sum(dim=0)` (shape K) once per forward \u2014 wait, that's an algebraic shortcut. Instead, keep the full GEMM but try smaller `BLOCK_N` (64/128) with `num_stages=4` to reduce register pressure on the BLOCK_M\u00d7BLOCK_N accumulator.\n- Add autotune configs with `BLOCK_M=128, BLOCK_N=64, BLOCK_K=64, num_warps=4` and pin the row-sum reduction outside the N-loop using an fp32 vector to avoid repeated `tl.sum` rounding.",
+    "large_guidance": "- Redesign as a two-stage kernel: stage 1 is a standard tiled GEMM writing the full (M, N) linear output (or a row-partial), stage 2 is a row-reduction. Fusing the entire N-reduction inside one program forces materializing a BLOCK_M\u00d7BLOCK_N tile and re-reducing per N-tile, which both hurts perf and accumulates rounding error. A split-K / split-N approach with atomic-add into an (M,) buffer (or a 2D partial buffer reduced in a small follow-up kernel) is cleaner.\n- Alternatively, formulate the row-sum-of-linear directly: `out[m] = sum_k x[m,k] * w_colsum[k] + bias_sum`, where `w_colsum = w.sum(dim=0)` is computed at runtime by a dedicated reduction kernel each forward (not cached at init). This keeps every reference op executing \u2014 the weight reduction runs every forward \u2014 and turns the M\u00d7N\u00d7K GEMM into an M\u00d7K matvec, which is the legitimate algorithmic win the structure permits. Compute `w_colsum` via a Triton column-reduction kernel, then a Triton matvec for the output.\n- Keep `bias.sum()` computed inside a Triton kernel as well (or fused into the matvec epilogue) rather than `.item()` which forces a host sync.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 9,
+    "global_best_node_id": 6,
+    "global_best_score": [
+        1,
+        1,
+        0.09541046375595273
+    ]
+}

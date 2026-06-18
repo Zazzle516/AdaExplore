@@ -1,0 +1,29 @@
+{
+    "node_id": 29,
+    "parent_node_id": 28,
+    "context_node_ids": [
+        28
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness bug is in the scatter kernel: multiple input positions `(pid_id, ih, iw, kd, kh, kw)` write to the same output position, but each iteration calls `tl.store` with `acc` instead of atomically accumulating. Replace the `tl.store` with `tl.atomic_add` on `out_ptr + out_off` (masked by `oc_mask & valid`), since transposed conv is fundamentally a scatter-add.\n- Also fix the bn_avgpool4_kernel: `scale`, `shift`, `cbias` are loaded with `mask=mask` but indexed by `c` (per-element). The mask is fine but `cbias` from the conv bias should NOT be added separately \u2014 the kernel already reads `conv_out` which does not include the conv bias (since the conv kernel writes pure conv result). However, the bias should be added BEFORE BN, so `(v + cbias) * scale + shift` per-element inside the inner loop, then averaged \u2014 equivalently `mean(v)*scale + (cbias*scale + shift)` since scale/shift/cbias are constant per channel. Precompute `new_shift = cbias*scale + shift` on host and use `acc*scale + new_shift` to save work.\n- Once correct, autotune `BLOCK` in the pool kernel over {128, 256, 512, 1024} with `num_warps \u2208 {4, 8}`, `num_stages=2`.",
+    "large_guidance": "- Restructure the ConvTranspose3d as a **gather-based** kernel (one program per output tile) rather than scatter-add with atomics. For each output `(n, oc, od, oh, ow)` compute `acc = \u03a3_{ic,kd,kh,kw} x[n, ic, (od+PD-kd)/SD, ...] * w[ic, oc, kd, kh, kw]` with stride-divisibility masks. This eliminates atomic contention and lets you fuse the BN affine and the 4\u00d74\u00d74 avg-pool epilogue directly: tile over output-pool-cells `(od2, oh2, ow2)` and reduce 64 conv-transpose outputs per channel inside one program, never materializing the 65\u00b3 post-conv tensor.\n- Use im2col-style GEMM formulation: for each `(N, OC tile, output-spatial tile)` program, loop over `K = IC*KD*KH*KW` with BLOCK_K=16-32, BLOCK_M (OC)=32, BLOCK_N (spatial)=32-64, fp32, `num_stages=2`, `num_warps=4`. Check SMEM: `(32\u00b716 + 16\u00b764)\u00b74\u00b72 \u2248 12 KB`, well within budget.\n- Fuse the entire tail (conv bias add \u2192 BN affine \u2192 two avg_pool3d with k=2) into the epilogue of the conv kernel by having each program produce a tile of pooled outputs directly: each output-pool element aggregates a 4\u00d74\u00d74 conv-transpose region, so emit one program per `(N, OC tile, OD2\u00b7OH2\u00b7OW2 tile)` and write the final pooled result in a single kernel.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 30,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        0.36042383585251137
+    ]
+}

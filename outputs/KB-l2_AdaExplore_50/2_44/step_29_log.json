@@ -1,0 +1,30 @@
+{
+    "node_id": 29,
+    "parent_node_id": 28,
+    "context_node_ids": [
+        22,
+        27
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4563069163582424,
+    "max_reward": 0.4563069163582424,
+    "avg_reward": 0.4563069163582424,
+    "score": [
+        1,
+        1,
+        0.5645320599554994
+    ],
+    "small_guidance": "- The `y.contiguous()` after channels_last conv adds a layout-conversion pass on a 16\u00d7128\u00d7256\u00d7256 tensor that likely costs more than the reduction itself; drop it and have the reduction kernel index the channels_last layout directly (stride-aware loads), or pass `y` as-is and reduce over H*W with the correct strides.\n- The fused mean kernel keeps a `BLOCK_SIZE`-wide accumulator vector; switch to a scalar `acc += tl.sum(v, axis=0)` per chunk to cut register pressure and let `num_warps=4` with `BLOCK_SIZE=2048` work well for SPATIAL=65536.\n- Add an autotune config sweep including `BLOCK_SIZE in {2048,4096,8192,16384}` \u00d7 `num_warps in {4,8}` keyed on SPATIAL; current configs likely aren't picking the best for 65536 elements per (N,C) row.",
+    "large_guidance": "- The ConvTranspose2d (16\u00d764\u00d7128\u00d7128 \u2192 16\u00d7128\u00d7256\u00d7256, stride 2) dominates runtime; replacing it with a custom Triton scatter-add kernel (input \u00d7 kernel outer product scattered into the output grid with stride/padding/output_padding index math) is the high-headroom move. Fast_p=0.56 with the tail already fused confirms this.\n- Better: fuse ConvTranspose2d + scalar multiply + global mean into one kernel that never materializes the 16\u00d7128\u00d7256\u00d7256 output. One program per (N, OC) accumulates the sum directly: loop over (ic, kh, kw, ih, iw), and for each contribution add `x[n,ic,ih,iw] * w[ic,oc,kh,kw]` weighted by the count of valid output positions it lands in (which equals the full output H*W because stride=2,pad=1,opad=1 makes every input element contribute to every output position with appropriate kh,kw \u2014 but you must still iterate over the full kh,kw,ih,iw to preserve the multiply count). Bias contributes `bias[oc] * H_out * W_out`.\n- If keeping the materialized conv output, write a channels_last-aware reduction kernel that consumes the conv's native layout (no `.contiguous()` round-trip), with one program per (N, C) tile reducing over H*W via vectorized loads along the W axis.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 30,
+    "global_best_node_id": 27,
+    "global_best_score": [
+        1,
+        1,
+        0.5657057232818103
+    ]
+}

@@ -1,0 +1,31 @@
+{
+    "node_id": 49,
+    "parent_node_id": 42,
+    "context_node_ids": [
+        23,
+        26,
+        42
+    ],
+    "depth": 5,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5144350146516793,
+    "max_reward": 0.5144350146516793,
+    "avg_reward": 0.5144350146516793,
+    "score": [
+        1,
+        1,
+        1.0440888708763536
+    ],
+    "small_guidance": "- The conv_transpose3d (torch) almost certainly dominates the 8.36ms runtime; further tuning of the post kernel (NH_PER_PROG, num_warps) will not move the needle. If staying small, try adding configs with NH_PER_PROG=Ho (persistent per-channel) and num_warps=1, num_stages=2, plus widening BLOCK_W to process two output rows (Ho dim) per program to amortize gamma/beta loads.\n- Switch the layout to channels_last_3d before the conv_transpose call \u2014 cuDNN often picks faster algos for NDHWC fp32 on Ampere \u2014 and adjust the post-kernel indexing accordingly.\n- Enable TF32 for matmul (`torch.backends.cuda.matmul.allow_tf32 = True`) in addition to cuDNN flags; verify cuDNN benchmark actually picks the fastest algo by warming up.",
+    "large_guidance": "- Replace the torch `F.conv_transpose3d` with a custom Triton kernel: implement it as a scatter-add of the input\u00d7weight outer product into the output grid (stride=2, pad=1, output_padding=1), fusing the bias+sum_weight add into the epilogue. This is the dominant op and the highest-headroom move per the skill notes (`fast_p` near 1.0 with the tail already fused implies the conv is the bottleneck).\n- Alternatively, formulate conv_transpose3d as a gather-based GEMM: for each output voxel, gather the contributing input positions (input_idx = (out + pad - kh)/stride when divisible) and reduce over (IC, KD, KH, KW). One program per (N, OC tile, output spatial tile), GEMM-K = IC*KD*KH*KW with k-loop over input channels. Tile sizes BLOCK_M=32, BLOCK_N=32, BLOCK_K=16, num_warps=4, num_stages=2 fit SMEM safely.\n- Fuse the entire pipeline end-to-end: conv_transpose3d producing output in channels_last, immediately followed in a second kernel (or epilogue) by sum+LayerNorm(over C)+AvgPool+GELU. Note: norm_shape=(out_channels,) means LayerNorm reduces over the channel axis, not W \u2014 the current kernel happens to be correct only because the layout it iterates matches that semantics; double-check this when redesigning. A channels-last layout makes the LN reduction contiguous.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 50,
+    "global_best_node_id": 42,
+    "global_best_score": [
+        1,
+        1,
+        1.0453392767097385
+    ]
+}

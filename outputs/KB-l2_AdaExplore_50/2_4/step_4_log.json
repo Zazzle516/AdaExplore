@@ -1,0 +1,29 @@
+{
+    "node_id": 4,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.43474210508445804,
+    "max_reward": 0.43474210508445804,
+    "avg_reward": 0.43474210508445804,
+    "score": [
+        1,
+        1,
+        0.3866223669467787
+    ],
+    "small_guidance": "- The current kernel re-decodes `ih/iw/ic/kh/kw` and recomputes full input offsets every K-iteration; precompute `(n_idx*IH*IW*IC + oh_idx*IW*IC)` and `(ow_idx*IC)` once outside the loop, and hoist `offs_n*KH*KW*IC` once for the weight base, so the inner loop only adds small per-k deltas.\n- Add larger autotune configs targeting OC=128 exactly (`BLOCK_N=128`, `BLOCK_M=128/256`, `BLOCK_K=64`, `num_warps=8`, `num_stages=2-4`) and drop the small `BLOCK_N=64` configs \u2014 OC is only 128 so `BLOCK_N=128` covers it in one tile and removes the OC mask.\n- Specialize KH=KW=3 (constexpr) and fully unroll the 9-tap kernel loop in NHWC over IC tiles of 32/64; this eliminates the per-iter `kh/kw` decode and lets `tl.dot` run on a clean `[BLOCK_M, IC]` \u00d7 `[IC, BLOCK_N]` GEMM 9 times.",
+    "large_guidance": "- Switch from implicit-im2col-GEMM to an **output-stationary direct conv** specialized for 3\u00d73, IC=64, OC=128: one program per `(N, oh_tile, ow_tile, OC tile=128)`, loop over the 9 kernel taps and over IC in tiles of 32/64, accumulating with `tl.dot`. This removes all `kh/kw` index math from the inner loop and keeps weight reads tiny (9 \u00d7 IC \u00d7 OC small enough to stay hot in L2).\n- Keep NHWC, but skip the explicit `permute(...).contiguous()` round-trip on input and output \u2014 fuse the layout transform into the kernel's gather/store (read NCHW directly with strided offsets, write NCHW directly). The current pre/post `contiguous()` copies of a 64\u00d7128\u00d7254\u00d7254 tensor cost several ms each and are a large fraction of the 35 ms budget.\n- Cache the NHWC (or kernel-ready) weight as a persistent buffer in `__init__`/first forward instead of re-permuting and re-uploading every call; also keep the bias contiguous on GPU. Combined with the fused layout, this should remove ~2 full-tensor copies per forward.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 5,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.6700203155339807
+    ]
+}

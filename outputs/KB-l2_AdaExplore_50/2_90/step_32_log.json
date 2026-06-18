@@ -1,0 +1,31 @@
+{
+    "node_id": 32,
+    "parent_node_id": 19,
+    "context_node_ids": [
+        11,
+        30,
+        18
+    ],
+    "depth": 5,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.44210879272727277,
+    "max_reward": 0.44210879272727277,
+    "avg_reward": 0.44210879272727277,
+    "score": [
+        1,
+        1,
+        0.44739754
+    ],
+    "small_guidance": "- The kernel currently does a rank-1 outer-product update per (kt,kh,kw,ic) \u2014 27*8=216 outer products of shape [BLOCK_M, BLOCK_OC]. Switch the inner accumulation to a real `tl.dot`: build an `x_tile` of shape [BLOCK_M, IC_PADDED] (IC_PADDED=8) and a `w_tile` of shape [IC_PADDED, BLOCK_OC] per (kt,kh,kw), then `acc += tl.dot(x_tile, w_tile)`. This will use tensor cores and dramatically cut the FMA count vs. scalar outer products.\n- Pass IC as `tl.constexpr` (it's 8) so you can use `tl.arange(0, IC)` and vectorize the IC dimension; also pass KT/KH/KW as constexpr (already done) but ensure `tl.static_range` is used so all 27 taps fully unroll.\n- Add autotune configs with larger M tiles (BLOCK_OH=8, BLOCK_OW=32 \u2192 BLOCK_M=256) and BLOCK_OC=32/64, num_warps=4/8, num_stages=3, since the dot-based variant becomes compute-bound and benefits from bigger tiles. Also try a tile that covers a full OW=62 row in one block (BLOCK_OW=64, BLOCK_OH=2).",
+    "large_guidance": "- Reformulate as an implicit-GEMM: M = N*OD*OH*OW (output spatial), N = OC, K = IC*KT*KH*KW=216. One program per (M tile, OC tile), inner loop accumulating with `tl.dot` over K tiles of size BLOCK_K (e.g. 32 or 54). Use the standard im2col index math inside the kernel (no materialized unfold). Fuse bias + LeakyReLU + sum_tensor + clamp + GELU in the epilogue on the accumulator before the store.\n- Use channels-last (NDHWC) layout for both input and output so the IC and OC axes are contiguous; this makes the GEMM-K reads coalesce and removes the strided IC gather currently being done. Convert x once at the start of forward and convert back (or keep output NDHWC if downstream allows).\n- Consider a persistent-CTA scheme where each program walks several output tiles, amortizing weight reloads (weights are only OC*IC*27*4 = 55KB and fit entirely in L2/shared). Pre-stage the full weight tensor into shared memory once per program and reuse across many output positions.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 33,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        1.0859163592233008
+    ]
+}

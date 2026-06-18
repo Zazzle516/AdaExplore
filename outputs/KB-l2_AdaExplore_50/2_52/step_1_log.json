@@ -1,0 +1,27 @@
+{
+    "node_id": 1,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The output store is wrong: the kernel writes `acc` directly but the BatchNorm fold (scale/shift) and Mish activation are not applied; meanwhile the standalone `mish_triton` runs after on the conv output, so BN is still done in PyTorch \u2014 the correctness mismatch likely comes from missing the Mish epilogue path being inconsistent with how BN running stats update during `.train()` eval. Verify the test runs in eval mode; if in training, BN running stats differ because it's computed on the Triton conv output (same tensor, should match) \u2014 re-check tolerance, possibly fp32 dot accumulation order; try `tl.dot(..., allow_tf32=False)` to rule out TF32 drift.\n- Add a config with `BLOCK_M=128, BLOCK_N=64, BLOCK_K=16, num_warps=8` and `BLOCK_M=64, BLOCK_N=128, BLOCK_K=16, num_warps=8`; current best tile is likely 64\u00d764\u00d732 but the K loop is short (576) so wider M/N tiles amortize weight loads better.\n- Fuse Mish + BN-affine into the conv epilogue (scale/shift already plumbed but unused) so the conv output is written once already activated and normalized \u2014 eliminates two extra full passes over a 64\u00d7128\u00d7126\u00d7126 tensor.",
+    "large_guidance": "- Rewrite as a single fused conv\u2192Mish\u2192BN kernel in NHWC (channels_last) layout: one program per (N, OH-tile, OW-tile, OC-tile), accumulate the GEMM with K = IC\u00b7KH\u00b7KW contiguous in channel, then in the epilogue compute `y = acc + bias`, `m = y * tanh(softplus(y))`, `out = m * scale + shift` where scale/shift are precomputed from BN running stats at eval time (`scale = gamma / sqrt(var+eps)`, `shift = beta - mean*scale`). This collapses three passes to one and is the high-headroom move.\n- Switch the GEMM orientation to M=N\u00b7OH\u00b7OW (rows = output pixels) and N=OC so the output store is naturally NHWC-contiguous and the bias/scale/shift broadcast along the contiguous N axis \u2014 simpler masking and better store coalescing than the current OC\u00d7(N\u00b7OH\u00b7OW) layout that requires a permute+contiguous afterward.\n- Make sure BN is in eval mode for the fold; if the harness runs in train mode, you must still run real BN (compute batch mean/var) \u2014 in that case fuse a per-channel reduction kernel after the conv-Mish kernel rather than using running stats. Detect `self.training` in `forward` and dispatch.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 2,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

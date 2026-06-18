@@ -1,0 +1,30 @@
+{
+    "node_id": 15,
+    "parent_node_id": 11,
+    "context_node_ids": [
+        10,
+        11
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4491448980819905,
+    "max_reward": 0.4491448980819905,
+    "avg_reward": 0.4491448980819905,
+    "score": [
+        1,
+        1,
+        0.5054454091764213
+    ],
+    "small_guidance": "- The conv kernel's K-loop is `static_range` over `C_IN_C * KH * KW = 8*3*3 = 72` tiny iterations doing rank-1 outer-product updates; this is the bottleneck. Restructure the inner accumulation to use `tl.dot` by packing `(C_IN_C*KH*KW)` as a real K dimension with `BLOCK_K=16 or 32`, loading `[BLOCK_OC, BLOCK_K]` weights and `[BLOCK_K, BLOCK_HW]` activations and calling `tl.dot`. This will yield a several-x speedup over the current scalar FMA path.\n- Add autotune configs centered on `BLOCK_OC=64, BLOCK_HW=128, BLOCK_K=32, num_warps=4, num_stages=3` and also try `BLOCK_OC=128, BLOCK_HW=64`. Coalesce activation loads by computing `ih*W_IN+iw` once per (kh,kw) outside the ic loop.\n- For the GN+pool kernel, fuse the GN-stats pass into the same kernel by making one program per `(N, g)` persistent: compute mean/rstd over the group, then loop over the group's channels applying affine + 4\u00d74 maxpool + clamp, writing pooled output directly. This eliminates the intermediate `y` re-reads and one full kernel launch.",
+    "large_guidance": "- Rewrite the conv as a true im2col-style GEMM with `tl.dot`: program grid `(N, ceil(C_OUT/BM), ceil(H_OUT*W_OUT/BN))`, K dim = `C_IN*KH*KW = 72`, processed in `BLOCK_K=32` chunks (pad to 96 with masked zeros if needed). Load weight tile `[BM, BK]` directly (weight is already `[C_OUT, C_IN*KH*KW]` after reshape) and gather activation tile `[BK, BN]` via computed `(ic, kh, kw, oh, ow)` indices. This converts the kernel from memory-bound scalar FMAs into tensor-core-friendly matmul tiles.\n- Fold the entire post-conv pipeline (GN stats \u2192 affine\u00b7scale \u2192 4\u00d74 maxpool \u2192 clamp) into a single persistent kernel keyed on `(N, group)`. With `C=64, H=W=126, G=16, CPG=4`, each group holds `4*126*126 \u2248 63k` elements \u2014 fits in a two-pass in-kernel reduction (compute sum/sumsq, then re-stream applying affine and reducing 4\u00d74 windows into pooled output). Eliminates the `mean/rstd` scratch tensors and the second launch.\n- Better still: fuse the conv epilogue into the GN-stats producer. Write conv outputs in `channels_last` layout so the CPG=4 channels of a group are contiguous, and have the conv kernel atomically accumulate per-group sum and sumsq (or, since one program already owns a full `(N, oc-tile, hw-tile)`, write partial sums to scratch and a tiny finalize kernel does mean/rstd). Then the second pass does affine+pool+clamp in one shot.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 16,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        0.8013158925967656
+    ]
+}

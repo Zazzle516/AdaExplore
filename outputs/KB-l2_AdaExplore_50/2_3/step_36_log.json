@@ -1,0 +1,30 @@
+{
+    "node_id": 36,
+    "parent_node_id": 35,
+    "context_node_ids": [
+        34,
+        35
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.44025552331548945,
+    "max_reward": 0.44025552331548945,
+    "avg_reward": 0.44025552331548945,
+    "score": [
+        1,
+        1,
+        0.4321080673527879
+    ],
+    "small_guidance": "- The kernel currently launches one program per (N, C, Dp, Hp) = 32\u00b764\u00b78\u00b716 = 262144 programs, each doing only ~64 elements of work \u2014 launch overhead dominates. Tile multiple Hp (and possibly Dp) rows per program, e.g. process a full (Dp, Hp) plane per (N, C) program with a 2D block, so each program amortizes more work.\n- Add `@triton.autotune` over `num_warps \u2208 {2, 4, 8}` and a few BLOCK_HP tile sizes; with W=64 the per-row reduction is tiny, so `num_warps=2` may win. Keep `num_stages=2`.\n- The conv_transpose3d output is large (32\u00b764\u00b732\u00b764\u00b764 \u2248 256MB) and likely dominates runtime \u2014 verify with a profile; if so, tuning the epilogue further has limited headroom.",
+    "large_guidance": "- The torch ConvTranspose3d almost certainly dominates the 20ms runtime (the fused epilogue touches ~256MB once). Replace it with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile), computing the input\u00d7weight outer product and scattering into the strided output grid with stride=2, padding=1, output_padding=1. Fuse sum_weight + LayerNorm + AvgPool + GELU directly into the output write so the large intermediate is never materialized.\n- Alternatively, since the LayerNorm normalizes only over the C=64 channel-axis-equivalent (here W=64 since norm_shape=(out_channels,) is applied on the last dim after a layout that puts channels last \u2014 verify), consider a gather-style direct conv-transpose that writes channels-last so the LN reduction is contiguous and can be fused entirely in registers.\n- Pick the fusion boundary at the pooled output: each program computes one (N, C, Dp, Hp, Wp) element by accumulating the 2\u00d72\u00d72 pre-pool window values, each of which requires computing one conv-transpose output element from input \u00d7 weight contributions. This eliminates the giant intermediate entirely and is the high-headroom redesign.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 37,
+    "global_best_node_id": 26,
+    "global_best_score": [
+        1,
+        1,
+        1.0415970119959803
+    ]
+}

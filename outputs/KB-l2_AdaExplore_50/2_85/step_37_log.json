@@ -1,0 +1,30 @@
+{
+    "node_id": 37,
+    "parent_node_id": 17,
+    "context_node_ids": [
+        10,
+        17
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.47762069578207056,
+    "max_reward": 0.47762069578207056,
+    "avg_reward": 0.47762069578207056,
+    "score": [
+        1,
+        1,
+        0.740370740202082
+    ],
+    "small_guidance": "- The conv kernel currently does a gather with `pid_n` as a grid axis and recomputes `x_idx` per (kh,kw); switch to NHWC (channels-last) input layout so the IC loop becomes a contiguous K-dim load, and add autotune configs with BLOCK_OC=128/BLOCK_HW=64 plus num_stages=4 to better hide L2 latency for the 126x126 output.\n- Fuse the GroupNorm stats reduction directly into the conv epilogue (one program per (N, group, hw-tile) accumulating sum/sumsq across its OC range) \u2014 currently three separate launches over a 128\u00d764\u00d7126\u00d7126 tensor are bandwidth-bound.\n- For the fused GN+scale+maxpool kernel, use POOL-aligned BLOCK_HW (e.g. 256 output elements = 1024 input elements) and process 2-4 channels per program to amortize the mean/rstd loads; also drop the \"safe\" variant's per-element affine inside the pool loop and instead branch on `a>=0` at the host to dispatch to the cheaper max-then-affine path (scale is initialized to ones, so `a>=0` almost always).",
+    "large_guidance": "- Replace the direct-gather conv with an im2col-style implicit GEMM: one program per (N, OC tile, OHW tile), inner loop over K=IC*KH*KW with BLOCK_K=32\u201364, using `tl.dot` for the matmul. With C_IN=8, KH=KW=3 \u2192 K=72, padding to 96 and using tensor cores (fp32 via tf32) will be far faster than the current scalar outer-product accumulation.\n- Persist the conv output in a channels-last layout and fuse the GroupNorm reduction into the conv epilogue: each conv program writes its tile and atomically accumulates per-(N,group) sum/sumsq into a small workspace, eliminating one full-tensor read pass. Then a single fused kernel does GN-affine + scale + 4\u00d74 maxpool + clamp, reading conv output once.\n- Alternatively, since output H*W=126*126 is large and maxpool is 4\u00d74, restructure the post-conv pipeline as one kernel-per-(N, C, pooled-tile) that computes its 4\u00d74 input window's normalized values on the fly using precomputed (mean, rstd) \u2014 collapsing scale, maxpool and clamp into the GN apply pass with no intermediate tensor write.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 38,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        0.9287336140344138
+    ]
+}

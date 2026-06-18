@@ -1,0 +1,29 @@
+{
+    "node_id": 19,
+    "parent_node_id": 9,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4302693657365737,
+    "max_reward": 0.4302693657365737,
+    "avg_reward": 0.4302693657365737,
+    "score": [
+        1,
+        1,
+        0.34972226732673267
+    ],
+    "small_guidance": "- The epilogue kernel is already memory-bound and tiny relative to the ConvTranspose3d cost (which dominates ~10s vs 3.5s baseline). Small tuning of BLOCK_SIZE / num_warps on the epilogue won't move fast_p \u2014 it's already a small fraction of runtime.\n- If staying with this structure, try channels_last_3d memory format on the conv output and bias broadcast to improve the conv's own throughput, and use BLOCK_SIZE=1024 with num_warps=4 for the epilogue (better occupancy on 4090 for pure elementwise).\n- Ensure bias indexing is computed with integer division on a precomputed `offsets // DHW % C` to avoid two modulo ops.",
+    "large_guidance": "- The bottleneck is `nn.ConvTranspose3d` itself. Replace it with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile) computing the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and atomic-adding into the output grid at `(n, oc, d*stride - pad + kd, h*stride - pad + kh, w*stride - pad + kw)`. Handle output_padding by extending the output extent.\n- Alternatively, formulate as a gather-style GEMM: for each output voxel (n, oc, od, oh, ow), iterate over (ic, kd, kh, kw) selecting only kernel taps that align with stride (i.e., where `(od + pad - kd) % stride == 0`), gathering from the corresponding input voxel. This avoids atomics and maps cleanly to a tiled GEMM along (OC, output-spatial) with K=IC*kd_eff*kh_eff*kw_eff. Fuse bias-add and the `(2x + bias)*x + x` epilogue directly into the GEMM store.\n- Use channels_last_3d layout so IC is the contiguous axis for the GEMM-K loads, autotune BLOCK_M/BLOCK_N/BLOCK_K over {32,64,128}/{32,64,128}/{16,32}, num_warps\u2208{4,8}, num_stages\u2208{2,3}.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 20,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.34972226732673267
+    ]
+}

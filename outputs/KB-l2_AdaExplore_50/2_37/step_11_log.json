@@ -1,0 +1,30 @@
+{
+    "node_id": 11,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        3,
+        4
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (avg diff ~9e-5, max ~1.6e-3) is from the GroupNorm reduction: with `BLOCK_CPG = next_pow2(CPG)` and `mask & valid`, `tl.where(mask, x - mean, 0.0)` is fine, but when `CPG` is not a power of 2 the mean uses `cnt = CPG` correctly; the issue is likely that `valid` is applied to load but `mean = tl.sum(x)/cnt` is correct only when out-of-row lanes are 0. Verify `mask & valid` zeros out invalid lanes \u2014 currently when `valid` is False the whole group still computes; ensure the store mask combines `mask & valid` (it does). The actual issue: `eps` is passed as a Python float positional arg, which is fragile. Pass `eps` as a `tl.constexpr` and verify numerics \u2014 also cast `gamma`/`beta` loads to fp32 before the multiply to avoid rounding.\n- For GEMM speed, try larger `BLOCK_M=256, BLOCK_N=128, BLOCK_K=32` with `num_warps=8, num_stages=4` as the primary config since M=32768, N=4096 are both large; also add `BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, num_stages=5`.\n- For GroupNorm, CPG=64 here \u2014 use `BLOCK_CPG=64`, `ROWS_PER_PROG=1` or 2 with `num_warps=1`, and process multiple groups per program along the row dimension to amortize gamma/beta loads (cache them).",
+    "large_guidance": "- Fuse GroupNorm directly into the GEMM epilogue is impractical (cross-tile reduction), but you can fuse the post-GEMM `+ bias` and the GroupNorm into a single kernel that reads the GEMM output once: one program per `(row, group)`, BLOCK_CPG=64 lanes, does sigmoid\u00b7x+bias inline if you also pass the pre-swish accumulator \u2014 alternatively just fuse `+bias` into the GEMM epilogue (already done) and write a dedicated row-wise GroupNorm where each program handles one full row's 64 groups using a 2D tile (G \u00d7 CPG = 64\u00d764 = 4096 lanes) so gamma/beta are loaded once per row.\n- Switch GroupNorm layout: load the entire row (4096 elements) into a `[G, CPG]` tile, reduce along CPG axis with `tl.sum(..., axis=1)`, then broadcast \u2014 eliminates the per-group launch overhead (32768\u00d764 = 2M programs currently) down to 32768 programs.\n- Alternatively, since num_groups=64 and CPG=64 are both 64, persistent kernel: one program per row, 4 warps, vectorized 4096-wide row load, do all 64 group reductions in one shot.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 12,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

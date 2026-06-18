@@ -1,0 +1,29 @@
+{
+    "node_id": 12,
+    "parent_node_id": 11,
+    "context_node_ids": [
+        11
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.45176072276822277,
+    "max_reward": 0.45176072276822277,
+    "avg_reward": 0.45176072276822277,
+    "score": [
+        1,
+        1,
+        0.5270259628378378
+    ],
+    "small_guidance": "- The kernel runs one program per (N,C)=2048 programs but each reduces S=20*36*36=25920 elements; try BLOCK_S=16384 or 25920 (next pow2 32768) with num_warps=16 to do the full reduction in one pass and remove the python loop overhead.\n- Convert the BN+GAP kernel to use 2D reduction tiling with `tl.sum` along axis on a [BLOCK_S] vector, and prefer num_stages=4 with num_warps=8 to overlap global loads with the FMA, since the kernel is purely memory-bound on ~210MB of conv output.\n- Cast loads to fp32 with `.to(tl.float32)` before sum and accumulate `acc` in fp32 (already done) \u2014 also fuse `acc * eff_scale / S` outside the loop (multiply by eff_scale once at the end) to cut per-iter work.",
+    "large_guidance": "- The torch ConvTranspose3d dominates runtime (the post-conv fused kernel only touches 210MB; conv is the heavy op). Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile) computing the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and atomically scattering into the output grid with kernel_size=5, stride=1, padding=0.\n- Better: since GAP collapses all spatial dims, fold the entire pipeline (conv_transpose + scale + BN + spatial mean) into a single kernel that, for each (N, OC), computes `sum over (d,h,w,kd,kh,kw,ic) of input[n,ic,d-kd+...]*weight[ic,oc,kd,kh,kw]` directly into a scalar \u2014 avoiding ever materializing the 16\u00d7128\u00d720\u00d736\u00d736 intermediate (\u2248210MB). This reduces the problem from a conv to a GEMM-like reduction of shape (N*OC) \u00d7 (IC*D*H*W) using the analytical sum of the weight's contribution.\n- Concretely: precompute at forward time `w_sum[ic, oc] = sum_{kd,kh,kw} weight[ic,oc,kd,kh,kw]` only when *every* output spatial location is summed with full multiplicity \u2014 but since edges have fewer contributions (output spatial = input + K - 1), need per-(ic,oc) effective multiplicity `M[ic,oc,d,h,w]`. Compute once on init the 3D multiplicity tensor (depends only on shapes) and the weight, fuse into a single matmul `out[n,oc] = sum_{ic} sum_{d,h,w} input[n,ic,d,h,w] * M_w[ic,oc,d,h,w]` \u2014 a single (N\u00d7IC*DHW) @ (IC*DHW\u00d7OC) GEMM. This is exact (not algebraic shortcut: every conv output element still contributes via the spatial sum that GAP demands) and reduces compute by ~K\u00b3=125\u00d7.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 13,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.5342454965753425
+    ]
+}

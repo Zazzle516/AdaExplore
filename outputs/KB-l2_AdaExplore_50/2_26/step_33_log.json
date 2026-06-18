@@ -1,0 +1,29 @@
+{
+    "node_id": 33,
+    "parent_node_id": 32,
+    "context_node_ids": [
+        30
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The hardswish formula is wrong: reference computes `x * hardswish(x) = x * x * relu6(x+3)/6`, but the kernel computes `v * hs` where `hs = v * relu6 * (1/6)`, giving `v*v*relu6/6` \u2014 that actually matches. However, correctness fails because the kernel writes to `out_ptrs` which it also loaded from earlier as `add_vals` (dead load) \u2014 that's not the bug. The real bug is likely the redundant first `tl.load(out_ptrs, ...)` overwriting nothing, but `add_input` and `out` have identical strides only if shapes match; verify `add_input.stride()` is used for `add_ptrs`, not `out.stride()`. Use `add_input.stride(*)` for `add_ptrs` instead of reusing `stride_on/oc/od/oh/ow` from `out`.\n- Once corrected, try BLOCK_OC=64, BLOCK_SP=32 with num_warps=4, and add a `triton.autotune` over (BLOCK_OC, BLOCK_SP) \u2208 {(32,64),(64,32),(64,64),(32,128)} with num_stages \u2208 {2,3}.\n- Remove the dead `tl.load(out_ptrs, ...)` to save a useless global load.",
+    "large_guidance": "- Switch to a scatter-add formulation per the skill guidance: one program per (N, IC tile, input-spatial tile) computes the outer product `x[n,ic,id,ih,iw] * w[ic,oc,kd,kh,kw]` and atomically scatters into the output grid. This avoids the gather's divisibility checks (`id_num % STRIDE == 0`) which currently waste 7/8 of the kernel iterations for stride=2.\n- Alternatively, keep gather but split the kernel-loop into the `STRIDE^3=8` phase classes so that the divisibility check is resolved at compile time \u2014 each output voxel only touches kernel positions of one phase. This collapses the inner loop from 27 to ~4 effective taps for k=3, stride=2.\n- Use channels-last (NDHWC) layout for both input and output so the IC reduction loop loads contiguous vectors; combine with `tl.dot` over (BLOCK_SP, IC) \u00d7 (IC, BLOCK_OC) GEMM tiles instead of the current scalar accumulate.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 34,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        0.7818646650943397
+    ]
+}

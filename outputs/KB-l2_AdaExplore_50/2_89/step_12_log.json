@@ -1,0 +1,29 @@
+{
+    "node_id": 12,
+    "parent_node_id": 9,
+    "context_node_ids": [
+        11
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.02326564332046332
+    ],
+    "small_guidance": "- The scatter-add ConvTranspose3d is the bottleneck (atomic_add into global memory, 128*3*16*32*32 = 6.3M atomics each accumulating 16 OC contributions). Reduce atomic pressure: switch the grid to gather-style \u2014 one program per `(N, OC tile, output spatial tile)` that loops over `(IC, kd, kh, kw)` and accumulates in registers, eliminating atomics entirely.\n- Add `triton.autotune` over `BLOCK_OC \u2208 {16, 32}`, `BLOCK_SPATIAL \u2208 {32, 64, 128}`, `num_warps \u2208 {2, 4, 8}`, `num_stages \u2208 {2, 3}` for the conv kernel, and fuse the bias init into the same kernel (no separate init pass).\n- For the fused post kernel, increase `num_warps` to 4 and consider one program per `(N, PD)` tile that processes multiple `(PH, PW)` to amortize the subtract-vector load.",
+    "large_guidance": "- Replace the scatter-add ConvTranspose3d with a gather-based formulation: for each output element `(n, oc, od, oh, ow)`, iterate over `(ic, kd, kh, kw)` where the corresponding input index `(id, ih, iw) = (od + PD - kd) / SD` is integer-valid, and accumulate in registers. This removes all `tl.atomic_add` calls \u2014 atomics on 6M+ sites are catastrophically slow on Ada and are the dominant cost here.\n- Fuse the entire pipeline (conv-transpose \u2192 maxpool \u2192 softmax \u2192 subtract \u2192 swish \u2192 channel-max) into a single kernel: one program computes one output element of the final `(N, PD, PH, PW)` tensor, holding a `(BLOCK_OC,)` accumulator over all OC, materializing the 2x2x2 pooled values for the whole channel vector in registers, then softmax/sub/swish/max in-register. With OC=16 and pool window 2x2x2=8, this is tiny per-program compute and avoids writing the giant `(N, OD, OH, OW, OC)` intermediate (16*32*64*64*16 = 33M floats).\n- Use channels-last weight layout `[OC, IC, KD, KH, KW]` reorganized once at init for contiguous OC-vector loads, and keep the subtract vector and bias in shared/constant memory since OC is only 16.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 13,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.385241751724138
+    ]
+}

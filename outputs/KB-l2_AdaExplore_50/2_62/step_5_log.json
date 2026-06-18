@@ -1,0 +1,30 @@
+{
+    "node_id": 5,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        3,
+        4
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure is likely because `gn_leaky_double_kernel` computes `diff = x - mean` without masking inactive lanes first; when CH_PER_G is not a power of two, `x` at masked lanes is 0 and contributes `-mean` into the variance sum. Mask `x` before the sum (already done via `other=0`) but compute `mean = sum_x / CH_PER_G` is correct only if CH_PER_G==BLOCK or masked lanes don't enter `diff*diff`. The `tl.where(mask_c, x-mean, 0.0)` is correct, so check whether `negative_slope` and `eps` (passed as Python floats) are being specialized incorrectly \u2014 pass them as `tl.constexpr` to bake in.\n- Here CH_PER_G = 8192/512 = 16, which is a power of two so BLOCK==CH_PER_G \u2014 masking isn't the issue. More likely the bias from `fc.bias` is being applied via `weight_t` GEMM but the GroupNorm `eps=1e-5` and `negative_slope=0.01` are being passed as Python floats \u2014 convert them to `tl.constexpr` to avoid launcher specialization issues, and double-check `gamma`/`beta` indexing.\n- Increase `num_warps` to 2 or 4 for the GN kernel (CH_PER_G=16 is tiny but 8 groups per program \u2192 128 elements, can use more warps with larger GROUPS_PER_PROG).",
+    "large_guidance": "- The current correctness bug suggests fragile parameter passing. Redesign so the GN kernel processes one row (all C=8192 channels, G=512 groups) per program: load the entire row into SRAM once, compute per-group mean/var via a 2D reduction (reshape to [G, CH_PER_G]=[512,16]), then apply affine+LeakyReLU+double in-register and store. This avoids B*G=524288 tiny launches and gives one program per batch row (1024 programs).\n- Alternatively, fuse the GN+LeakyReLU+double epilogue directly into the GEMM kernel: after computing the BLOCK_M x BLOCK_N output tile, if BLOCK_N spans a full group's channels you can normalize within the tile. But since groups are size 16, tile N along group boundaries (BLOCK_N=128 = 8 groups) and do per-group reduction in the epilogue across BLOCK_N. This eliminates the second kernel entirely.\n- Pass all scalar params (`eps`, `negative_slope`) as `tl.constexpr` to bake into PTX and avoid Python-float launcher fragility.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 6,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

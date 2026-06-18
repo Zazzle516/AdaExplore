@@ -1,0 +1,29 @@
+{
+    "node_id": 38,
+    "parent_node_id": 37,
+    "context_node_ids": [
+        31
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing because GroupNorm's group is being formed from one (BLOCK_M, BLOCK_N=64) tile \u2014 but the BLOCK_N=64 columns of a group correspond to channels `pid_n*64 : pid_n*64+64`, which is correct *only* if `num_groups == N/64`. That part is fine, but the issue is the mean/var must be computed over the *full* group across all batch rows? No \u2014 GroupNorm normalizes per-sample across channels within the group, so per-row reduction over BLOCK_N=group_size is correct. The actual bug is likely `gs = tl.full([1], BLOCK_N, ...)` interacting with broadcasting, or the mask logic when N is not a multiple of BLOCK_N (here it is, so fine). Most likely: the swish/bias path uses `acc += bias_lin[None, :]` with mask=mask_n loaded with other=0.0 \u2014 fine. Check that `eps` is passed as `tl.constexpr` or as fp32 \u2014 currently it's a raw Python float positional arg, which is the known-fragile pattern. Pass `eps` as `tl.constexpr`.\n- Verify numerical: max diff is ~0.0017 with avg 9e-5 \u2014 this looks like TF32 rounding, not a structural bug. Disable `allow_tf32` (use `allow_tf32=False`) or do the dot in fp32 to tighten and see if correctness passes within the 5e-2 tolerance. Actually 5e-2 tol should pass with 0.0017 max \u2014 so correctness=False is likely a different issue (perhaps `_weight_version` cache returning stale tensor across calls when weight is re-randomized between trials). Drop the cache and just call `weight.t().contiguous()` each forward, or invalidate on every call.\n- Add autotune configs with larger BLOCK_M (256) and BLOCK_K=64 at num_warps=8, num_stages=4 \u2014 M=32768 is huge so big M tiles win.",
+    "large_guidance": "- Keep the fused matmul + swish + bias + GN-epilogue structure (group_size=64 maps perfectly to BLOCK_N=64), but remove the weight-transpose cache entirely \u2014 it's the most likely source of the correctness failure since `_version` may not bump when parameters are externally reset between trials. Recompute `weight.t().contiguous()` each forward, or better: launch with the original weight `(N, K)` layout and use `stride_bk = 1, stride_bn = K` (load B as `K`-inner accessed via the K loop with proper strides) so no transpose is needed.\n- Alternative split design: do a standalone tuned GEMM (or `torch.addmm`) for the matmul, then a single fused Triton kernel for `swish + bias + groupnorm` operating row-wise with one program per (row, group). This decouples the two hard problems: the GEMM can use cuBLAS-class tile shapes, and the epilogue kernel becomes trivial (BLOCK = group_size = 64, one warp per row-group, persistent across rows in a block). Often beats the all-in-one fusion when M is very large.\n- Ensure `eps` is `tl.constexpr` (bake into PTX) and consider making `BLOCK_N` and `GROUP_SIZE` constexpr-equal so the compiler unrolls the reduction. Also consider channels-along-N being already contiguous in the output and skip the redundant mask when N % BLOCK_N == 0 and M % BLOCK_M == 0 to remove predicated stores.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 39,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

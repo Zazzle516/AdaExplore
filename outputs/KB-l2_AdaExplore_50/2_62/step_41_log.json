@@ -1,0 +1,29 @@
+{
+    "node_id": 41,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing (max diff ~0.005, avg ~0.00024) \u2014 likely the GEMM is using TF32 which loses precision for fp32 inputs. Switch `input_precision=\"tf32\"` to `\"ieee\"` (or `\"tf32x3\"`) in `tl.dot` to recover fp32 accuracy.\n- After fixing precision, expand the autotune sweep: add `BLOCK_M=128,BLOCK_N=256,BLOCK_K=64,num_warps=8,num_stages=3` and `BLOCK_M=64,BLOCK_N=256,BLOCK_K=32` configs \u2014 M=N=K=8192 favors larger N tiles with deeper K pipelining.\n- In `gn_leaky_double_kernel`, CH_PER_G = 8192/512 = 16, so BLOCK=16 with num_warps=1 is sufficient; current `num_warps=4` wastes 3 warps per group. Use `num_warps=1` and consider packing multiple groups per program (e.g. 8 groups \u00d7 16 channels = 128 elements) to amortize launch overhead across B*G = 524288 programs.",
+    "large_guidance": "- Fuse the GroupNorm + LeakyReLU + double into the GEMM epilogue is hard (needs cross-tile reduction over 16 channels), but you can instead make the GN kernel persistent: one program per (batch row), looping over the 512 groups internally, keeping the row resident in registers/shared memory. This cuts launches from 524k to 1k.\n- Alternatively, since CH_PER_G=16 is tiny, do one program per batch that loads the full 8192-wide row in tiles, computes all 512 group stats with a strided reduction (reshape to [512,16] in-kernel via `tl.reshape`), and writes back the normalized+activated+doubled output \u2014 fully fused, single pass over the activation tensor.\n- For the GEMM, with M=1024, N=K=8192, consider a split-K or streamK variant; the K dimension is large enough that a 2-way split-K with atomic-add accumulation could improve SM occupancy on the 4090's 128 SMs.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 42,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

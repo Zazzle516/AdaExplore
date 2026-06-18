@@ -1,0 +1,27 @@
+{
+    "node_id": 8,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (max diff ~0.004) suggests the GroupNorm's affine weight indexing is wrong: `w_offs = pid_g * GROUP_SIZE + offs` uses tail-masked offs that index past channel boundaries when BLOCK > GROUP_SIZE. With out_features=8192, num_groups=256, GROUP_SIZE=32 exactly \u2014 BLOCK==32, so this should be fine. Re-check: more likely the issue is dtype precision in mean/var on fp32 with 32 elements being acceptable; instead verify the GEMM \u2014 biases/weights of `nn.Linear` may be fp32 but `tl.dot` accumulates in fp32 OK. Try forcing the GEMM's `acc` epilogue to cast bias correctly and ensure weight is contiguous before launch.\n- Add `.contiguous()` to `self.gemm.weight` and `self.multiply_weight` accesses; a non-contiguous weight stride flips meaning of stride_bk/stride_bn. Verify with a Python `torch.allclose` against `F.linear` to isolate which kernel is wrong.\n- Once correct, fuse GEMM with GroupNorm+swish+mul+swish epilogue is impractical (cross-tile reduction), so keep the two-kernel split but autotune the GN kernel `num_warps` (1 or 2 for GROUP_SIZE=32) since each program only handles 32 elements.",
+    "large_guidance": "- Since GROUP_SIZE=32 is tiny (one warp's worth), restructure the GN+swish+mul+swish kernel to process multiple groups per program (e.g. one program covers a whole row of 8192 elements, doing 256 group reductions in registers via a 2D tile [num_groups_per_block, GROUP_SIZE]). This dramatically reduces launch overhead from M*G=1024*256=262144 programs to ~1024.\n- Alternatively, persistent kernel with one program per row that loads the full 8192-wide row once, computes per-group mean/var via segmented reduction, and writes the fully-fused epilogue \u2014 minimizes HBM traffic to a single read+write of the activation tensor.\n- For the GEMM (M=1024, N=K=8192), this is a large square GEMM where cuBLAS is hard to beat; consider keeping `F.linear` (calls cuBLAS) and only customize the post-GEMM fusion, since the Triton GEMM at autotuned 128x128x32 likely underperforms cuBLAS on a 4090 for this shape.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 9,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

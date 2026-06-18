@@ -1,0 +1,29 @@
+{
+    "node_id": 20,
+    "parent_node_id": 19,
+    "context_node_ids": [
+        19
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.41571574589646465,
+    "max_reward": 0.41571574589646465,
+    "avg_reward": 0.41571574589646465,
+    "score": [
+        1,
+        1,
+        0.22965490364583332
+    ],
+    "small_guidance": "- The current kernel normalizes over W (the last dim, size 32), but the reference LayerNorm normalizes over `out_channels=64` (the channel dim). This is incorrect semantics \u2014 but reported correctness=True is suspicious; regardless, fast_p=0.23 means the ConvTranspose3d dominates (38.4ms vs 8.8ms baseline indicates the custom is *slower* than baseline). Tuning the LN epilogue further won't help.\n- If keeping this kernel shape, raise `num_warps=4` and use `BLOCK_C=64` exactly (power of 2 already), but the real bottleneck is the conv.\n- Add `channels_last_3d` memory format around conv to make the LN reduction axis contiguous.",
+    "large_guidance": "- The ConvTranspose3d dominates runtime \u2014 replace it with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)` computing the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and scattering into the output grid with stride=2, padding=1. Fuse bias-add, LayerNorm (over OC=64), GELU, and scaling into the epilogue \u2014 but since LN reduces over OC, the conv must produce a full output row across channels before normalization. Use a two-pass: (1) conv produces output in channels_last layout, (2) LN+GELU+scale per spatial position.\n- Alternatively implement ConvTranspose3d as gather (im2col-style): each output voxel gathers contributing input \u00d7 weight products. With stride=2,padding=1,kernel=4, each output voxel sums over (kd*kh*kw)/(stride^3) = 8 input contributions per IC=32 \u2192 256 MACs per output element. Tile as GEMM with `BLOCK_M=OC=64`, `BLOCK_N=output-spatial tile`, `BLOCK_K=IC*reduced-kernel`.\n- Fix the LayerNorm semantics: the reference normalizes over `out_channels`, so the reduction axis must be C (size 64), not W. Use channels_last layout so C is contiguous, then one program per `(N,D,H,W)` reducing over 64 channels with `BLOCK_C=64`, `num_warps=2`.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 21,
+    "global_best_node_id": 15,
+    "global_best_score": [
+        1,
+        1,
+        0.7944818288288288
+    ]
+}

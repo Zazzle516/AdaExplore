@@ -1,0 +1,31 @@
+{
+    "node_id": 25,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        20,
+        22,
+        23
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.47981967703793793,
+    "max_reward": 0.47981967703793793,
+    "avg_reward": 0.47981967703793793,
+    "score": [
+        1,
+        1,
+        0.7585123355629877
+    ],
+    "small_guidance": "- The inner `for ic_start in range(0, IC, BLOCK_K)` loop and the static KH\u00d7KW loops mean the GEMM-K is `IC*KH*KW = 576`. Restructure the autotune to favor larger BLOCK_K (e.g. 64) with BLOCK_M=128, BLOCK_N=64 or 64\u00d7128 at num_warps=8, num_stages=3 \u2014 current best config likely under-utilizes tensor pipelines on a small K.\n- Cache `w_nhwc` once in `__init__` (weight is constant in eval) instead of checking `_version` each forward, and pre-permute x via `channels_last` memory_format on the input rather than `.permute(...).contiguous()` which costs a full copy each call. The two `.contiguous()` reshuffles (input NHWC in, output NCHW out) are a meaningful share of 8.97 ms.\n- Write output directly in NCHW by computing `out_ptrs = out_ptr + nb*(OC*OH*OW) + offs_n[None,:]*(OH*OW) + hw[:, None]` so the trailing `permute(0,3,1,2).contiguous()` can be dropped entirely.",
+    "large_guidance": "- Eliminate both layout-conversion copies: keep activations in NHWC end-to-end by having the kernel read NCHW directly via strided gathers along IC (IC=64 is small, fits in BLOCK_K=64 in a single K-iteration) and store NCHW directly with the index math above. This removes ~2 full-tensor permutes from the critical path.\n- Collapse the K loop entirely: with IC=64, KH=KW=3, total K=576. Use a single static-unrolled loop over (kh, kw) with BLOCK_K=IC=64 (one K-tile per spatial kernel position, 9 mma calls per tile) \u2014 no runtime `for ic_start` loop, no ic masking, fully predictable address math, and `tl.dot` runs at peak.\n- Consider a persistent-kernel / split-K-free design where each program handles a (BLOCK_M=128, BLOCK_N=128) output tile and iterates the 9 (kh,kw) positions; with KH,KW,IC all small constexpr, the compiler can fully unroll and the kernel becomes a clean 9-step accumulator with bias+ReLU+bias fused in the epilogue.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 26,
+    "global_best_node_id": 6,
+    "global_best_score": [
+        1,
+        1,
+        1.328878056640625
+    ]
+}

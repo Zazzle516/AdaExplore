@@ -1,0 +1,30 @@
+{
+    "node_id": 18,
+    "parent_node_id": 12,
+    "context_node_ids": [
+        11,
+        12
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.43983604435261714,
+    "max_reward": 0.43983604435261714,
+    "avg_reward": 0.43983604435261714,
+    "score": [
+        1,
+        1,
+        0.4286473659090909
+    ],
+    "small_guidance": "- The softmax kernel is already cheap \u2014 only ~1ms of the 22ms; the ConvTranspose3d dominates. Tuning BLOCK/num_warps in `_fused_kernel` will not move fast_p meaningfully. If staying in tuning mode, try fusing the clamp into a pre-pass that writes into the conv-transpose output buffer, but the real headroom is the conv.\n- Consider reducing the softmax to a single-pass online softmax with BLOCK=S when S fits (here S=64*128*128 after conv-transpose is large, so two-pass is fine); set num_warps=4 since the per-row work is light.\n- Make sure `scale` load is hoisted (it already is); no further win there.",
+    "large_guidance": "- The dominant cost is `nn.ConvTranspose3d` (in=32, out=64, k=3, stride=2, pad=1, out_pad=1) over a 16\u00d732\u00d732 input \u2192 32\u00d764\u00d764 output. Replace it with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile), compute the input \u00d7 weight outer product, and atomic-add (or accumulate via gather-form) into the output grid with the stride/padding/output_padding index math. Alternatively use the gather form (one program per (N, OC tile, output-spatial tile)) which avoids atomics \u2014 for stride=2 each output reads from at most \u2308k/stride\u2309\u00b3=2\u00b3=8 input positions per IC, so a direct gather GEMM over IC*kd*kh*kw=864 reduction is feasible.\n- Fuse AvgPool3d (pool=2, non-overlapping) into the conv-transpose input load: instead of materializing the pooled tensor, have the conv kernel load the 2\u00b3 pool window from the original input and average on the fly. This eliminates one full pass over the (32,32,32,64,64) tensor.\n- Fuse clamp into the conv-transpose epilogue (write clamped value to output). Keep softmax+scale as the existing separate kernel \u2014 it's already efficient. Use channels_last_3d layout for the conv output to make the softmax-over-spatial reduction stride-1.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 19,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.43060465981735163
+    ]
+}

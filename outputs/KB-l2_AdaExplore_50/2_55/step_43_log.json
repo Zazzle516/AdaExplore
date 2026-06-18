@@ -1,0 +1,30 @@
+{
+    "node_id": 43,
+    "parent_node_id": 14,
+    "context_node_ids": [
+        1,
+        14
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The bug is the partial buffer sizing: `MAX_TILES = (pooled_N + 31) // 32` assumes BLOCK_N_POOLED=32, but autotune picks 64/128, leaving uninitialized/zero rows summed (or worse, out-of-bounds writes when BLOCK_N_POOLED < 32 isn't the case but indexing pid_n into a buffer sized for 32-wide tiles is wrong). Fix by either: (a) using `tl.atomic_add` into a single (M,) output buffer, or (b) computing MAX_TILES with the smallest BLOCK_N_POOLED in the configs and pruning configs so all use the same BLOCK_N_POOLED, or (c) doing the final reduction over exactly `triton.cdiv(pooled_N, BLOCK_N_POOLED)` rows by reading BLOCK_N_POOLED back from the autotuner.\n- Remove `allow_tf32=False` \u2014 on RTX 4090 (Ada), TF32 `tl.dot` is significantly faster and the 5e-2 tolerance easily absorbs it.\n- Add a GROUP_M block-swizzle (group size 8) for L2 reuse on the K=32768 GEMM, and add configs with BLOCK_M=128/BLOCK_N_POOLED=128/BLOCK_K=32, num_warps=8, num_stages=3-4.",
+    "large_guidance": "- Redesign as a two-stage kernel where stage 1 is a standard tiled GEMM producing a (M, N) intermediate (or tiled directly into pooled (M, N/2)) using `tl.dot` with TF32, and stage 2 is a tiny reduction kernel that does pool+sum+scale over the N axis. With M=128, N=32768, K=32768 this is ~275 GFLOPs \u2014 the GEMM dominates and should be tuned independently; fusing the trivial pool/sum into the GEMM epilogue (per-M-tile partial sum across the N-tile) is fine but the partial accumulator must be correctly accumulated (atomic_add into a single (M,) buffer or a precisely-sized (num_n_tiles, M) buffer).\n- Use a split-K or persistent-M strategy: M=128 is small, so launch one program per M-row-tile and have it stream through all N tiles sequentially, accumulating the pooled-sum in a register \u2014 this eliminates the partial buffer entirely and removes the post-kernel reduction. Grid becomes `(cdiv(M, BLOCK_M),)`.\n- Transpose W once at init to (K, N) layout so the inner K-loop loads W contiguously along K, enabling wider vectorized loads.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 44,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

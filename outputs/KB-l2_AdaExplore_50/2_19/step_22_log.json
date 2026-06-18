@@ -1,0 +1,29 @@
+{
+    "node_id": 22,
+    "parent_node_id": 21,
+    "context_node_ids": [
+        21
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness bug: in the conv-transpose kernel, the weight indexing uses `ic_offs[None, :] * (OC * KH * KW)` but `ConvTranspose2d.weight` has shape `(IC, OC, KH, KW)` \u2014 the per-ic stride is `OC*KH*KW` (correct) and per-oc stride is `KH*KW` (correct). However, masked-out `ih`/`iw` values can still produce in-bounds offsets that read wrong data; ensure `x_off` is gated so that invalid lanes use offset 0 (e.g., `tl.where(in_valid, x_off, x_base)`) \u2014 combined with mask=in_valid this avoids OOB-with-wraparound reads that explain the ~3e-3 drift.\n- After fixing, sweep `BLOCK_OC=64, BLOCK_SP=64/128, BLOCK_IC=64` with `num_warps=4/8`, `num_stages=2/3` via `triton.autotune`.\n- In group_norm, the 2-pass design reloads x; consider keeping the reduction-pass values in SRAM by tiling across CPG*HW with one program per (N,G) using a single accumulator and a second pass that reloads only once \u2014 current code already does this; main win is increasing `BLOCK_SIZE` to 4096 with `num_warps=8`.",
+    "large_guidance": "- Reformulate ConvTranspose2d (stride=1, pad=0, k=3) as a direct cross-correlation: pre-flip the weight at init (or index it flipped) and treat the op as a standard conv on a zero-padded input of size (H+2, W+2). This makes the inner loop a clean im2col-style GEMM with contiguous gathers and removes the bounds-check on `ih/iw` from the hot path.\n- Fuse GELU into the GEMM epilogue (already done) and additionally fuse the GroupNorm first-pass reduction by having each conv-transpose program atomically accumulate per-(N,G) sum and sum-of-squares into a small scratch buffer; the second pass then just normalizes. This removes one full read of the OH*OW*OC tensor.\n- Use channels-last (NHWC) layout for `conv_out` so the GroupNorm reduction across CPG channels is contiguous and the conv epilogue stores coalesce along OC.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 23,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        1.4057149448529411
+    ]
+}

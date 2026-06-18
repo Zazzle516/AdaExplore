@@ -1,0 +1,29 @@
+{
+    "node_id": 15,
+    "parent_node_id": 14,
+    "context_node_ids": [
+        14
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4816511884805502,
+    "max_reward": 0.4816511884805502,
+    "avg_reward": 0.4816511884805502,
+    "score": [
+        1,
+        1,
+        0.773622304964539
+    ],
+    "small_guidance": "- The current kernel splits scale+stats and the apply pass into separate kernels, requiring an extra full read/write of the M\u00d7N=16384\u00d74096 fp32 tensor (~256MB). The torch.addmm for the GEMM dominates anyway; tune the apply kernel with larger BLOCK_M=256, BLOCK_N=128, num_warps=8, num_stages=4 and use vectorized contiguous loads, but the bigger win is fusing scale into the GEMM epilogue (write y*scale directly) to save one full pass.\n- For the partial-stats kernel, BLOCK_M_STAT=2048 / BLOCK_N_STAT=128 / TILE_M=64 yields 8 m-blocks \u00d7 32 n-blocks = 256 programs \u2014 try BLOCK_N_STAT=256, TILE_M=32, num_warps=8, num_stages=4 to improve L2 reuse of `s` and reduce kernel launch overhead; also drop psum/psumsq to fp32 in a single (num_m_blocks, N) buffer to halve memory traffic of the reduce.\n- Use `torch.nn.functional.batch_norm` path only for inference; in training, consider computing mean/var directly with a single persistent kernel along N (one program per column tile, looping over M with vectorized loads) instead of two-stage partial+reduce, which removes the intermediate `psum`/`psumsq` traffic entirely.",
+    "large_guidance": "- Replace `torch.addmm` with a custom tiled Triton GEMM (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8, num_warps=8, num_stages=3) that fuses `* scale` into the accumulator epilogue and writes both `y_scaled` and per-column partial sum/sumsq into shared output buffers in the same store pass. The GEMM is by far the heaviest op (16384\u00b74096\u00b74096 \u2248 0.55 TFLOP) and currently dispatches to cuBLAS but with no fusion \u2014 fusing the elementwise scale and the partial-reduction into the epilogue removes two full passes over a 256MB tensor.\n- Use a two-kernel design: (1) fused GEMM + scale + per-N-tile partial stats; (2) finalize stats (reduce partials, compute a=\u03b3\u00b7invstd\u00b7scale, b=\u03b2\u2212\u03bc\u00b7a/scale), then a third small kernel applies the affine. Better: since `a` and `b` only depend on column-wise stats, fuse the apply into a second GEMM-shaped kernel that re-reads y_scaled and writes the final output, or store y_scaled in shared/registers if it fits per-tile.\n- Alternatively, since BN in training requires global column stats before applying affine, restructure as: GEMM-with-scale-epilogue writing y_scaled to HBM with partial sums recorded per N-tile across the K-grouping, then a fused finalize+apply kernel re-reads y_scaled once and writes out. This caps elementwise passes at GEMM-write + apply-read+write = 3 traversals total instead of current 5+.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 16,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.7791481785714286
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 23,
+    "parent_node_id": 19,
+    "context_node_ids": [
+        20
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.06643312852112676
+    ],
+    "small_guidance": "- Add a `triton.autotune` over `(BLOCK_OC, BLOCK_SP, num_warps, num_stages)` with configs like (64,64,4,2), (64,128,8,2), (128,64,8,3), (32,128,4,2); current 32\u00d764 likely under-utilizes the SM.\n- Hoist the `ic` loop into a tiled GEMM-K (e.g. `BLOCK_IC=16` or 32) and use `tl.dot` of `[BLOCK_SP, BLOCK_IC] x [BLOCK_IC, BLOCK_OC]` instead of the scalar outer-product per ic \u2014 this is the dominant cost (IC=64, KH\u00b7KW=16, so 1024 scalar mul-adds per output).\n- Tile output spatially as 2-D `(BLOCK_OH, BLOCK_OW)` rather than flattened, so the `valid`/`ih,iw` masks are computed once per row and the `ih*IW+iw` gather is contiguous along OW for stride=2.",
+    "large_guidance": "- Switch from gather-based transposed conv to a scatter-add formulation: launch programs over `(N, IC tile, IH\u00b7IW tile)`, compute the `KH\u00b7KW` outer-product `x[n,ic,ih,iw] * w[ic,oc,kh,kw]` as a `tl.dot` over OC, and `tl.atomic_add` into the output positions `(oh = ih*stride - pad + kh, ow = ...)`. With stride=2 the output tile is dense and there is no wasted work on stride-skipped positions, unlike the current gather kernel which reads zeros for \u00be of (kh,kw) combinations.\n- Alternatively, since stride=2/pad=1/kernel=4 maps each input element to a 2\u00d72 output footprint per (kh%2, kw%2) phase, restructure as 4 phase-separated direct convs: for each of the 4 phases, do a standard 2\u00d72 conv from x to a stride-1 output slice, then interleave. Each phase is a clean GEMM with `tl.dot` and no masking inside the inner loop.\n- Use NHWC layout for both input and output so the IC and OC reductions are along the contiguous axis; do the layout transform once at init for the weight and once per forward for x (the transform cost is small vs. the 18 ms baseline).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 24,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        1.1098240294117647
+    ]
+}

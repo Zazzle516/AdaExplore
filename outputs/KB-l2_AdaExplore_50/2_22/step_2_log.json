@@ -1,0 +1,29 @@
+{
+    "node_id": 2,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.45752980458633324,
+    "max_reward": 0.45752980458633324,
+    "avg_reward": 0.45752980458633324,
+    "score": [
+        1,
+        1,
+        0.574620887837249
+    ],
+    "small_guidance": "- The current kernel only parallelizes over M (rows), giving a grid of just M/BLOCK_M \u2248 16-32 programs \u2014 far below the 4090's 128 SMs. Add a split-K / split-N persistent strategy: launch grid `(cdiv(M, BLOCK_M), num_n_splits)`, have each program reduce a slice of N to a (max, sum) partial, then do a tiny second-pass kernel to combine partials into the final LSE+mish. This unlocks ~8x more parallelism on the GEMM-dominant workload.\n- Add larger-tile autotune configs aimed at K=8192 reductions: `BLOCK_M=64/BLOCK_N=128/BLOCK_K=128` and `BLOCK_M=128/BLOCK_N=64/BLOCK_K=64` with `num_warps=8, num_stages=4`. The current best configs cap at BLOCK_K=64, leaving the K-loop launch-bound.\n- Drop the per-K masking (`mask_k = offs_k < k_remain`) since K=8192 is divisible by all BLOCK_K candidates \u2014 replace the inner `tl.load` with unmasked loads to cut predicate overhead in the hot loop.",
+    "large_guidance": "- Restructure as a two-stage pipeline: stage 1 is a standard tiled GEMM that fuses bias+scale*2+clamp and writes a partial (row_max, row_sumexp) per (M_tile, N_split) into a small scratch buffer; stage 2 is a tiny kernel that combines the N_split partials per row and applies log + mish. This exposes 2D parallelism (M \u00d7 N_splits \u2248 32 \u00d7 16 = 512 programs) and lets the GEMM stage use canonical 128\u00d7128\u00d732 tiles with `tl.dot` at full throughput.\n- Alternatively, since the output is just (M,1) \u2014 i.e. logsumexp collapses the entire N axis \u2014 the kernel is fundamentally a reduction-fused GEMM. Use a persistent-CTA design where each SM owns a strip of rows and streams the full weight matrix through L2; one weight tile is reused across all M tiles assigned to that SM. With K=N=8192 and W being 256MB, sharing W reads across rows via persistent scheduling is the largest available win.\n- The Mish epilogue operates on a scalar per row \u2014 keep it in the combine kernel, computed via `x * tanh(softplus(x))` using `tanh_sp = 1 - 2/(exp(2*sp)+1)` to avoid catastrophic cancellation when lse is large (clamp_max=10, scale=4 \u2192 lse can exceed 40).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 3,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        1.7373040877886414
+    ]
+}

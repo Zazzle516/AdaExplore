@@ -1,0 +1,29 @@
+{
+    "node_id": 25,
+    "parent_node_id": 21,
+    "context_node_ids": [
+        21
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4591254283258113,
+    "max_reward": 0.4591254283258113,
+    "avg_reward": 0.4591254283258113,
+    "score": [
+        1,
+        1,
+        0.5877847836879433
+    ],
+    "small_guidance": "- The current gather has a hot inner loop where each (kd,kh,kw) re-checks stride divisibility. Since STRIDE=2 and PAD=1 are constexpr, split the program grid by output-spatial parity: precompute that for any fixed (od,oh,ow) only kd\u2261(od+PAD)%STRIDE etc. contribute, so collapse the 3\u00d73\u00d73=27 inner taps to the ~8 that actually fire. This roughly 3\u00d7 reduces tl.dot calls.\n- Add autotune configs with BLOCK_SP=32 / BLOCK_OC=128 and BLOCK_SP=64 / BLOCK_OC=128 (num_warps=8, num_stages=3-4). With OC=64 the OC tile can cover OC fully in one program \u2014 drop the OC grid dim and let BLOCK_OC=64 statically, freeing more occupancy for the SP axis.\n- Hoist `in_spatial_off` and `spatial_valid` per (kd,kh,kw) outside any branch and use `tl.multiple_of`/`tl.max_contiguous` hints on `sp_offs` so the per-tap input gather can coalesce on the W axis.",
+    "large_guidance": "- Switch from gather-style \"for each output, find contributing inputs\" to scatter-style \"for each input voxel, scatter-add input \u00d7 weight outer product into KD\u00b7KH\u00b7KW output locations.\" Input volume is 8\u00d7 smaller than output (stride=2), so the K-loop is 8\u00d7 shorter and the divisibility masking disappears entirely. Use atomic adds into a zero-initialized accumulator, then a second small kernel applies bias + add_input + hardswish epilogue. On Ada/Ampere fp32 atomics into global are fast enough given the sparse write pattern (each input contributes to disjoint output cells when stride==kernel_size-1 case, but still only 27 writes per input).\n- Alternative without atomics: reformulate as an im2col-style GEMM where the K dimension is (IC \u00d7 valid_taps_per_output). Since stride=2 and kernel=3, every output position has a fixed set of (at most 8) valid (kd,kh,kw) triples determined purely by (od%2, oh%2, ow%2). Launch 8 specialized kernels (one per parity class) each doing a dense GEMM of shape [DHW_out/8, OC] \u00d7 [OC, IC\u00b7num_taps]; no masking, no wasted FMAs.\n- Use channels-last (NDHWC) layout for both input and output so the GEMM-K (IC) axis is contiguous in memory \u2014 the current NCDHW layout forces strided loads of stride DHW_in across the IC dim, which is the main bandwidth bottleneck. Pre-permute weight to [KD,KH,KW,IC,OC] once in __init__.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 26,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        0.7818646650943397
+    ]
+}

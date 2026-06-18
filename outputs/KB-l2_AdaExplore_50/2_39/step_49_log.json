@@ -1,0 +1,29 @@
+{
+    "node_id": 49,
+    "parent_node_id": 44,
+    "context_node_ids": [
+        44
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.480990819462228,
+    "max_reward": 0.480990819462228,
+    "avg_reward": 0.480990819462228,
+    "score": [
+        1,
+        1,
+        0.7681742605633803
+    ],
+    "small_guidance": "- The torch.addmm (16384\u00d74096\u00d74096) dominates runtime; tuning the stats/apply kernels won't close the gap. If keeping this structure, fuse the apply epilogue (scale * invstd * gamma + bias) into a custom GEMM kernel rather than launching addmm + apply separately, eliminating the full Y read/write roundtrip (~1GB).\n- For the stats kernels, try BLOCK_N_STAT=256, M_PER_PROG=2048, num_warps=8, num_stages=4 to better overlap loads across the long M=16384 reduction; also consider a single-pass kernel that computes sum/sumsq directly with atomics into N-sized buffers (since NUM_M_BLOCKS=16 partial reduction is cheap but adds a launch).\n- The apply kernel reads Y again from DRAM \u2014 fold a + b into the GEMM epilogue so the post-stats pass only needs to multiply-add per output element written once.",
+    "large_guidance": "- Rewrite as a tiled GEMM with `tl.dot` that computes Y = x @ W.t() + bias directly in Triton with BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8, num_warps=8, num_stages=3-4. The GEMM is ~550 GFLOPs and is the true bottleneck; addmm + extra passes is the reason the kernel runs at 14.2ms vs 10.9ms baseline.\n- Two-pass design: (1) custom GEMM writing scaled Y = (x@W.t()+b)*scale to global memory, and inside the same kernel atomically accumulate per-column sum/sumsq into N-sized fp32 buffers via tl.atomic_add on the BLOCK_N tile column sums (only num_pid_m atomics per column). (2) Compute a,b from stats in a tiny kernel. (3) Apply kernel reads Y once and writes out. This removes the separate scale pass entirely.\n- Alternative single-kernel persistent design: GEMM tile produces Y_tile, reduces column stats within the tile, atomic-adds to global stat buffers, and writes Y_tile. A second pass then normalizes. This avoids materializing partial-stat NUM_M_BLOCKS\u00d7N buffers and removes one full Y read.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 50,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.7791481785714286
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 27,
+    "parent_node_id": 26,
+    "context_node_ids": [
+        26
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The matmul (1024\u00d78192\u00d78192 addmm) dominates runtime; the GN+LeakyReLU kernel is already cheap. Focus tuning on the GEMM path: try `torch._int_mm` is wrong dtype, but enable cuBLASLt via `torch.nn.functional.linear` with TF32, or split-K. Also consider `torch.matmul` after casting weights to fp16/bf16 for tensor-core throughput if accuracy allows under 5e-2 tol.\n- For the existing GN kernel, try `num_warps=8` with `GROUPS_PER_PROG` chosen so BLOCK=1024 (e.g. 64 groups \u00d7 16 channels) and `num_stages=3`; current heuristic may pick small blocks for ch_per_g=16 (gpp=32, BLOCK=512) \u2014 bumping to BLOCK=1024 reduces launch count and improves occupancy.\n- Fuse the bias add from `addmm` into a custom Triton GEMM epilogue together with GN's first-pass sum/sum-sq accumulation to avoid one full read of the 1024\u00d78192 activation tensor.",
+    "large_guidance": "- Replace the `torch.addmm` with a custom Triton GEMM kernel (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8, num_warps=4, num_stages=3-4) using bf16/fp16 inputs with fp32 accumulator to leverage Ada tensor cores; fuse bias in epilogue. The 8192\u00d78192 weight matmul is the bottleneck \u2014 TF32 fp32 GEMM on a 4090 tops out well below tensor-core fp16/bf16 throughput.\n- Consider a fused \"GEMM \u2192 GN \u2192 LeakyReLU \u2192 \u00d72\" mega-kernel where each program computes a tile of M rows \u00d7 full hidden dim via split-N persistent scheme, then performs the per-row group reductions in shared memory before writing output. This eliminates the intermediate write of the post-GEMM activation (1024\u00d78192 fp32 = 32 MB).\n- Alternatively, keep GEMM separate but switch its output dtype to fp16 or write directly into a layout (channels_last on a fake 2D) that the GN kernel can consume with wider vector loads; ensure GN reads coalesce 128-bit per thread.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 28,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 13,
+    "parent_node_id": 10,
+    "context_node_ids": [
+        10
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.47574503595706896,
+    "max_reward": 0.47574503595706896,
+    "avg_reward": 0.47574503595706896,
+    "score": [
+        1,
+        1,
+        0.7248965466458187
+    ],
+    "small_guidance": "- The eval-mode path is fast but training mode falls back to PyTorch. Since BN training requires real batch stats, add a Triton path: compute the GEMM into a workspace, then a column-reduction kernel for mean/var (one program per N-column block over M=1024), then an elementwise fused (normalize + bias + div + swish) kernel. This removes the cuBLAS+ATen BN+pointwise stack that dominates the 3.37 ms.\n- For the GEMM, K=8192 is large \u2014 try adding configs with `BLOCK_K=128`, `num_stages=4`, and a `BLOCK_M=128/BLOCK_N=256, num_warps=8, num_stages=4` entry. Also add `BLOCK_M=64,BLOCK_N=128,BLOCK_K=64` for tail cases. Since K%64==0 always here, the EVEN_K branch is taken \u2014 consider dropping the non-EVEN_K branch to shrink compile time / IR.\n- Pre-transpose `W` once in `__init__` (store `W.t().contiguous()` as a buffer) so the B operand has stride_bk=N, stride_bn=1, giving contiguous inner-dim loads on B instead of the current strided gather (stride_bk=1, stride_bn=K means B's inner axis is along N with stride K \u2014 non-coalesced).",
+    "large_guidance": "- Redesign so training mode is also fully fused in Triton: (1) GEMM kernel writes pre-activation Y=(X@W^T + b_lin) to a temp; (2) a column-reduction kernel computes per-channel mean and inv_std over M=1024 (one program per N tile, reduce across M in BLOCK_M chunks, also updates running_mean/var as a side effect); (3) an epilogue kernel applies normalize + affine + extra bias + divide + swish. This avoids the ATen BatchNorm1d call which is the bulk of training-mode time.\n- Alternatively, do a split-K / two-stage persistent design: stage 1 computes Y and per-column sum/sumsq simultaneously (atomically accumulate column stats into a small N-sized buffer from each M-tile), stage 2 launches the BN-affine-swish epilogue. Saves a full read of Y compared to a separate reduction pass.\n- Store W transposed (N\u00d7K \u2192 K\u00d7N contiguous) as a registered buffer at init so both inference and training kernels enjoy contiguous K-major loads on B; this typically yields 15-25% on large square GEMMs on Ada.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 14,
+    "global_best_node_id": 10,
+    "global_best_score": [
+        1,
+        1,
+        0.7270539768441695
+    ]
+}

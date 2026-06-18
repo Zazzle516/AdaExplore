@@ -1,0 +1,29 @@
+{
+    "node_id": 6,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4200007878787879,
+    "max_reward": 0.4200007878787879,
+    "avg_reward": 0.4200007878787879,
+    "score": [
+        1,
+        1,
+        0.2650065
+    ],
+    "small_guidance": "- Swap the loop order so the IC reduction is the outer loop and load weight tiles of shape [BLOCK_IC, BLOCK_OC] once per IC chunk, then reuse via `tl.dot` against an [BLOCK_SP, BLOCK_IC] input tile \u2014 the current per-ic scalar broadcast multiply leaves the tensor cores idle and is the main reason runtime is 4\u00d7 the baseline.\n- Add a `triton.autotune` sweep over (BLOCK_OC, BLOCK_SP, BLOCK_IC, num_warps, num_stages) \u2208 {(64,64,32),(128,64,32),(64,128,32),(32,128,64)} \u00d7 {4,8} \u00d7 {2,3} keyed on (OC, H_out*W_out, IC); current 32\u00d7128 with num_warps=4 is almost certainly suboptimal for OC=64, H_out*W_out=65536.\n- Hoist `h_in*W_in + w_in` and the `valid` mask computation outside the IC loop (already partially done) and precompute `ic*H_in*W_in` / `ic*OC*KH*KW` strides as a vector, so the inner loop is just two coalesced loads plus a dot.",
+    "large_guidance": "- Restructure as an im2col-style GEMM where each program computes a [BLOCK_SP, BLOCK_OC] output tile via `tl.dot` over a K dimension of size IC*KH*KW. For ConvTranspose2d the K-loop indexes (ic, kh, kw); for each K-tile, gather the corresponding x[n, ic, h_in, w_in] values (with stride/pad validity mask) into a [BLOCK_SP, BLOCK_K] tile and load weight as [BLOCK_K, BLOCK_OC]. This puts the work on tensor cores and matches the OC=64, spatial=65536 shape much better than the current scalar outer-product accumulation.\n- Alternative: scatter-add formulation \u2014 one program per (n, ic-tile, h_in-tile, w_in-tile) computes the outer product `x_tile @ w_tile` of shape [SP_in, OC] and `tl.atomic_add`s into the output grid at the strided/padded locations, fusing Mish+add+hardtanh+scale in a second small epilogue kernel over the output. This avoids the divisibility/validity masking in the hot loop entirely and exposes more parallelism for stride=2.\n- Use channels-last (NHWC) layout for both input and output so the IC/OC axis is the contiguous one feeding the GEMM-K and GEMM-N dimensions; transpose weight to [OC, IC, KH, KW] \u2192 [KH*KW*IC, OC] once at init so the inner load is a single coalesced row.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 7,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.5712154240282685
+    ]
+}

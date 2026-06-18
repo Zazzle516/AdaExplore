@@ -1,0 +1,30 @@
+{
+    "node_id": 29,
+    "parent_node_id": 26,
+    "context_node_ids": [
+        17,
+        26
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4816511884805502,
+    "max_reward": 0.4816511884805502,
+    "avg_reward": 0.4816511884805502,
+    "score": [
+        1,
+        1,
+        0.773622304964539
+    ],
+    "small_guidance": "- The runtime is dominated by the M=16384, N=4096, K=4096 GEMM done via `torch.addmm`; tuning the BN kernels won't close the gap. If staying small, replace `torch.addmm` with a tiled Triton GEMM (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8, num_warps=8, num_stages=3) and fuse the bias add + scale multiply into the epilogue so the scale step is free.\n- Merge the stats kernel: also fuse the `*scale` into a tiled GEMM epilogue so the BN-stats pass reads pre-scaled `y` directly (or accumulate sum / sumsq alongside the GEMM in a single fused kernel) \u2014 this eliminates the extra full-tensor read.\n- For the BN apply kernel, switch to `BLOCK_M=64, BLOCK_N=256, num_warps=8, num_stages=3` and order the grid `(pid_m, pid_n)` with row-contiguous N tiles for better L2 reuse of `a`/`b`.",
+    "large_guidance": "- Rewrite as a single fused Triton GEMM: one program per `(M tile, N tile)` computing `y = x @ W^T + bias`, then multiplying by `scale[N]` in the epilogue. In eval mode the BN reduces to an affine `a*y+b` that can be folded entirely into the same epilogue (precompute `a, b` on host from `running_mean/running_var/scale/gamma/beta`), giving a one-kernel forward.\n- In training mode, run a two-pass design: (1) fused GEMM+scale that writes `y_scaled` and atomically accumulates per-column sum/sumsq into small N-sized buffers via a column-reduce in the epilogue (one program per N-tile holds a partial reduction across its M rows, then atomic-adds once per tile to avoid M atomics). (2) a second pass applies the affine using the computed mean/invstd. This collapses 3 kernels into 2 and removes a full read of `y`.\n- Use `tl.dot` with BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8 swizzle, num_warps=8, num_stages=3, and pre-transpose `W` once at init so the K loop has contiguous loads on both operands.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 30,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.7791481785714286
+    ]
+}

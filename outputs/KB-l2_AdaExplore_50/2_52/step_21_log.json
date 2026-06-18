@@ -1,0 +1,29 @@
+{
+    "node_id": 21,
+    "parent_node_id": 20,
+    "context_node_ids": [
+        20
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.42946582060606064,
+    "max_reward": 0.42946582060606064,
+    "avg_reward": 0.42946582060606064,
+    "score": [
+        1,
+        1,
+        0.34309302
+    ],
+    "small_guidance": "- The output store is strided (NCHW with `offs_sp` along the contiguous H*W axis but `offs_oc` along a stride of `HW_out`), causing uncoalesced writes. Write the output in NHWC and do a final `permute().contiguous()` outside, or store with `offs_oc` as the contiguous inner dimension by swapping the meaning of BLOCK_M/BLOCK_N so the inner store axis is contiguous in memory.\n- Add larger-K autotune configs (e.g. `BLOCK_K=64` with `BLOCK_M=64,BLOCK_N=128, num_warps=8`) and a `BLOCK_M=128,BLOCK_N=128,BLOCK_K=16, num_stages=2` variant; with C_in=64 a single `BLOCK_K=64` step removes the inner ic loop entirely. Verify SMEM: `(128\u00b716+16\u00b7128)\u00b74\u00b72 = 32 KB`, fits.\n- Hoist the `kh,kw` loop outside the K loop is fine, but precompute `w_base = offs_oc[:,None] * (KH*KW*C_in)` once before the loops, and reuse `ih*W_in` per `kh` to cut index math.",
+    "large_guidance": "- Restructure as a true im2col GEMM where M = N*H_out*W_out (contiguous output spatial), N = C_out, K = C_in*KH*KW, and run a single K-loop over the full reduction (length 576 here) instead of nested kh/kw/ic loops. This lets the compiler pipeline a single `tl.dot` chain and removes redundant address arithmetic.\n- Keep activations in NHWC end-to-end: store the kernel output directly in NHWC (contiguous on C_out) so writes coalesce, and only permute back to NCHW once at the very end (or fuse the permute into the store using strided output offsets where the inner dim is C_out).\n- Fuse the Mish (`x * tanh(softplus(x))`) and BN affine into the GEMM epilogue (already done) but compute Mish via the numerically stable form `x * tanh(log1p(exp(-|x|)) + max(x,0))` \u2014 current `exp(2*sp)` can overflow for moderately large pre-activations and wastes ops; using `tanh` directly on softplus once is cheaper and safer.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 22,
+    "global_best_node_id": 16,
+    "global_best_score": [
+        1,
+        1,
+        0.5587834201954398
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 36,
+    "parent_node_id": 35,
+    "context_node_ids": [
+        34
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The split-K kernel has a buggy K-bounds mask (`offs_k[None, :] < K - k * step - pid_k * BLOCK_K + pid_k * BLOCK_K` cancels the pid_k term and uses the wrong step shift), which causes wrong results. Track the K offset by incrementing `offs_k += step` and mask with `offs_k[None, :] < K` / `offs_k[:, None] < K` directly, using `offs_k = pid_k * BLOCK_K + tl.arange(0, BLOCK_K)` initially.\n- Since `out` is allocated with `torch.zeros` and SPLIT_K uses `atomic_add`, the zero-init kernel launch must complete before atomics \u2014 that's fine, but make sure the non-SPLIT_K path (`SPLIT_K==1`) also handles bias/scale; currently all configs use SPLIT_K>=4 so atomic_add is always taken. Consider adding SPLIT_K=1 configs (128x128x32, 64x128x32) since K=32768 is large but M=128 is tiny and atomics over fp32 are cheap.\n- Fuse the bias+swish+scale into the matmul epilogue when SPLIT_K==1 (skip the separate kernel launch and the extra HBM round-trip on the (128, 32768) output).",
+    "large_guidance": "- M=128, N=32768, K=32768 is extremely skinny in M \u2014 a single row-block of M=128 covers the entire M dimension. Redesign as a persistent kernel with `BLOCK_M=128` fixed, grid over N tiles only, and a long K reduction loop per program. This eliminates the need for GROUP_M swizzling and lets you size `BLOCK_N` (128 or 256) for max occupancy on N=32768/BLOCK_N programs.\n- Drop split-K + atomics in favor of a single-pass K reduction with fused bias+swish+scale epilogue. With M=128 and K=32768, a 128xBLOCK_N tile holds the full M dimension; one program does the full K reduction, applies bias from `bias_ptr+offs_n`, computes `x*sigmoid(x)*scale`, and stores once \u2014 no atomic, no second kernel.\n- Pre-transpose the weight once in `__init__` (store W as (K, N) contiguous) so the inner B load is a contiguous row stride, improving L2/coalescing in the K-loop. Use `num_stages=4`, `num_warps=8`, `BLOCK_K=64` for K=32768.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 37,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

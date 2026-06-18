@@ -1,0 +1,29 @@
+{
+    "node_id": 20,
+    "parent_node_id": 9,
+    "context_node_ids": [
+        9
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4755000481623186,
+    "max_reward": 0.4755000481623186,
+    "avg_reward": 0.4755000481623186,
+    "score": [
+        1,
+        1,
+        0.7228753973391282
+    ],
+    "small_guidance": "- The GEMM (M=2048, N=8192, K=8192) dominates runtime; `torch.mm` already calls cuBLAS which is hard to beat, but you can try fusing the row-reduction into a custom GEMM epilogue to eliminate the M*N writeback+reread. As a smaller win, increase `BLOCK_N` in `row_reduce_gelu_kernel` to 4096 with `num_warps=16` to halve the loop trip count, and bump `BLOCK_K` to 4096 in the residual kernel (it's pure memory copy + scalar add).\n- Skip allocating `bs = bias - subtract` as a separate tensor on every forward \u2014 precompute and cache it (or a fused pointer pair) to avoid a 32KB tensor alloc per call.\n- The residual-add kernel writes `M*K = 2048*8192 = 64MB`; ensure it's launched with `num_warps=8` and consider using `tl.store` with vectorized 4xfp32 by setting `BLOCK_K=4096` and one program per row to amortize the scalar load.",
+    "large_guidance": "- Write a custom tiled GEMM (tl.dot, BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8, num_warps=8, num_stages=3) that fuses the entire epilogue: as each (M-tile, N-tile) accumulator is computed, add `bias - subtract` and atomically/reduction-add into a per-row partial-sum buffer (one per M-tile column-block), avoiding the 64MB gemm_out materialization. Then a tiny second kernel finalizes mean \u2192 GELU \u2192 broadcast-add to original_x.\n- Alternatively, since only the row-mean of the GEMM output is needed (not the full matrix), reformulate as: row_scalar[m] = (1/N) * (sum_j (W\u00b7x)[m,j] + sum_j(b-s)) = (1/N) * (x[m,:] \u00b7 sum_j W[j,:] + const). But this is the algebraic shortcut explicitly forbidden by the safety contract \u2014 **do not** do this. Keep the full GEMM but fuse its epilogue.\n- A persistent split-K GEMM with one program responsible for a row-block could keep the partial accumulator in registers across all N tiles and emit only the M-sized row_scalar tensor, eliminating the 64MB intermediate entirely.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 21,
+    "global_best_node_id": 10,
+    "global_best_score": [
+        1,
+        1,
+        1.5925164056531704
+    ]
+}

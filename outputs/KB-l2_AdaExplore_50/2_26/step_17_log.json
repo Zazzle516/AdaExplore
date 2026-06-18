@@ -1,0 +1,30 @@
+{
+    "node_id": 17,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        3,
+        4
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.48265026243567755,
+    "max_reward": 0.48265026243567755,
+    "avg_reward": 0.48265026243567755,
+    "score": [
+        1,
+        1,
+        0.7818646650943397
+    ],
+    "small_guidance": "- The conv_transpose3d is now the dominant cost (~10.6ms vs 8.3ms baseline); tuning the elementwise epilogue further won't help. If staying small, at least drop the channels_last_3d conversion since cuDNN's ConvTranspose3d often falls back to a slower path with NDHWC \u2014 benchmark plain contiguous layout against channels_last_3d.\n- Fold the bias Parameter into `conv_transpose.bias` once at init (bias shape is (C,1,1,1,1) which broadcasts as a per-channel bias), so the elementwise epilogue only does add_input + hardswish. This removes one global-memory read per element.\n- For the elementwise kernel, since output is ~128*64*32*32*32 \u2248 268M elements, try a vectorized 2D grid with BLOCK_SIZE=8192, num_warps=8, num_stages=2; current configs are likely fine but the kernel is already memory-bound at ~3 reads + 1 write.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: for each (n, ic, d, h, w) input voxel, scatter `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` into `output[n, oc, d*stride-pad+kd, ...]` for stride=2, pad=1, output_padding=1. Since stride=2, each input contributes to a sparse 3\u00b3 pattern in output \u2014 this avoids the dilated-input gather that cuDNN's transposed conv emulates.\n- Alternatively, implement transposed conv as a GEMM: reshape weight to (IC, OC*kd*kh*kw), matmul with input (N*D*H*W, IC) \u2192 (N*D*H*W, OC*kd*kh*kw), then col2im scatter-add into the (N, OC, D*2, H*2, W*2) output grid with stride/pad/output_padding index math. Fuse the bias add, add_input, and hardswish into the col2im epilogue so only one write to output occurs.\n- Use channels-last layout (NDHWC) so the IC reduction dimension is contiguous for the GEMM-K loads; tile (OC=64, spatial=128) per program, BLOCK_K=32, num_warps=4, num_stages=3. Persistent-CTA scheme not needed at this scale.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 18,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        0.7818646650943397
+    ]
+}

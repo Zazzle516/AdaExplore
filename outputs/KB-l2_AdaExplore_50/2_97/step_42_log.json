@@ -1,0 +1,30 @@
+{
+    "node_id": 42,
+    "parent_node_id": 33,
+    "context_node_ids": [
+        27,
+        33
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.47574503595706896,
+    "max_reward": 0.47574503595706896,
+    "avg_reward": 0.47574503595706896,
+    "score": [
+        1,
+        1,
+        0.7248965466458187
+    ],
+    "small_guidance": "- The training path runs `torch.addmm` then two extra Triton passes (stats + apply); fuse the stats reduction with the addmm by either (a) using a single-pass Welford in a persistent kernel that owns the GEMM output column tiles, or at minimum (b) bumping `BLOCK_N_STATS` to 256 and `BLOCK_M_STATS` to 256 with `num_warps=8, num_stages=3` so the stats pass becomes a single sweep of the (1024, 8192) matrix.\n- For `bn_apply_kernel`, switch to a 1D-flattened launch over `M*N` with `BLOCK=4096`, `num_warps=8` \u2014 the op is purely elementwise once scale/shift are gathered via `offs % N`, and the 2D tiling with column broadcasts is wasting bandwidth; alternatively keep 2D but try `BLOCK_M=128, BLOCK_N=128, num_warps=8, num_stages=4`.\n- Add the inference-path autotune key over `M,N,K` with one extra config tuned for `M=1024` (e.g. `BLOCK_M=64, BLOCK_N=128, BLOCK_K=64, num_warps=4, num_stages=4`) since the current configs are biased toward larger M.",
+    "large_guidance": "- Redesign the training path as a single fused GEMM-with-online-Welford kernel: each program computes a `(BLOCK_M, BLOCK_N)` tile of `Y = X W^T + b`, writes it to global memory, and atomically (or via a second small reduction kernel over column-tile partial sums) contributes `sum` and `sum_sq` per column. Then a second pass applies fold+swish. This eliminates the full reread of Y for stats.\n- Better: split into (1) GEMM that writes Y and per-column partial (sum, sum_sq) into a `(num_pid_m, N)` workspace, (2) tiny reduction kernel collapsing `num_pid_m` rows to mean/var and producing `scale`/`shift`, (3) a fused apply kernel that reads Y and writes swish output. This is 3 launches but no atomics and no redundant Y reads beyond one apply pass.\n- Consider keeping the inference-style fully-fused `linear+bn+bias+div+swish` kernel for the training path too, but with the column reduction done via a two-stage scheme (per-tile partials \u2192 final stats \u2192 relaunch fused apply). The current 3.37ms vs. 2.44ms baseline suggests the addmm itself is near-optimal; the wins must come from removing the post-GEMM passes.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 43,
+    "global_best_node_id": 16,
+    "global_best_score": [
+        1,
+        1,
+        1.306364364810914
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 40,
+    "parent_node_id": 28,
+    "context_node_ids": [
+        28
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4945975699648818,
+    "max_reward": 0.4945975699648818,
+    "avg_reward": 0.4945975699648818,
+    "score": [
+        1,
+        1,
+        0.8804299522102748
+    ],
+    "small_guidance": "- The current kernel reads input twice (once for stats+sigmoid, once for affine). Drop the second pass entirely by keeping the sigmoid results in registers across the reduction: use a single pass that accumulates sum/sumsq while writing y to out, then a second pass that only reads `out` \u2014 but reduce its cost by tuning `BLOCK` larger (HW=64516, so BLOCK=32768 needs only 2 chunks) and prefer `num_warps=8, num_stages=2`.\n- Add autotune configs that vary on the `CPG` axis too \u2014 e.g. process multiple channels per inner iteration with a 2D tile `[BLOCK_C, BLOCK_HW]` so per-channel bias/scale loads are amortized; try BLOCK_HW \u2208 {8192, 16384, 32768} with num_warps=4 added (smaller warps may win since reduction is scalar).\n- Use `tl.load(..., eviction_policy='evict_first')` on the second-pass read of `out` so it doesn't pollute L2, and `evict_last` on first-pass stores \u2014 the post-conv tensor is 128\u00b732\u00b7254\u00b7254\u00b74 \u2248 1 GB so cache reuse is nil.",
+    "large_guidance": "- The conv now dominates: post-fusion the kernel runs at fast_p\u22480.88 with baseline 7.37 ms vs 8.37 ms. The conv (in=8, out=32, k=3, 256\u00d7256, N=128) is the bottleneck. Replace `nn.Conv2d` with a custom Triton im2col-GEMM kernel that fuses bias-add, scale, sigmoid, and GroupNorm stats accumulation directly in its epilogue \u2014 one program per (N, group, output-spatial tile), accumulating per-group sum/sumsq across the OC-of-group tile, followed by a second small kernel that applies the affine using the cached pre-normalized output.\n- Use channels-last (NHWC) layout end-to-end so the GEMM-K axis (IC\u00b7kH\u00b7kW=72) and channel writes are contiguous; with OC=32 the GEMM-N tile can be a single block (BLOCK_N=32), making the problem essentially `(N\u00b7H\u00b7W) \u00d7 72 \u00d7 32` \u2014 tile output-spatial with BLOCK_M=64 or 128, BLOCK_K=32 or 72.\n- Alternative: since IC\u00b7kH\u00b7kW=72 is tiny, a direct conv (explicit triple loop over kH,kW,IC unrolled via `tl.static_range`) inside one Triton kernel per (N, output-tile) may beat im2col-GEMM and naturally fuses the epilogue + per-group reduction without materializing the conv output.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 41,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        1.0321006582633052
+    ]
+}

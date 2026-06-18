@@ -1,0 +1,31 @@
+{
+    "node_id": 37,
+    "parent_node_id": 35,
+    "context_node_ids": [
+        3,
+        21,
+        35
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5025520712578193,
+    "max_reward": 0.5025520712578193,
+    "avg_reward": 0.5025520712578193,
+    "score": [
+        1,
+        1,
+        0.9460545878770088
+    ],
+    "small_guidance": "- Add `triton.autotune` over `BLOCK_S \u2208 {256, 512, 1024}`, `num_warps \u2208 {4, 8}`, `num_stages \u2208 {2, 3, 4}` on `apply_norm_clamp_max_kernel`; with C=16 and S=14\u00b730\u00b730=12600, the apply kernel is the dominant cost and current 512/8 is likely not optimal.\n- For `fused_stats_kernel`, sweep `BLOCK_S \u2208 {1024, 2048, 4096}` with `num_warps \u2208 {4, 8}`; S=12600 fits in ~3 iterations at 4096 and removes loop overhead. Also consider keeping `sum_acc`/`sumsq_acc` as scalars via `tl.sum` per iter to reduce register pressure.\n- BLOCK_C is rounded to 16 (next pow2 of C=16) which is fine, but since C=16 is small and constant, pass `BLOCK_C=16` directly and drop the `c_mask` branch \u2014 saves predication in the inner load and the final `tl.max`.",
+    "large_guidance": "- The conv itself (cuDNN Conv3d on 128\u00d73\u00d716\u00d732\u00d732 \u2192 128\u00d716\u00d714\u00d730\u00d730) is now the dominant runtime (baseline ~0.81 ms, fused tail is small). Replace it with a custom Triton im2col-GEMM Conv3d kernel: one program per `(N, OC_tile, output-spatial tile)`, K-loop over `IC*kd*kh*kw = 81`. With kernel volume only 81 and OC=16, a `BLOCK_M=16 (OC), BLOCK_N=64-128 (spatial), BLOCK_K=81` single-tile GEMM per program is feasible and avoids cuDNN launch overhead.\n- Fuse the entire tail (multiply, instance-norm stats, clamp, multiply, max-over-C) into the conv epilogue path \u2014 but since instance-norm needs a full reduction over S per (N,C), a two-pass design is required: pass-1 conv writes `[N,C,S]` plus partial sums to compute mean/invstd; pass-2 re-reads conv output (or recomputes) to apply norm+clamp+mul+max. Alternatively, keep the current two-kernel tail and only swap the conv.\n- Consider channels-last (NDHWC) layout for the conv output so the C=16 axis is contiguous; the max-over-C reduction in the tail then becomes a contiguous 16-wide load per output spatial element, eliminating the strided gather currently done via `c_offs[:, None] * S`.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 38,
+    "global_best_node_id": 28,
+    "global_best_score": [
+        1,
+        1,
+        1.6580138687333263
+    ]
+}

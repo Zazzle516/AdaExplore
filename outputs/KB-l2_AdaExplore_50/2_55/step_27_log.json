@@ -1,0 +1,30 @@
+{
+    "node_id": 27,
+    "parent_node_id": 22,
+    "context_node_ids": [
+        20,
+        22
+    ],
+    "depth": 5,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness bug is the atomic-add path: when N_SPLITS>1 the kernel atomics partial sums to `out`, then `scale_kernel` multiplies by SCALE \u2014 but `tl.atomic_add` on overlapping programs racing with a later scale pass is fine, however the real issue is likely that `tl.reshape(acc, (BLOCK_M, BLOCK_N // KERNEL_SIZE, KERNEL_SIZE))` interprets the BLOCK_N axis as contiguous pairs, which is correct, but masked out-of-range N positions set to -inf can make a whole pool window -inf and then summed \u2014 when N is a multiple of BLOCK_N*KERNEL_SIZE this is fine; verify N=32768 is divisible by all BLOCK_N choices (256 not divisor-safe vs KERNEL_SIZE=2 \u2014 fine). The actual bug: `tiles_per_split = cdiv(n_tiles, N_SPLITS)` can leave some splits empty AND can cause the last split to overflow; ensure `n_tile_end` clamp works and that N is divisible. More importantly, drop configs where `BLOCK_N % KERNEL_SIZE != 0`.\n- Switch from atomic-add to a 2D output `[M, N_SPLITS]` then a clean reduction+scale kernel \u2014 atomics on fp32 introduce non-determinism and may be the source of the 302k diff across trials.\n- Reduce N_SPLITS to 8-16; with M=128 and BLOCK_M=64 you only get 2 m-tiles, so N_SPLITS=16 gives 32 programs which still underuses 128 SMs, but atomics contention drops. Better: use BLOCK_M=32 \u2192 4 m-tiles \u00d7 N_SPLITS=32 = 128 programs.",
+    "large_guidance": "- Redesign as a two-stage kernel writing partial sums to `[M, N_SPLITS]` (no atomics), then a tiny reduction kernel sums across splits and applies SCALE. This removes the atomic race and the separate scale pass.\n- Since K=N=32768 and M=128, the GEMM is enormous (\u2248275 GFLOPs) and dominates; the pool+sum epilogue is essentially free. Focus the redesign on a split-K + split-N persistent GEMM with one program per SM (128 programs), each owning a fixed (m_tile, n_range) and streaming K. Use BLOCK_M=32, BLOCK_N=128, BLOCK_K=32\u201364 with num_warps=4\u20138, num_stages=4.\n- Fuse: inside each n-tile, after bias add, do `max` over consecutive pairs (KERNEL_SIZE=2) via `tl.reshape` then accumulate sum into a per-row scalar. Final write multiplies by SCALE. No second kernel needed if you persistently own the full N range for an m-tile.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 28,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

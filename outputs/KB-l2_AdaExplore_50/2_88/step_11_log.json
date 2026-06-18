@@ -1,0 +1,29 @@
+{
+    "node_id": 11,
+    "parent_node_id": 8,
+    "context_node_ids": [
+        8
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness issue likely stems from GroupNorm affine: `gn_w` and `gn_b` are indexed by channel `pid_g * GROUP_SIZE + offs`, which is correct, but max_diff ~0.0037 with avg ~5e-5 suggests numerical precision in variance computation. Use a more numerically stable two-pass: compute mean first, then `xc = x - mean` with proper masking (currently `tl.where(mask, x - mean, 0.0)` is fine), but ensure `sum_x` casts intermediate sums in fp32 \u2014 already done. The actual issue may be that max_diff 0.0037 is below typical 5e-2 tolerance \u2014 recheck whether the correctness threshold is tighter here. If the harness uses default 1e-2 atol, this should pass; try increasing precision via fp32 accumulation throughout (already done).\n- Add `triton.autotune` over the GN kernel with `BLOCK` fixed (= group_size pow2) but sweep `num_warps` \u2208 {1, 2, 4} since group_size = 8192/256 = 32 \u2014 only 32 elements per group, so `num_warps=1` is optimal, not 4.\n- For the GEMM, M=1024, N=8192, K=8192 \u2014 add larger tiles like `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3` and `BLOCK_M=256, BLOCK_N=128, BLOCK_K=32` to the autotune list.",
+    "large_guidance": "- Group size is only 32 (out_features=8192 / num_groups=256). One program per (row, group) with BLOCK=32 is severely underutilized. Redesign the GN kernel to process **multiple groups per program** along the channel dim, or one program per row that handles all 256 groups using a 2D tile (BLOCK_GROUPS \u00d7 32) with reductions along axis=1. This amortizes launch overhead and improves occupancy.\n- Alternative: persistent kernel where each program owns several rows and streams through groups, keeping `mul_w`, `gn_w`, `gn_b` in shared memory / registers across rows (they are reused for all 1024 rows).\n- Consider fusing the GEMM epilogue with GroupNorm partial stats: write per-(row, group) sum and sum-of-squares from the GEMM kernel's epilogue, then a tiny second kernel does normalize + swish + multiply + swish. This eliminates one full read of the 1024\u00d78192 tensor between GEMM and GN.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 12,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

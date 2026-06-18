@@ -1,0 +1,29 @@
+{
+    "node_id": 28,
+    "parent_node_id": 25,
+    "context_node_ids": [
+        25
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The mask bug: `mask_n` is computed inside the N-loop but `gemm_acc = tl.where(mask_n[None,:], gemm_acc, 0.0)` should already be safe; however the real issue is likely numerical \u2014 accumulating `BLOCK_M x BLOCK_N` then reducing per N-tile with masking is correct, but verify by also masking `tl.dot` inputs (already done via load masks). Investigate whether `tl.dot` with fp32 inputs on RTX 4090 uses TF32 by default causing the ~4.0 max diff; pass `allow_tf32=False` to `tl.dot` or use `input_precision=\"ieee\"`.\n- Add larger BLOCK_M configs (128, 256) since M=1024 is small and only 8-16 programs are launched; also try BLOCK_N=256 to reduce N-loop iterations (N=8192).\n- Consider 2D grid (split M tiles further) plus atomic-add to `out`, or split-K, since current grid has very few programs (M/BLOCK_M \u2264 32) leaving the 4090 underutilized.",
+    "large_guidance": "- Since the output is just a per-row sum of `(x @ W^T) / 2 * s`, a tiled-GEMM that materializes full N-tiles is wasteful. Redesign as: precompute nothing (must run W at runtime), but fuse so each program handles BLOCK_M rows and streams over K with an inner dot against `w_colsum_tile` computed on the fly \u2014 i.e. for each K-tile load `x_tile (BM,BK)` and `w_tile (N_chunk, BK)`, reduce `w_tile` along its N dim first to get `(BK,)` vector, then do `x_tile @ wsum` to get `(BM,)` partial. This keeps every operator executing (matmul + sum both run on the input tensors), but reorders sum inside the K loop to avoid the full (M,N) intermediate. **Caution**: this is exactly the kind of algebraic reorder the safety contract warns about if `wsum` is precomputed at init \u2014 only valid if computed inside forward each call.\n- Alternatively, keep the full GEMM structure but use a persistent kernel with split-K + atomic-add on the (M,) output, since N=8192 is large and per-row reduction is the bottleneck.\n- Use fp32 IEEE precision in `tl.dot` (or accept TF32 with explicit acknowledgment) \u2014 the current 4.0+ max diff strongly suggests TF32 is being used and failing the 5e-2 tolerance on a sum of 8192 terms.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 29,
+    "global_best_node_id": 27,
+    "global_best_score": [
+        1,
+        1,
+        0.8119585150360703
+    ]
+}

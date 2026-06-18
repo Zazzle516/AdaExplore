@@ -1,0 +1,30 @@
+{
+    "node_id": 44,
+    "parent_node_id": 39,
+    "context_node_ids": [
+        26,
+        39
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5113925242573518,
+    "max_reward": 0.5113925242573518,
+    "avg_reward": 0.5113925242573518,
+    "score": [
+        1,
+        1,
+        1.0189883251231526
+    ],
+    "small_guidance": "- The inner triple loop iterates `IC * kH * kW * D = 16*3*3*32 = 4608` per program; try larger `BLOCK_HW` (256) with `num_warps=8` to amortize launch and weight reloads, and lower `num_stages` to 2 since the loop is compute-heavy with small reuse.\n- Hoist the three depth-edge cases out of the `d_in` loop: the body for `d_in in [1, D-2]` is identical (`(w0+w1+w2)*xv`); precompute `w_sum = w0+w1+w2` and run a single accumulate for the interior range, then handle `d_in=0` and `d_in=D-1` separately. This cuts inner-loop FMAs by ~3\u00d7.\n- Add an `@triton.autotune` over `BLOCK_HW \u2208 {64,128,256}`, `num_warps \u2208 {4,8}`, `num_stages \u2208 {2,3}` keyed on `(H,W,OC)`.",
+    "large_guidance": "- Reorder loops so the depth axis is the outermost reduction and is collapsed analytically into three weight sums (`w_top = w[:,:,0,:,:]`, `w_mid`, `w_bot`): for each `(h,w)` output, sum `x[:,:,d,h_in,w_in]` across `d` once, then multiply by the appropriate weight slice \u2014 but ensure the full D\u00d7kH\u00d7kW\u00d7IC MAC count is preserved by keeping the depth sum *inside* the kernel (do not precompute on weights). Equivalently, swap the `d_in` loop to be innermost over a register-resident `xv` vector and accumulate into 3 partial sums, then combine with `w0/w1/w2` once per `(ic,kh,kw)`.\n- Switch to a GEMM-style tiling: program tile = `(BLOCK_OC, BLOCK_HW)` output, K-axis = `IC * kH * kW * D`. Load weights `(OC, IC*kH*kW*kD)` once per tile via `tl.dot`, and gather input columns implicitly. With `tl.dot` on the 4090 (Ada, fp32 via TF32) you should see 3-5\u00d7 over the current scalar FMA loop.\n- Consider channels-last input layout (N,D,H,W,IC) so the IC axis is the contiguous K dimension; this lets a single coalesced load feed `tl.dot` and removes the strided per-`ic` loads in the current design.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 45,
+    "global_best_node_id": 24,
+    "global_best_score": [
+        1,
+        1,
+        2.8571081491712707
+    ]
+}

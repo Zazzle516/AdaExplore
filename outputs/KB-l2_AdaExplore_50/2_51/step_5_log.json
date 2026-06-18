@@ -1,0 +1,29 @@
+{
+    "node_id": 5,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        4
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness bug: `tl.atomic_add(ROWSUM_ptr + offs_m, partial, mask=mask_m)` races across N-tile programs targeting the same rows, but more critically the `rowsum` accumulation needs to happen exactly once per (m,n) tile \u2014 verify by initializing rowsum to zero (done) and ensuring no double-launch. The likely actual bug is that `tl.where(mask_n[None, :], acc, 0.0)` is applied AFTER adding `bs`, but `bs` was loaded with `other=0.0` on masked lanes, so masked lanes contribute `0 + 0 = 0` correctly \u2014 however `acc` from `tl.dot` on masked-N lanes is junk if `w` wasn't masked properly. The real issue: `gelu_residual_kernel` uses `inv_N=1.0/float(OUT_F)` passed as a constexpr Python float, which is fine, but `tl.load(ROWSUM_ptr + pid_m)` reads fp32 \u2014 confirm `rowsum` dtype matches and that bias/sub means use correct definition (mean over OUT, then logsumexp over dim=1 of a (B,1) tensor is identity, then GELU(scalar)).\n- Add `tl.debug_barrier()` or replace atomic-add strategy with a split-K reduction tree (allocate `partials[num_pid_n, B]` then a second small reduce kernel) to eliminate atomic ordering nondeterminism and improve fp accuracy \u2014 atomics on fp32 are nondeterministic and accumulate rounding differently each run, which matches the \"(4/5) trials\" failure pattern.\n- Once correct, expand autotune with `BLOCK_M=64,BLOCK_N=256,BLOCK_K=64` and try `num_stages=4, num_warps=8`; M=2048,N=8192 favors large N tiles.",
+    "large_guidance": "- Restructure as a single fused persistent kernel per row (or row-group): each program owns BLOCK_M rows, streams across K and N, accumulating `sum_n((X@W^T)[m,n] + bias[n] - sub[n])` directly into a register scalar per row \u2014 no atomics, no second pass for mean. Then in the same kernel (or a tiny follow-up) compute gelu(mean) and broadcast-add to original x to produce output.\n- Better: observe that `sum_n(X@W^T + bias - sub) = X @ sum_n(W^T) + sum(bias-sub)` \u2014 BUT this is exactly the forbidden algebraic shortcut (collapsing GEMM into matvec via precomputed column-sum of W). Do NOT do this. Keep the full GEMM executing; just fuse its reduction-over-N into the epilogue without writing the (B,OUT) tensor.\n- Use split-K-style two-stage reduction: kernel 1 writes `partial[pid_n, m]` (shape `[num_pid_n, B]`) deterministically with no atomics; kernel 2 reduces along pid_n, divides by OUT, applies GELU, and the final residual-add kernel reads that scalar and adds to x. This fixes the flaky-correctness atomic issue and is friendlier to autotuning.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 6,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        1.4517414747667021
+    ]
+}

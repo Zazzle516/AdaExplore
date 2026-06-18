@@ -1,0 +1,29 @@
+{
+    "node_id": 23,
+    "parent_node_id": 20,
+    "context_node_ids": [
+        20
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5041805675898292,
+    "max_reward": 0.5041805675898292,
+    "avg_reward": 0.5041805675898292,
+    "score": [
+        1,
+        1,
+        0.9594896826160906
+    ],
+    "small_guidance": "- The conv (Conv3d on 128\u00d73\u00d716\u00d732\u00d732 \u2192 128\u00d716\u00d714\u00d730\u00d730) likely dominates now that the post-conv tail is fully fused. Tuning BLOCK_S further has limited headroom; the dominant cost is cuDNN conv. Consider adding a `BLOCK_S=4096, num_warps=8, num_stages=3` config and a `BLOCK_S=S` (12600 rounded up) persistent variant so pass-1 stats and pass-2 normalize reuse loaded data without a second global read.\n- Add `tl.multiple_of` / `tl.max_contiguous` hints on `s_offs` and use `eviction_policy='evict_last'` on the pass-1 load so pass-2 finds it in L2.\n- Fold the conv bias add into the producer (it currently goes through cuDNN); if keeping torch conv, pass `bias=None` to conv and add bias inside the fused kernel via `mult * (x + bias)` to remove a separate bias kernel launch.",
+    "large_guidance": "- Replace `nn.Conv3d` with a custom Triton im2col-style GEMM kernel: one program per `(N, OC tile, output-spatial tile)`, gathering the 3\u00d73\u00d73\u00d7IC=81 K-dimension implicitly. With IC=3 and K=27, the K-dim is tiny (81), so a single-pass kernel per output tile can hold weights in registers (16 OC \u00d7 81 = 1296 fp32 entries \u2014 fits) and stream input patches. This removes the cuDNN call which is the dominant cost.\n- Fuse the entire pipeline: conv \u2192 \u00d7mult \u2192 InstanceNorm \u2192 clamp \u2192 \u00d7mult \u2192 max-over-C into one or two kernels. Strategy: kernel A computes conv output and per-(N,C) sum/sum\u00b2 in a single pass by atomically accumulating stats while writing conv output (or by tiling so each (N,C) is fully covered by one program). Kernel B does the normalize/clamp/mult/max-reduce-over-C epilogue (already done well).\n- Alternative: since C=16 is small and output spatial = 12600, a per-(N) persistent kernel that computes conv directly (loading all 16\u00d73\u00d727 = 1296 weights once into SMEM) and immediately accumulates per-channel stats avoids ever materializing the conv output to HBM. This collapses 3 HBM round-trips (conv write, stat read, normalize read) into 1.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 24,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        0.9594896826160906
+    ]
+}

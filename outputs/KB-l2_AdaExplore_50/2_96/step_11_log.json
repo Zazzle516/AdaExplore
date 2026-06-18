@@ -1,0 +1,29 @@
+{
+    "node_id": 11,
+    "parent_node_id": 10,
+    "context_node_ids": [
+        10
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.44328491483515986,
+    "max_reward": 0.44328491483515986,
+    "avg_reward": 0.44328491483515986,
+    "score": [
+        1,
+        1,
+        0.45710054739006833
+    ],
+    "small_guidance": "- The current ModelNew only fuses the post-conv reduction (maxpool + global avg + clamp); the ConvTranspose3d still runs via torch and dominates. Tuning BLOCK/num_warps on the tiny reduction kernel won't help \u2014 at minimum, add `num_stages=2` and try BLOCK=4096 with num_warps=8 for the reduction, but expect <5% gain.\n- The unused `fused_convt_pool_kernel` has 7 nested Python loops per program emitting one scalar \u2014 even if wired in, it would be far slower than cuDNN. Don't tune it; redesign.\n- Fold the `scale` multiply into the conv bias (`bias *= scale`, `weight *= scale` at init eval-time) so the multiply disappears from the forward path.",
+    "large_guidance": "- Replace ConvTranspose3d with a scatter-add Triton kernel: one program per `(N, IC tile, ID*IH*IW tile)`, computing the outer product `input[n,ic,d,h,w] * weight[ic,:,:,:,:]` and `tl.atomic_add`-ing into the output grid at `(d*stride - padding + kd, ...)`. Pre-zero the output (with bias broadcast) so the kernel only adds contributions. Stride=2, padding=1, KS=3 means each input element contributes to 27 output positions across 16 OC \u2014 a single fused pass.\n- Better: fuse the entire pipeline into a single kernel per `(N, OC)` that walks output spatial in pooled tiles. Since global-avg-pool reduces all spatial to 1, you only need the *sum* of max-pooled values, not the values themselves \u2014 but each maxpool window requires the actual conv_transpose outputs. Implement as: one program per `(N, OC)`, loop over pooled cells, for each MP\u00b3 window compute conv_transpose outputs via the gather formulation (current kernel's math is correct but layout is wrong \u2014 the IC reduction should be the innermost tl.dot-friendly axis with BLOCK_IC=4 padded, and the kh/kw/kd loops should be unrolled constexpr).\n- If going single-kernel, persist accumulator in registers and emit one scalar per `(N, OC)` to skip the second reduction kernel entirely. Grid size `N*OC = 128*16 = 2048` programs is healthy for the 4090.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 12,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.46894253048307527
+    ]
+}

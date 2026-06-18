@@ -1,0 +1,27 @@
+{
+    "node_id": 25,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The current kernel is algebraically equivalent to sum_k x[m,k] * (sum_n w[n,k]) \u2014 it does the column-sum of W at runtime but still collapses the matmul+sum into a matvec, which violates the \"every operator executes\" contract. Even if tuned, this approach is invalid.\n- If kept structurally, the inner double-loop over N for every k-chunk wastes bandwidth (W is reloaded K/BLOCK_K times). It would need persistent caching of w_col_sum, but that's still the forbidden shortcut.\n- Correctness is also failing \u2014 likely fp32 accumulation drift from the K=8192 reduction order; not worth tuning further.",
+    "large_guidance": "- Rewrite as a real tiled GEMM with `tl.dot`: grid over (M_tile, N_tile), accumulate K in BLOCK_K chunks producing a (BLOCK_M, BLOCK_N) tile of y = x @ w.T. Then fuse the epilogue: divide by 2, reduce the tile along N into a (BLOCK_M,) partial, and `tl.atomic_add` into a per-row output buffer of shape (M,). Finally multiply by scaling_factor in a tiny second kernel or fold scale into the atomic_add contribution.\n- Alternatively, use a split-K-free design: one program per M-tile spanning the full N. Loop over N in BLOCK_N chunks; for each, loop K computing the GEMM tile with tl.dot, then sum the BLOCK_N result into the row accumulator before moving to the next N chunk. This keeps the full matmul executing (every (m,n) product computed) without atomics.\n- Tile suggestions for M=1024, N=K=8192: BLOCK_M=64, BLOCK_N=128, BLOCK_K=32, num_warps=4, num_stages=3, with a GROUP_M swizzle on the (M,N) grid for L2 reuse. Pre-transpose weight to (K,N) layout once in __init__ so the inner K-loads on B are contiguous along K.",
+    "evaluator_direction": "large",
+    "evaluator_valid": false,
+    "total_nodes": 26,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        0.10046266372480192
+    ]
+}

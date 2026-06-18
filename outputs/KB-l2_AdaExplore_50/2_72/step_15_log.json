@@ -1,0 +1,30 @@
+{
+    "node_id": 15,
+    "parent_node_id": 13,
+    "context_node_ids": [
+        11,
+        13
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.41442114926117984,
+    "max_reward": 0.41442114926117984,
+    "avg_reward": 0.41442114926117984,
+    "score": [
+        1,
+        1,
+        0.21897448140473333
+    ],
+    "small_guidance": "- The current kernel processes a 4\u00d74\u00d74=64 output tile per program with BLOCK_M=64; this leaves tl.dot underutilized (64\u00d7BK \u00b7 BK\u00d716 padded). Add a `@triton.autotune` over `BLOCK_N \u2208 {16,32}`, `BLOCK_K \u2208 {32,64,128}`, `num_warps \u2208 {2,4,8}`, `num_stages \u2208 {2,3}` keyed on `(OC, K_REAL)`; with IC*KD*KH*KW=81, BLOCK_K=128 covers the K dim in one pass and removes per-k masking overhead.\n- Move the heavy modulo/division index math (kw/kh/kd/ic from k_offs, and the od/oh/ow decode from m_offs) into precomputed constants via `tl.static_range`-free arithmetic, and replace the per-element `(id_num // SD, id_num - id_q*SD)` with a single `id_r = id_num & 1` check since stride=2 (when SD is a power of two)\u2014this halves integer ops in the inner gather.\n- Switch the output write to a packed `(N*PD_OD*PD_OH*PD_OW, BLOCK_N)` 2D store and store `result` in fp32 with `cache_modifier=\".cs\"`; also fuse the `+64*bias` and the `/64` into a single FMA `(sum_acc * (1/64)) + bias) * scale + shift` to cut the epilogue to two FMAs.",
+    "large_guidance": "- Restructure as a scatter-add ConvTranspose3d: one program per `(N, IC tile, ID\u00b7IH\u00b7IW tile)` computes the `input \u00d7 weight` outer product (shape `[BLOCK_S, OC] = [BLOCK_S, BLOCK_K_ic] \u00b7 [BLOCK_K_ic, OC]`) and `tl.atomic_add`s the 27 (KD\u00b7KH\u00b7KW) scattered contributions into an OD\u00d7OH\u00d7OW accumulator buffer. This matches the natural data-flow of transposed conv (each input voxel touches 27 outputs) and keeps OC=16 fully resident in registers; the current gather formulation wastes ~63/64 of the K loop on stride-misaligned positions that evaluate to zero.\n- Alternatively, fuse the entire pipeline into a per-`(N, OC, pooled_d, pooled_h, pooled_w)` program that explicitly enumerates the small 4\u00d74\u00d74 output window and, for each of those 64 output positions, walks only the *valid* `(kd,kh,kw)` triples (precomputed via a Python-side lookup table passed as a constant tensor) \u2014 avoiding the `id_r==0` mask that currently discards most of the K iterations. Accumulate the 64 pooled values into a single scalar per OC, then apply BN+scale+shift once.\n- Use `channels_last_3d` layout for both input and weight so the IC reduction axis is contiguous in memory; the current NCDHW layout makes the `ic_id` stride = `ID*IH*IW` (32K elements), defeating coalescing on the GEMM-K loads.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 16,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        0.36042383585251137
+    ]
+}

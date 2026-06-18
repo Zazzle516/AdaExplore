@@ -1,0 +1,30 @@
+{
+    "node_id": 32,
+    "parent_node_id": 19,
+    "context_node_ids": [
+        18,
+        19
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5818177902097902,
+    "max_reward": 0.5818177902097902,
+    "avg_reward": 0.5818177902097902,
+    "score": [
+        1,
+        1,
+        1.599996769230769
+    ],
+    "small_guidance": "- The ConvTranspose3d dominates runtime; the GAP+BN kernel is already tiny relative to it. Further tuning of `_gap_*` (BLOCK_S, num_warps) will not move the needle. If staying small, drop the split-K path entirely (NC=2048, S=8000 already saturates with a single-program reduction) and shrink to one autotuned kernel.\n- Set `torch.backends.cudnn.benchmark = True` once at import and ensure `channels_last_3d` memory format on input/weight to give cuDNN a faster ConvTranspose3d algorithm.\n- Try folding `scale_factor` into the conv weight/bias at eval time so the post-conv multiply is gone (BN epilogue already absorbs it via A/B, which is the case here \u2014 keep as is).",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)`, computing the `input \u00d7 weight` outer product and scatter-adding into the output grid with stride=1, pad=0. Output shape is `(N, OC, D+4, H+4, W+4)` with kernel 5\u00b3 \u2014 small enough that the output fits and scatter contention is manageable per-(N, OC) tile.\n- Better: since global-avg-pool follows, fuse conv-transpose + scale + BN-affine + spatial reduction into a single kernel that never materializes the `(N, OC, 20, 36, 36)` output. Each program accumulates a partial sum over output-spatial for one `(N, OC)`; the conv-transpose contribution of each input voxel to the output sum is `input[n,ic,d,h,w] * sum(weight[ic,oc,:,:,:])` plus boundary corrections \u2014 but per the safety contract we must NOT precompute `sum(weight)` at init. Instead, run the full scatter inside the kernel and reduce on the fly into a per-(N,OC) accumulator in shared memory / registers.\n- Alternative im2col-style gather: rewrite as a GEMM where output[n, oc, d', h', w'] = \u03a3_{ic,kd,kh,kw} input[n, ic, d'-kd, h'-kh, w'-kw] * weight[ic, oc, kd, kh, kw], one program per `(N, OC tile, output-spatial tile)`, with a GAP reduction in the epilogue. Tile `BLOCK_OC=32, BLOCK_S=64, BLOCK_K=64`, num_warps=4, channels_last layout for coalesced IC loads.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 33,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        1.599996769230769
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 44,
+    "parent_node_id": 31,
+    "context_node_ids": [
+        26,
+        27
+    ],
+    "depth": 5,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The split-K path applies bias+min+sub in the epilogue kernel but the SPLIT_K==1 branch in the GEMM also applies them; since all autotune configs have SPLIT_K>=4, the GEMM correctly skips it \u2014 but the epilogue then applies min(acc, c) - c on the *partial* GEMM-only sum without issue. The bug is that `tl.atomic_add` with multiple SPLIT_K programs writing into `out` is racing with non-atomic reads in the same kernel? No \u2014 actual bug: bias/constant fusion logic is fine, but correctness is failing. Likely cause: `tl.atomic_add` on fp32 with non-deterministic ordering is fine numerically, but the mask in atomic_add may write zeros incorrectly. Check that `mask_m[:, None] & mask_n[None, :]` is properly applied.\n- More likely: the issue is the `num_iters` computation per pid_k. When `K_start >= K`, `num_iters` becomes 0 which is fine, but `tl.cdiv(K - K_start, k_step)` with negative numerator gives wrong result. Guard with `max(K - K_start, 0)` or just iterate `tl.cdiv(K, k_step)` and mask inside.\n- Drop split-K entirely for this shape (M=128, N=16384, K=16384): M is small but N*K work is huge and a standard 2D GEMM with BLOCK_M=64/128, BLOCK_N=128/256, BLOCK_K=32/64 + GROUP_M swizzle will saturate. Fuse bias + min + sub directly in the epilogue of the single GEMM kernel \u2014 no second pass, no atomics.",
+    "large_guidance": "- Rewrite as a single non-split-K tiled GEMM: one program per (M-tile, N-tile), accumulate full K loop in registers, then fuse `+ bias`, `tl.minimum(acc, c)`, `- c` into the store epilogue. This avoids atomic_add correctness hazards and the second kernel launch entirely.\n- Since M=128 is small (one or two BLOCK_M tiles) and N=16384 is huge, prefer BLOCK_M=128, BLOCK_N=128 or 256, BLOCK_K=32 or 64, with GROUP_M=8 swizzle across the N dimension to maximize L2 reuse of the X tile. Load constant `c` once outside the K loop; broadcast bias vector once at epilogue.\n- Pre-transpose / ensure W is loaded with its contiguous axis (K) on the inner stride; nn.Linear weight is [N, K] row-major so `stride_wk = 1` \u2014 make sure the kernel's w_ptrs uses `offs_k[:, None] * stride_wk + offs_n[None, :] * stride_wn` with the K axis matching contiguous loads, or transpose once at init.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 45,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 44,
+    "parent_node_id": 10,
+    "context_node_ids": [
+        10
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.09344430952380953
+    ],
+    "small_guidance": "- The current kernel is gather-based with an inner `for ic in range(IC)` loop doing scalar loads \u2014 this is the main bottleneck. Reformulate the inner reduction as a `tl.dot` over IC: load `x` as `[BLOCK_SP, BLOCK_IC]` and `w` as `[BLOCK_IC, BLOCK_OC]` per (kd,kh,kw) and accumulate via `tl.dot`, with `BLOCK_IC=32` (full IC).\n- Add `triton.autotune` over `BLOCK_OC \u2208 {32,64}`, `BLOCK_SP \u2208 {64,128,256}`, `num_warps \u2208 {4,8}`, `num_stages \u2208 {2,3}`; current 32\u00d764 with warps=4 is too small for a 4090 to hide latency given the 3\u00d73\u00d73=27 kernel iters.\n- Hoist `mask=spatial_valid` so identical-stride positions across (kd,kh,kw) reuse a single `id_valid/ih_valid/iw_valid` precompute (already done) \u2014 but also skip the entire (kd,kh,kw) iteration when no element in tile is valid by guarding with `if tl.sum(spatial_valid.to(tl.int32)) > 0`-style early-out via mask-only loads (no branching).",
+    "large_guidance": "- Switch from gather (output-stationary, per-output iterate kernel taps) to **scatter-add via implicit GEMM**: treat ConvTranspose3d as `Y[n, oc, od, oh, ow] += W[ic, oc, kd, kh, kw] * X[n, ic, id, ih, iw]` where output coords are derived from (id, ih, iw, kd, kh, kw). The input-stationary form maps cleanly to GEMM: per (n, output-tile), gather a [BLOCK_M=spatial, BLOCK_K=IC*KD*KH*KW] im2col-ish slab via index math against X (since stride>1 makes most kernel taps invalid for a given output, gather form keeps K small = IC). Use `tl.dot` for the IC reduction.\n- Fuse the entire epilogue `(2*acc + bias_extra)*acc + acc + bias_conv_inclusive` directly after the GEMM in registers (already partly fused) \u2014 keep it that way in the rewrite.\n- Use NHWC-style channels-last layout for both X and the output, and lay W out as `[KD,KH,KW, IC, OC]` so the `tl.dot` K-axis (IC) is contiguous and OC-axis tiles coalesce on stores. This is the key change vs. the current NCDHW gather, which is causing strided loads on every IC step.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 45,
+    "global_best_node_id": 43,
+    "global_best_score": [
+        1,
+        1,
+        1.6277395852534562
+    ]
+}

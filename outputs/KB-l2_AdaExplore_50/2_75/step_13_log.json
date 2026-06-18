@@ -1,0 +1,29 @@
+{
+    "node_id": 13,
+    "parent_node_id": 12,
+    "context_node_ids": [
+        12
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM dominates (M=1024, N=8192, K=8192). Add larger autotune configs like `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3` and `BLOCK_M=256, BLOCK_N=128, BLOCK_K=64`, and drop the small-tile configs that won't be picked.\n- Add a `GROUP_M=8` L2-swizzle to the GEMM (reorder `pid_m`/`pid_n` by row groups) \u2014 at N=8192 this is a large win since each B tile is reused across many M tiles.\n- Drop the K-mask in the inner loop since K=8192 is divisible by all candidate `BLOCK_K`; this removes a per-iter compare. Also pre-transpose `gemm.weight` once in `__init__` so B is contiguous along N (stride_bn=1) instead of using `weight.stride(1)` as the K-stride on a row-major weight.",
+    "large_guidance": "- Fuse the bias-add at the end into the GEMM epilogue's output directly. Since the final op is `min` over N followed by `+ bias[1, N, 1, 1]`, the output shape is `(M, 1, N, 1)` \u2014 write a single fused kernel: GEMM \u2192 GroupNorm \u2192 row-min, then a tiny elementwise kernel produces `min_val[m] + bias[n]` of shape `(M, N)`. Or skip the elementwise entirely by storing only `row_min` and broadcasting at view-time (already done).\n- The GN+min kernel loads the full N=8192 row per program with `NUM_GROUPS=512, GROUP_SIZE=16`. Consider a two-stage approach: one kernel computes per-group mean/rstd (small reduction), a second kernel streams the row in tiles to compute normalized values and a running min, avoiding the 8192-wide register tile. Alternatively, fuse GN-stats computation into the GEMM epilogue: accumulate per-group sum and sum-of-squares as the GEMM writes each output tile.\n- Biggest lever: a persistent / split-K GEMM tuned for (1024, 8192, 8192) with `tl.dot` on fp32 inputs is bandwidth-bound on weight loads (256MB). Consider casting weight to tf32 via `allow_tf32=True` in `tl.dot` (input_precision='tf32') to roughly double throughput on Ada.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 14,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 8,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4145216885088404,
+    "max_reward": 0.4145216885088404,
+    "avg_reward": 0.4145216885088404,
+    "score": [
+        1,
+        1,
+        0.2198039301979331
+    ],
+    "small_guidance": "- The conv_transpose3d (torch's default) dominates runtime at 26.4ms vs baseline 5.8ms \u2014 tuning the BN+pool kernel further cannot close the gap. Within the current structure, the only small tweak is to combine pool1+pool2 (already done as stride-4) and confirm `BLOCK=256, num_warps=4` is selected; also try adding `num_stages=2` explicitly and a `BLOCK=64` config for the small `OUT_PER_NC = 8*8*8 = 512` per (N,C) tile.\n- Since OUT_PER_NC=512 is small, fewer programs per (N,C) tile help \u2014 set BLOCK=512 with num_warps=4 so each (N,C) is one program; this removes the second grid dim entirely.\n- The real fix is replacing torch's ConvTranspose3d, not tuning the tail. The tail kernel is already a tiny fraction of the runtime.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)`, computing the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and scatter-adding into the output grid at `(d*stride - pad + kd, h*stride - pad + kh, w*stride - pad + kw)`. Use `tl.atomic_add` for overlapping writes, or alternatively a gather formulation: one program per `(N, OC tile, output-spatial tile)` that loops over input positions which map into the output tile.\n- Fuse the BN affine (folded scale/shift at eval) and the 4x4x4 average pool directly into the conv_transpose epilogue: accumulate conv_transpose output into a register tile sized to a 4x4x4 pool window, apply `scale*acc/64 + shift`, and write one pooled value. This eliminates the 64x output materialization (conv_transpose output is 64\u00d716\u00d763\u00d763\u00d763 \u2248 1GB) entirely \u2014 the kernel writes only the final 64\u00d716\u00d716\u00d716\u00d716 tensor.\n- Output spatial after conv_transpose is 63 (odd), so the pool window only fully fits for OD=15 outputs along each axis (15*4+4=64 > 63). Either pad conv_transpose output to 64 implicitly with zero-masking in the pool accumulation, or precompute valid count per pooled cell. Use a gather formulation: for each pooled output `(od,oh,ow)`, loop kd,kh,kw and the 4\u00d74\u00d74 sub-window, gather contributing input positions, accumulate, then divide by 64. Tile shape `BLOCK_OC=16, BLOCK_POOL=8` with `num_warps=4, num_stages=2` keeps SMEM well under 132KB.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 9,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        0.36042383585251137
+    ]
+}

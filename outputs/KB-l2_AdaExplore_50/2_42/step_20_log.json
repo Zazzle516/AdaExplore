@@ -1,0 +1,29 @@
+{
+    "node_id": 20,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        5
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5117610051736882,
+    "max_reward": 0.5117610051736882,
+    "avg_reward": 0.5117610051736882,
+    "score": [
+        1,
+        1,
+        1.0220282926829267
+    ],
+    "small_guidance": "- The reduction kernel is memory-bound on the ConvTranspose2d output (N*OC*H*W \u2248 16*128*514*514 \u2248 540M floats). Try larger CHUNK/SPLIT trade-offs: reduce SPLIT to 4 or 8 and let each program stream more data with BLOCK=8192/16384, num_warps=8-16, num_stages=3-4 to overlap DRAM loads.\n- Fuse the partial-sum and finalize into a single 2D-grid kernel (one program per N) using atomic-free per-N accumulation: launch grid=(N, SPLIT) writing partials, then a tiny finalize. Or persist per-(N,OC) reduction with a single program looping HW with BLOCK=4096, num_warps=8 \u2014 eliminates the partial buffer round trip.\n- Ensure the conv_transpose output is consumed in its natural layout; add `triton.Config({'BLOCK': 16384}, num_warps=16, num_stages=3)` to the autotune list keyed on HW.",
+    "large_guidance": "- The ConvTranspose2d itself dominates runtime here (output is 16\u00d7128\u00d7514\u00d7514 \u2248 2.1 GB). The current kernel only fuses the cheap tail (mean+bias+LSE+sum). Replace `nn.ConvTranspose2d` with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile) computing the input\u00d7weight outer product and scattering into the output grid with proper stride/pad/output_padding indexing.\n- Better: fuse ConvTranspose2d directly with the spatial mean so the full H_out\u00d7W_out output is never materialized. Each program computes a partial sum over its assigned output tile contribution and atomically accumulates into a (N, OC) reduction buffer. The accumulation loop must still iterate the full output grid (kh*kw multiply-adds per output pixel) to satisfy the safety contract \u2014 only the *write* of the intermediate tensor is elided, not the arithmetic.\n- After producing the (N, OC) mean tensor, run the existing tiny finalize kernel (bias + LSE over 128 channels + \u00d710). Persist OC=128 in registers for a single-program-per-N epilogue.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 21,
+    "global_best_node_id": 6,
+    "global_best_score": [
+        1,
+        1,
+        1.0270382352941176
+    ]
+}

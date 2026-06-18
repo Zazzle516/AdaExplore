@@ -1,0 +1,29 @@
+{
+    "node_id": 11,
+    "parent_node_id": 10,
+    "context_node_ids": [
+        10
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.01774563840130102
+    ],
+    "small_guidance": "- The scatter ConvTranspose with `num_warps=1` and one program per input element is the bottleneck (327ms). Switch the launch to `num_warps=4` and tile multiple input elements per program (e.g. `BLOCK_IN=4..16` along the IW axis) so the OC vector load amortizes; also try `BLOCK_OC=32` instead of rounding up to next pow2 of 16 with mask, since OC=16 fits exactly in one warp.\n- Eliminate atomics by switching to a gather formulation (one program per output tile), which removes the dominant `atomic_add` traffic; the current scatter is bandwidth-bound on atomics.\n- Fuse the conv_transpose bias add into the conv kernel epilogue rather than a separate `out + bias.view(...)` allocation.",
+    "large_guidance": "- Redesign ConvTranspose3d as an im2col-style **gather** GEMM: one program per `(N, OC tile, output-spatial tile)`, looping over `(IC, KD, KH, KW)` and reading `x[n, ic, (od+PD-kd)/SD, ...]` only when the divisibility check passes. This eliminates all atomics and makes loads/stores coalesced along OC. Use `channels_last_3d` layout so OC is the contiguous axis for both weight and output.\n- Fuse the entire tail (BN affine + two AvgPool3d with k=2 \u2192 effective 4\u00d74\u00d74 average) directly into the conv-transpose kernel epilogue: have each program write the pooled+normalized output instead of the full conv output. Since pooling is 4\u00d7 downsampling, assign each program one pooled output voxel and accumulate the 64 contributing conv-transpose outputs in registers; this avoids materializing the full `64\u00d716\u00d764\u00d764\u00d764` intermediate tensor (~67M elements) which is the real memory bottleneck.\n- Autotune over `BLOCK_OC \u2208 {16,32}`, `BLOCK_SPATIAL \u2208 {4,8,16}`, `num_warps \u2208 {2,4,8}`, `num_stages=2`. Keep tile SMEM under the 132KB budget; with OC=16 and IC=3 the K dimension (IC\u00b7KD\u00b7KH\u00b7KW=81) is small enough to fully unroll.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 12,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        0.36042383585251137
+    ]
+}

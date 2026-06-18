@@ -1,0 +1,29 @@
+{
+    "node_id": 47,
+    "parent_node_id": 44,
+    "context_node_ids": [
+        44
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.41571574589646465,
+    "max_reward": 0.41571574589646465,
+    "avg_reward": 0.41571574589646465,
+    "score": [
+        1,
+        1,
+        0.22965490364583332
+    ],
+    "small_guidance": "- The ConvTranspose3d dominates runtime (fast_p ~0.23 with the LN+GELU+scale fused already). Further tuning of the LN kernel (e.g., ROWS_PER_PROG sweep, num_warps) will not close the gap \u2014 the headroom is in replacing the conv.\n- If staying small, try ROWS_PER_PROG=2 with num_warps=2 since C=64 is tiny (BLOCK_C=64, one warp suffices); also consider processing multiple rows per program with a 2D tile (BLOCK_M \u00d7 64) to amortize weight/bias loads across rows.\n- Cache weight/bias in registers (already done) and ensure the kernel uses channels_last memory ordering on the conv output so the LN reduction axis is contiguous \u2014 currently it is, since LN is over the last dim after view.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, D_in\u00b7H_in\u00b7W_in tile)` that loads an input voxel, multiplies by the `(OC, kD, kH, kW)` weight slice, and atomically adds into the output grid at positions `(d_in*stride - pad + kd, ...)`. Output shape: (32, 64, 32, 64, 64) \u2248 268M elements \u2014 this is the heavy op.\n- Alternative: gather-style direct kernel \u2014 one program per `(N, OC tile, output-spatial tile)` that iterates over `(IC, kD, kH, kW)` and gathers the input from `((d_out + pad - kd) / stride)` when divisible. This avoids atomics and matches the GEMM-tile recipe in the skills doc. Start with BLOCK_M=32, BLOCK_N=32, BLOCK_K=16, num_warps=4, num_stages=2.\n- Fuse the bias add, LayerNorm (over OC=64, fits in one block), GELU, and scaling into the conv-transpose epilogue. Since LN normalizes across the OC axis which is small (64), a single program per output spatial location can hold the full channel vector in registers and apply LN+GELU+scale before storing \u2014 eliminating a second pass over the 268M-element tensor.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 48,
+    "global_best_node_id": 15,
+    "global_best_score": [
+        1,
+        1,
+        0.7944818288288288
+    ]
+}

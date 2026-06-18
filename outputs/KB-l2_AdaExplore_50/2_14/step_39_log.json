@@ -1,0 +1,31 @@
+{
+    "node_id": 39,
+    "parent_node_id": 27,
+    "context_node_ids": [
+        25,
+        26,
+        27
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4852311268746541,
+    "max_reward": 0.4852311268746541,
+    "avg_reward": 0.4852311268746541,
+    "score": [
+        1,
+        1,
+        0.8031567967158961
+    ],
+    "small_guidance": "- The matmul (M=1024, N=8192, K=8192) dominates; the row-sum kernel is trivial. Tuning BLOCK_N/num_warps on the reduction won't help. Instead, fuse the matmul with the row-sum: each program computes a tile of partial sums over K and atomically/locally accumulates into the per-row scalar, avoiding the (M, N) materialization.\n- If keeping the two-kernel structure, at minimum drop BLOCK_N=8192 (uses excessive registers/shared mem); split the row across multiple programs with BLOCK_N=1024-2048, num_warps=4, and accumulate via atomic_add or a second small reduction.\n- Make sure the scaling is fused into the final write only (already done); ensure mm tensor is allocated in fp32 and contiguous in N for coalesced loads.",
+    "large_guidance": "- Rewrite as a single fused kernel: output is (M,1), so each program handles one row (or a small group of rows) and streams over K and N together. Since output[m] = scale * sum_n sum_k x[m,k] * W[n,k] = scale * sum_k x[m,k] * (sum_n W[n,k]), the math allows a K-only reduction \u2014 but per the safety contract, you must NOT precompute sum_n W at init. Instead, recompute the W column-sum inside the forward kernel each call (a (N,K)->(K) reduction kernel), then do an (M,K) dot with x. This keeps every operator executing at runtime.\n- Alternative honest fusion: a tiled GEMM where each program handles a (BLOCK_M, BLOCK_N) output tile, accumulates over K via tl.dot, then immediately reduces the BLOCK_N axis in-register and atomic_adds into out[m]. This avoids writing the full (M,N) matmul to HBM \u2014 huge bandwidth win since (M,N)=1024*8192 fp32 = 32MB written then re-read.\n- Tile choices for 4090: BLOCK_M=64, BLOCK_N=128, BLOCK_K=32, num_warps=4, num_stages=3-4, with GROUP_M swizzle for L2 reuse across N tiles of the same row group.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 40,
+    "global_best_node_id": 27,
+    "global_best_score": [
+        1,
+        1,
+        0.8119585150360703
+    ]
+}

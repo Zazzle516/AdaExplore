@@ -1,0 +1,31 @@
+{
+    "node_id": 35,
+    "parent_node_id": 22,
+    "context_node_ids": [
+        3,
+        20,
+        22
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The atomic_min-based reduction is the main bottleneck: replace it with a single-pass kernel that loads the entire row (N=8192) into registers/SMEM per program (one program per row), computes all 512 group stats, normalizes, and reduces min within the kernel \u2014 eliminates atomics entirely.\n- For the GEMM (M=1024, N=K=8192), add autotune configs with BLOCK_M=128, BLOCK_N=128, BLOCK_K=32/64 and num_stages=3 with num_warps=8; also try BLOCK_M=256, BLOCK_N=64. The current best may be over-tiling N.\n- Fuse the final `min + bias` add into the GN-min kernel's epilogue: write directly to the (1, N, 1, 1)-broadcast output of shape (M, N) by having each program emit its row-min plus bias[n] in one pass, removing the separate add kernel entirely (or, since bias add reshapes to (1,1,M,1) which is small, just compute it inline once).",
+    "large_guidance": "- Redesign the GN+min as a single persistent per-row kernel: each program owns one row of N=8192, loads the full row in tiles into registers, computes per-group mean/var with `tl.reshape` to (num_groups, C_per_g), applies affine, then does a row-wide min reduction in-kernel \u2014 producing min_buf[M] with no atomics and a single launch.\n- Since `min` is over dim=1 then broadcast-added with bias of shape (1, N, 1, 1), the final output is (1, N, M, 1) of size M*N. The min reduction collapses N to 1 per row, so the cost is dominated by GN compute over (M, N). Fuse GN + row-min into one kernel and emit just an (M,) tensor; do the (M,)+(N,) outer-add in a tiny separate kernel or via torch broadcast (cheap).\n- Consider keeping weight pre-transposed only if training; for eval, the gemm could use a split-K or stream-K strategy given K=8192 is large relative to M=1024 \u2014 investigate stream-K to better fill the 4090's SMs (M/128 * N/128 = 8*64 = 512 tiles is fine, but K-parallelism could help if M tile is small).",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 36,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

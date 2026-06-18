@@ -1,0 +1,29 @@
+{
+    "node_id": 4,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4270192077212598,
+    "max_reward": 0.4270192077212598,
+    "avg_reward": 0.4270192077212598,
+    "score": [
+        1,
+        1,
+        0.32290846370039283
+    ],
+    "small_guidance": "- Autotune `BLOCK_S` over {512, 1024, 2048, 4096} with `num_warps \u2208 {4, 8}` and `num_stages=2` for both `_per_nc_reduce_kernel` and `_fused_epilogue_kernel`; with S=33*65*65\u2248... actually S = D_out*H_out*W_out from ConvTranspose3d, around 30*63*63\u2248119k \u2014 larger BLOCK_S with num_warps=8 will reduce loop iterations and improve memory throughput.\n- Merge the two passes: in eval mode `running_mean`/`running_var` are constant so scale_c can be precomputed once at module init (or cached) and the mean-subtract only needs a single per-(N,C) sum pass + a fused write pass \u2014 drop the sumsq computation entirely when not training (the BN variance comes from running_var).\n- Have the epilogue kernel also fold the `gamma*(x-mean_c)/sqrt(var+eps) + beta` and the spatial-mean subtraction in one pass: note `beta` cancels in `x - mean(x)` after BN with affine \u2014 analytically `out = scale_c*(x - mu_bn_c) - scale_c*(mean_nc(x) - mu_bn_c) = scale_c*(x - mean_nc(x))`, which is what the kernel already does. Good \u2014 but ensure `beta` is truly skipped and confirm `mu_bn_c` cancellation holds (it does).",
+    "large_guidance": "- The ConvTranspose3d is the dominant cost (fast_p=0.32 with the BN+mean epilogue already fused). Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)`, compute the outer product `x[n,ic,d,h,w] * w[ic,oc,kd,kh,kw]` and scatter-add into `out[n,oc, d*stride-pad+kd, ...]` with bounds-masked atomic adds (or a gather-formulation with one program per output tile reading all contributing input positions to avoid atomics).\n- Prefer the gather formulation: one program per `(N, OC tile, output-spatial tile)`; for each output voxel `(od,oh,ow)`, iterate `(kd,kh,kw)`, compute `id=(od+pad-kd)/stride` with divisibility check, and accumulate `\u03a3_ic x[n,ic,id,ih,iw] * w[ic,oc,kd,kh,kw]` via a GEMM with K = IC*KD*KH*KW. Fuse bias, BN affine (folded from running stats at eval), and the spatial-mean subtract into the epilogue by writing intermediate to a buffer and running a second pass \u2014 or accumulate `sum_nc` in the same kernel via atomic adds, then a final normalize pass.\n- Use channels_last_3d layout so IC is contiguous in the inner GEMM-K dim; autotune over `(BM,BN,BK) \u2208 {(32,32,16),(64,32,16),(32,64,16),(64,64,16)}` at num_warps=4, num_stages=2 to stay within the 132KB SMEM budget.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 5,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.32290846370039283
+    ]
+}

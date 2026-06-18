@@ -1,0 +1,29 @@
+{
+    "node_id": 19,
+    "parent_node_id": 18,
+    "context_node_ids": [
+        18
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5818177902097902,
+    "max_reward": 0.5818177902097902,
+    "avg_reward": 0.5818177902097902,
+    "score": [
+        1,
+        1,
+        1.599996769230769
+    ],
+    "small_guidance": "- The conv_transpose3d dominates runtime now (BN+pool already fused into a tiny epilogue). Tuning the GAP kernel further yields little; instead, ensure the conv output layout is channels_last_3d so a future custom conv can coalesce on C. For the existing kernel, drop BLOCK_S candidates below 4096 and add a `num_warps=16, num_stages=4` config at BLOCK_S=8192 (S = 20*36*36 = 25920 per (n,c)).\n- Split the reduction across multiple programs per (n,c) using a 2D grid `(N*C, NSPLIT)` with atomic-add or a small second-stage kernel, so each program handles ~S/NSPLIT elements; this raises occupancy on the 4090.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)` computing the input\u00d7kernel outer product and scattering into the output grid. This is the dominant op (~6ms+ of the 9.75ms) and the only remaining headroom.\n- Fuse the entire pipeline: skip materializing the conv-transpose output. Since the final op is global average pooling, you can compute, per output channel, `sum over (oc, d, h, w)` of `conv_transpose(x)[n,oc,d,h,w]`. Reorder as: for each `(n, oc)`, accumulate contributions of every input voxel \u00d7 kernel tap directly into a scalar accumulator (the spatial sum over the output is just a sum over valid out-of-bounds-masked taps \u00d7 input voxels). Then apply the folded BN affine. This is still doing the full conv-transpose arithmetic (no algebraic shortcut on the weight \u2014 every input element multiplies every kernel tap once) but avoids writing the 16\u00d7128\u00d720\u00d736\u00d736 intermediate.\n- If the fused approach is too complex, at minimum write the conv-transpose as scatter-add into a channels_last_3d output buffer, then keep the current GAP+BN kernel; even just replacing cuDNN's ConvTranspose3d for this small kernel_size=5 case should help.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 20,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        1.599996769230769
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 26,
+    "parent_node_id": 14,
+    "context_node_ids": [
+        3,
+        14
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5381936365162763,
+    "max_reward": 0.5381936365162763,
+    "avg_reward": 0.5381936365162763,
+    "score": [
+        1,
+        1,
+        1.2400975012592792
+    ],
+    "small_guidance": "- The dominant cost is the GEMM (1024\u00d78192\u00d78192). Add larger tile configs to the autotune set: `BLOCK_M=128, BLOCK_K=64, BLOCK_P=8` and `BLOCK_M=64, BLOCK_K=128, BLOCK_P=8` (PK_TOTAL=64 keeps the dot N-dim healthy) with `num_warps=8, num_stages=3-4`. Current BLOCK_P=16 produces PK_TOTAL=128 or 256 which is fine, but larger BLOCK_M reduces redundant weight loads.\n- Reduce `SPLIT` to 1 or 2: with BLOCK_M=64 you already get 16 row-tiles \u00d7 SPLIT programs; SPLIT=8 over-subscribes the SMs (only 128 SMs) and forces an `atomic_max` epilogue. SPLIT=2 keeps ~32 programs and removes atomics for most configs.\n- Hoist the bias load outside the pooled-tile loop is irrelevant (it's per-tile), but try storing the pre-transposed weight in a layout where `[OUT_FEATURES // PK_TOTAL, IN_FEATURES, PK_TOTAL]` is fully contiguous per pooled tile to ensure each `tl.load` of the K\u00d7PK_TOTAL slab is one coherent stream rather than strided reads of OUT_FEATURES.",
+    "large_guidance": "- Restructure as a classic split-K GEMM-with-epilogue: one program per `(BLOCK_M rows, BLOCK_N=POOL_K*BLOCK_P output cols)` doing the full K reduction with `BLOCK_K=64-128, num_stages=4`, then fuse avg-pool + GELU + scale + partial-row-max in the epilogue and atomic_max into a `[B]` output. This is essentially what's there, but with a single (M,N) program per pooled tile rather than scanning multiple pooled tiles serially \u2014 frees the scheduler to pick larger BLOCK_M/BLOCK_K and lets the autotuner tune GEMM tile shape independently of pool fan-out.\n- Consider using `tl.dot` with TF32 (`allow_tf32=True`) or fp16 accumulation for the matmul body \u2014 input is fp32 but for this loose tolerance (5e-2) TF32 will be free correctness-wise and roughly halves the GEMM time on Ada.\n- Add a `GROUP_M` block-swizzle over the (row-tile, pooled-tile) grid so adjacent programs reuse the same weight slab in L2 \u2014 current launch order iterates rows fastest, which thrashes the weight cache (8192\u00d78192 fp32 weight = 256MB, far exceeds L2).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 27,
+    "global_best_node_id": 15,
+    "global_best_score": [
+        1,
+        1,
+        1.7535136642010192
+    ]
+}

@@ -1,0 +1,31 @@
+{
+    "node_id": 48,
+    "parent_node_id": 47,
+    "context_node_ids": [
+        1,
+        24,
+        47
+    ],
+    "depth": 5,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The conv_transpose kernel has a correctness bug: it computes `kd = (od + PAD) % STRIDE` but then derives `id_val = (od + PAD - kd) // STRIDE`, which only picks one of the up-to-KD valid kernel taps. With STRIDE=2, KD=3, PAD=1, two values of kd (e.g. 0 and 2) can both produce valid id_val for the same od \u2014 the kernel must loop over all KD/KH/KW taps that satisfy `(od+PAD-kd) % STRIDE == 0` and accumulate, not pick a single one.\n- After fixing, replace the per-lane `kw_vec` weight gather with a static loop over `kd, kh, kw` (each compile-time small: 3) so weight loads become contiguous `[OC]` vectors per (kd,kh,kw,ic) and input loads become per-lane gathers along `iw` only.\n- Keep `BLOCK_OW=64, num_warps=8, num_stages=3` as a starting config and prune the BLOCK_OW=32 entries; OC=16 is small so the OC-dim of the accumulator is cheap.",
+    "large_guidance": "- Redesign the conv_transpose as a direct gather kernel that loops over all (kd, kh, kw) taps satisfying the stride-divisibility condition, accumulating contributions from each valid input position. With KD=KH=KW=3 and STRIDE=2, at most 2 taps per spatial axis are valid per output coordinate (\u22648 input contributions), so a static unrolled triple-loop with masks is the right structure \u2014 not the single-tap formula currently used.\n- Tile over (N, OC, OD*OH*OW) with one program per (n, ow-tile, oh) and have OC fully resident (OC=16 fits in one lane); precompute valid (kd, ih, kw, \u2026) masks outside the IC loop, then iterate IC inside. Fuse Swish into the epilogue before store.\n- Consider channels_last (NDHWC) layout for the conv output so that the subsequent GroupNorm reduces along contiguous channel-group memory; alternatively, fuse the conv-transpose-Swish output directly into the GroupNorm partial-sum kernel via a two-pass scheme to eliminate one full read of the 128\u00d716\u00d732\u00d764\u00d764 tensor.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 49,
+    "global_best_node_id": 29,
+    "global_best_score": [
+        1,
+        1,
+        2.2462573144104803
+    ]
+}

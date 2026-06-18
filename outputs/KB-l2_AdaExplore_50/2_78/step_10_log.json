@@ -1,0 +1,29 @@
+{
+    "node_id": 10,
+    "parent_node_id": 9,
+    "context_node_ids": [
+        9
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4058870331806811,
+    "max_reward": 0.4058870331806811,
+    "avg_reward": 0.4058870331806811,
+    "score": [
+        1,
+        1,
+        0.14856802374061903
+    ],
+    "small_guidance": "- The pool+sum kernel is fast already; the 70ms runtime is dominated by `nn.ConvTranspose3d`. Tuning BLOCK_C/num_warps on the pool kernel will not close the gap \u2014 focus must shift to the conv_transpose.\n- If keeping the current pool kernel, try `num_warps=2` (per-program work is tiny: 216 loads \u00d7 1 channel-block) and consider one program per `(n, od, oh)` processing all `OW` outputs to amortize index math.\n- Fuse the conv_transpose bias add into a custom conv_transpose kernel epilogue rather than launching separately.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: for each input element `x[n, ic, d, h, w]`, scatter `x * W[ic, oc, kd, kh, kw]` into `out[n, oc, d*stride - pad + kd, ...]`. With stride=2, padding=2, kernel=5, output is 65\u00d765\u00d765. Grid over `(N, OC_tile, output-spatial-tile)`, gather contributions by iterating over `(IC, kd, kh, kw)` with bounds-checked input indices \u2014 this is a GEMM with shape `(OC, IC*125)` \u00d7 `(IC*125, D_in*H_in*W_in)` and index remap, well-suited to a tiled Triton kernel.\n- Better: fuse conv_transpose directly with the 2\u00d72\u00d72 then 3\u00d73\u00d73 maxpool and channel-sum into one kernel. Each output element of the final tensor depends on a 6\u00d76\u00d76 window of the conv_transpose output, which maps to a bounded set of input positions and kernel offsets. Compute the conv_transpose values on-the-fly inside the pool/sum kernel \u2014 never materialize the 16\u00d764\u00d765\u00b3 intermediate (~70MB), which is the actual bottleneck (memory traffic + cuDNN conv_transpose overhead).\n- If the full fusion is too complex, at minimum write conv_transpose as an im2col-style gather over the *output* tile (compute which input/kernel pairs contribute to each output position) and keep `channels_last_3d` layout so the IC reduction dim is contiguous.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 11,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.9494847335423198
+    ]
+}

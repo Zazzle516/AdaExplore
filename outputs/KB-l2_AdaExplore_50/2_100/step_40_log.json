@@ -1,0 +1,29 @@
+{
+    "node_id": 40,
+    "parent_node_id": 10,
+    "context_node_ids": [
+        10
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.46723615800865803,
+    "max_reward": 0.46723615800865803,
+    "avg_reward": 0.46723615800865803,
+    "score": [
+        1,
+        1,
+        0.6546983035714286
+    ],
+    "small_guidance": "- The fused clamp/div tail is already trivial relative to the ConvTranspose3d cost; further tuning of BLOCK_SIZE/num_warps on it will not move fast_p. If staying small, try removing the channels_last_3d conversion (cuDNN's NDHWC ConvTranspose3d kernels are often slower than NCDHW on Ampere/Ada) and benchmark plain contiguous + the fused tail.\n- Increase fused kernel BLOCK_SIZE to 4096 with num_warps=8, num_stages=4, and use a vectorized load (process 4 elements per thread) so the epilogue saturates DRAM bandwidth.\n- Wrap the fused kernel in `triton.autotune` over BLOCK_SIZE \u2208 {1024, 2048, 4096, 8192} \u00d7 num_warps \u2208 {4, 8} keyed on `n_elements`.",
+    "large_guidance": "- The ConvTranspose3d dominates runtime (~38ms of 39.2ms). Replace it with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile), compute the input\u00d7weight outer product, and atomically scatter-add into the output grid at positions `(d*stride - pad + kd, h*stride - pad + kh, w*stride - pad + kw)`. Fold the bias add, clamp(min), and divide into the same kernel epilogue (apply after the scatter completes via a second pass, or accumulate locally per output tile).\n- Alternative gather formulation: one program per (N, OC tile, output-spatial tile); for each output voxel iterate over (kd,kh,kw) and gather the corresponding input voxel only when `(od+pad-kd) % stride == 0` and the resulting input index is in-bounds. This avoids atomics entirely and lets the clamp/div fuse into the store. Tile as a GEMM with BLOCK_M=OC tile (e.g. 64), BLOCK_N=spatial tile (e.g. 64), BLOCK_K=IC (64) \u2014 IC*kernel_vol = 64 fits in-register, so the inner GEMM is small and bandwidth-bound on weights.\n- Use channels_last_3d so IC is the contiguous axis (coalesced GEMM-K loads), pre-transpose weight to `(kd,kh,kw,IC,OC)` layout at init, and add bias + clamp + divide in the epilogue before the store. Autotune BLOCK_N (spatial) \u2208 {32,64,128} and num_warps \u2208 {4,8}.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 41,
+    "global_best_node_id": 39,
+    "global_best_score": [
+        1,
+        1,
+        0.6546983035714286
+    ]
+}

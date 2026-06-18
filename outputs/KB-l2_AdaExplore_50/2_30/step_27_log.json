@@ -1,0 +1,29 @@
+{
+    "node_id": 27,
+    "parent_node_id": 25,
+    "context_node_ids": [
+        24
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure is likely from the GroupNorm reduction: with C/G = 8192/16 = 512, `BLOCK = 512` fits, but the masked subtraction `xc = tl.where(mask, x - mean, 0.0)` is fine \u2014 however the issue may be numerical (small ~1.6e-3 max diff, ~2e-4 avg). Tolerance is 5e-2 so it should pass; double-check the correctness checker is using the same weights. Ensure `gamma`/`beta` are initialized identically (the new model creates fresh `nn.Linear`/`nn.GroupNorm` so weights differ from the reference \u2014 this is the actual bug). Copy reference weights or seed deterministically; do not re-init parameters in `ModelNew`.\n- For GEMM (M=N=K=1024\u00d78192\u00d78192), prefer `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3/4` and add a GROUP_M=8 swizzle for L2 reuse.\n- For GN with CPG=512, `BLOCK=512, num_warps=4` is optimal; avoid the warp escalation for 1024/2048 since CPG is fixed.",
+    "large_guidance": "- The dominant cost is the 1024\u00d78192\u00d78192 GEMM (~137 GFLOPs). A from-scratch rewrite should focus on a high-quality persistent/swizzled GEMM with GROUP_M block ordering, possibly split-K if N tiles starve the SMs; fuse bias directly in epilogue (already done).\n- Consider fusing GroupNorm's first pass (mean/var reduction over each group's 512 channels) into the GEMM epilogue by having each program write its tile and atomically accumulate per-group sum/sum-sq, then a tiny second kernel applies normalize+hardtanh. This avoids re-reading the 1024\u00d78192 activation.\n- Alternatively, keep GEMM separate but make the GN kernel persistent per (sample, group) with vectorized loads (CPG=512 \u2192 4 vec128 loads per program) and fuse hardtanh in-register (already done) \u2014 the GN kernel is tiny relative to the GEMM, so prioritize GEMM.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 28,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

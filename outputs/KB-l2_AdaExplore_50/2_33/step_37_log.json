@@ -1,0 +1,27 @@
+{
+    "node_id": 37,
+    "parent_node_id": 36,
+    "context_node_ids": [],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing with avg diff ~3.5e-4, likely from the training-path running_var update: PyTorch's BatchNorm1d updates running_var with the *unbiased* sample variance computed from the *current biased* var via `var * N/(N-1)`, but more importantly the BN apply uses the **biased** invstd which you do compute correctly \u2014 recheck that `sum_/M` and `sqsum/M - mean^2` are numerically stable (subtract mean first or use float64 accumulators in the reduction) since 8192-wide columns over 1024 rows can lose precision in fp32.\n- In `col_reduce_kernel`, accumulate into fp32 explicitly via `x = tl.load(...).to(tl.float32)` and consider a two-pass (load mean, then variance) to avoid the catastrophic cancellation in `E[x^2] - E[x]^2` that is the likely source of the 2.5e-3 max diff.\n- Once correct, drop the eval-path `gemm_scale_bn_eval_kernel` autotune key collision and add larger tiles (BLOCK_M=128, BLOCK_N=256, BLOCK_K=32, num_warps=8, num_stages=4) since M=N=K=8192 is square and compute-bound.",
+    "large_guidance": "- Restructure the training path as: (1) fused GEMM+scale+bias writing z, (2) a single Welford-style column reduction kernel that produces mean and invstd directly in one pass with numerically stable accumulation, (3) fused BN-apply. Avoid the `E[x^2]-E[x]^2` formulation entirely.\n- Alternatively, fuse the column reduction directly into the GEMM epilogue using a split-K / atomic-add strategy: each `(M_tile, N_tile)` program atomically adds its partial column sum and sum-of-(x-shift)^2 to global buffers, then a tiny second kernel finalizes mean/invstd. This removes one full read of z (8192x8192 fp32 = 256MB) from DRAM.\n- For eval, the current single-kernel fusion is the right shape; focus the rewrite on the training path which has three separate kernel launches and two extra full-tensor passes over z.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 38,
+    "global_best_node_id": 24,
+    "global_best_score": [
+        1,
+        1,
+        0.5932781570713239
+    ]
+}

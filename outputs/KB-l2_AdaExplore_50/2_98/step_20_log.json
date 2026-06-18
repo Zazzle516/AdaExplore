@@ -1,0 +1,29 @@
+{
+    "node_id": 20,
+    "parent_node_id": 19,
+    "context_node_ids": [
+        19
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5796598016576524,
+    "max_reward": 0.5796598016576524,
+    "avg_reward": 0.5796598016576524,
+    "score": [
+        1,
+        1,
+        1.5821933636756322
+    ],
+    "small_guidance": "- The current kernel computes the full matmul tile then reduces to a single scalar per row (BLOCK_M outputs); reducing partials further with `final_max_kernel` adds overhead. Try larger `BLOCK_N` (e.g. 512) so the per-row pooled+max reduces over more N in one pass, cutting the partial tensor size and the second-kernel cost.\n- Add autotune configs with `BLOCK_M=32` and `BLOCK_N=256/512` since M=1024 and the per-row work after reduction is small \u2014 more N per program reduces partial writes. Also try `num_stages=4, num_warps=8` with `BLOCK_K=64` to better overlap K loads on this large K=8192.\n- Skip the second kernel entirely when `num_n_tiles==1` by writing directly to `out`; otherwise keep partials in a small (M, num_n_tiles) buffer and fuse the final max into a single persistent reduction with `BLOCK_N` matched exactly to `num_n_tiles` (no padding waste).",
+    "large_guidance": "- Restructure as a split-K / row-persistent kernel: one program per row-tile (BLOCK_M rows) that streams the entire N dimension in chunks, accumulating the running max of the pooled+GELU+scale value in registers. This avoids the partials buffer and the second kernel altogether, since the pool window (16 elements) is small and easily handled within a single BLOCK_N chunk that's a multiple of POOL_K.\n- Alternatively, keep the 2D grid but make pid_n the inner loop within a persistent program over rows: accumulator + max are kept in registers across N tiles, eliminating the second-pass max reduction. M=1024 / BLOCK_M=64 = 16 row-tiles fits comfortably in the SM count of a 4090 (128 SMs) for full occupancy.\n- Consider using tf32 (`tl.dot(x, w, allow_tf32=True)`) or fp16 weights with fp32 accumulation \u2014 the matmul is the dominant cost (1024\u00d78192\u00d78192 \u2248 137 GFLOPs) and fp32 dot is bandwidth- and tensor-core-limited on the 4090; tf32 nearly doubles tensor-core throughput while staying within the 5e-2 tolerance.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 21,
+    "global_best_node_id": 15,
+    "global_best_score": [
+        1,
+        1,
+        1.7535136642010192
+    ]
+}

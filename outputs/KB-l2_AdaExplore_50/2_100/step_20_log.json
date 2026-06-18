@@ -1,0 +1,29 @@
+{
+    "node_id": 20,
+    "parent_node_id": 5,
+    "context_node_ids": [
+        5
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (~0.0035 max diff) suggests the bias fusion is double-adding or mis-indexing. Note `c_idx = offsets % C` assumes channels-last layout where C is innermost, but after `conv_transpose` in channels_last_3d, verify the output stride pattern \u2014 if the tensor isn't actually contiguous in channels-last, `offsets % C` gives wrong channel indices. Use explicit stride-based indexing or call `.contiguous(memory_format=channels_last_3d)` before the kernel.\n- Bias init uses `fan_in = in_channels * kernel_size**3`, but ConvTranspose3d uses `groups * in_channels_per_group * prod(kernel_size)` with `in_channels` not `out_channels` \u2014 double-check this matches PyTorch's reset_parameters exactly (it does for default groups=1, but seed/sampling order differs from the original Model's RNG sequence, so the bias values diverge).\n- The bias mismatch is almost certainly the root cause: `ModelNew` creates a fresh `nn.Parameter` with `nn.init.uniform_` which consumes RNG state differently than `ConvTranspose3d.__init__`. The test harness likely copies state_dict from the reference model \u2014 ensure the parameter name matches (`conv_transpose.bias`) or override `_load_from_state_dict`.",
+    "large_guidance": "- Replace the torch ConvTranspose3d entirely with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile), compute `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and atomically scatter-add into `output[n, oc, d*stride+kd-pad, ...]`. Fuse bias+clamp+div in a second tiny epilogue kernel (or skip fusion and do bias-add inline at the end). The convtranspose dominates runtime here, so epilogue fusion alone cannot help much.\n- Alternatively, implement convtranspose as a gather-style GEMM: for each output voxel, gather contributing (ic, kd, kh, kw) terms where `(od+pad-kd) % stride == 0`, then GEMM over IC. Use channels-last layout with BLOCK_OC=64, BLOCK_SPATIAL=64, BLOCK_IC=32, autotune num_warps\u2208{4,8}, num_stages\u2208{2,3}. Fuse bias+clamp+div directly in the epilogue.\n- Keep the bias parameter registered as `conv_transpose.bias` (don't create a new attribute) so state_dict loading from the reference model populates it correctly. Easiest: keep `bias=True` in the inner ConvTranspose3d but read `self.conv_transpose.bias` for the fused epilogue, and pass `bias=None` via a functional call.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 21,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        0.4640899367088608
+    ]
+}

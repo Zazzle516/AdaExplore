@@ -1,0 +1,29 @@
+{
+    "node_id": 39,
+    "parent_node_id": 36,
+    "context_node_ids": [
+        36
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.49396802773497694,
+    "max_reward": 0.49396802773497694,
+    "avg_reward": 0.49396802773497694,
+    "score": [
+        1,
+        1,
+        0.8752362288135592
+    ],
+    "small_guidance": "- Sweep BLOCK_OC \u2208 {16, 32, 64} and BLOCK_PH/BLOCK_PW \u2208 {2, 4, 8} with num_warps \u2208 {4, 8} via `triton.autotune`; current 32/4/4 (OH_TILE=OW_TILE=16) means a 32\u00d7256 accumulator \u2014 try BLOCK_OC=64, BLOCK_PH=BLOCK_PW=2 (OH_TILE=OW_TILE=8) to shrink register pressure and improve occupancy.\n- Replace the `for ic in range(IC)` Python-level loop with `tl.static_range(0, IC)` (IC=8 is a compile-time constant from the model config) so all 8\u00b73\u00b73=72 K iterations fully unroll and weights become constants in registers; combined with loading the full weight slab `[BLOCK_OC, IC*KH*KW]` once outside the loop, this turns the inner accumulate into a clean FMA chain.\n- Use the fast tanh form `2*sigmoid(2x) - 1` (one `tl.exp`) instead of two `tl.exp` calls in the epilogue to cut transcendental cost.",
+    "large_guidance": "- Restructure as an explicit GEMM: per program compute `acc[BLOCK_OC, BLOCK_SP] = W[BLOCK_OC, K] @ Xcol[K, BLOCK_SP]` where K=IC\u00b7KH\u00b7KW=72 and BLOCK_SP covers a pool-aligned spatial tile; use `tl.dot` (the RTX 4090 has strong tensor cores for fp32 via TF32) instead of the current outer-product accumulation, which currently leaves tensor cores idle.\n- Persist weights across the batch: launch grid `(OC_tile, SP_tile)` and loop over N inside the kernel so the `[BLOCK_OC, K]` weight tile (72\u00b764=4.6K floats) is loaded once per program and reused 128\u00d7 \u2014 current grid `(N, \u2026)` reloads weights every sample.\n- Stage inputs through shared memory with a software-pipelined K loop (`num_stages=3-4`) and use a channels-last input layout (`x.permute(0,2,3,1).contiguous()`) so the K dimension (which strides over IC innermost) becomes contiguous and `tl.load` of the im2col gather coalesces.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 40,
+    "global_best_node_id": 22,
+    "global_best_score": [
+        1,
+        1,
+        2.0780256539235413
+    ]
+}

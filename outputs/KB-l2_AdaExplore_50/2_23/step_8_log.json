@@ -1,0 +1,29 @@
+{
+    "node_id": 8,
+    "parent_node_id": 2,
+    "context_node_ids": [
+        2
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness bug is in the analytic final reduction: `final_mean_kernel` reduces contributions across all `c` lanes, but `mean[n, g(c)] * S` is being multiplied per-channel \u2014 that's algebraically fine, however the partial sum `conv_psum` is accumulated via `tl.atomic_add` from float32 accumulators across spatial tiles, which is order-nondeterministic and must equal `sum_s conv_out[n,c,s]` exactly within tolerance. More importantly, this analytic shortcut bypasses re-reading the GN-normalized output; if `gamma`/`beta` per-channel folding is right but `mean`/`rstd` use float32 vs the conv output's fp32 store, drift can compound. Switch to a straightforward fused kernel that re-reads `conv_out`, applies GN with loaded mean/rstd/gamma/beta, and reduces \u2014 drop the analytic path entirely.\n- For `groupnorm_stats_kernel`, `group_size = CPG*S` here is `3*22*30*30 = 59400`, so `BLOCK_S=1024` with 58 iters is fine; bump `num_warps=4` and try `BLOCK_S=2048`.\n- Add autotune configs with `BLOCK_M \u2208 {64,128}`, `BLOCK_N \u2208 {16,32}` (OC=24 so BLOCK_N=32 covers it in one tile), `num_warps=4/8`, `num_stages=3`.",
+    "large_guidance": "- Replace the three-kernel pipeline with a two-kernel design: (1) Triton conv3d producing `[N,C,S]` in `channels_last`-friendly layout (spatial-contiguous), and (2) a single fused per-batch kernel that loads the conv output once, computes GN per-group mean/var via two-pass reduction within the program, applies affine, and accumulates the final mean \u2014 one program per `n`, looping over groups and spatial tiles. This removes the fragile atomic-add partial sum and the analytic identity that's currently producing wrong numbers.\n- Alternatively, keep conv3d separate and fuse GN-stats + GN-apply + final-mean into one kernel per `(N, G)` that returns a partial mean per group, then a tiny final reduction sums across groups and divides by `C*S`. This avoids re-reading conv_out twice and avoids any algebraic identity.\n- Tile the conv as implicit-GEMM with `M = S_out (=19800)` and `N = OC (=24)`; since OC is tiny, use `BLOCK_N=32` (one OC tile total) and large `BLOCK_M=128` with the K-loop unrolled over `IC*KD*KH*KW = 81`. Hoist `id_/ih_/iw_` index math and use `mask_m` only on the final spatial tile.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 9,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.8356228696637792
+    ]
+}

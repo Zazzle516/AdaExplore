@@ -1,0 +1,29 @@
+{
+    "node_id": 44,
+    "parent_node_id": 42,
+    "context_node_ids": [
+        42
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.48447279079254085,
+    "max_reward": 0.48447279079254085,
+    "avg_reward": 0.48447279079254085,
+    "score": [
+        1,
+        1,
+        0.7969005240384616
+    ],
+    "small_guidance": "- The bias parameter is created but never used in forward \u2014 that matches the reference (which also doesn't use self.bias), so the fused elementwise kernel is fine. Push BLOCK_SIZE configs to include 32768 with num_warps=8, num_stages=4, and try a vectorized 4-element-per-thread variant to better saturate memory bandwidth on the 16M-element tensor.\n- The elementwise kernel is already memory-bound and tiny relative to runtime; further tuning of it won't move fast_p. Focus tuning effort on the ConvTranspose3d which dominates \u2014 at minimum enable channels_last_3d on weight/input before conv to let cuDNN pick a faster algo.\n- Ensure `add_input` is made contiguous once (outside the hot path if possible) and consider fusing the add+hardswish into the conv epilogue rather than a separate kernel pass.",
+    "large_guidance": "- The torch ConvTranspose3d is the dominant cost (fast_p\u22480.80 with the epilogue already fused). Replace it with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile), computing the input\u00d7kernel outer product and scatter-adding into the output grid with stride=2, padding=1, output_padding=1 index math. Fuse the `+ add_input` and `v * hardswish(v)` directly into the epilogue after the scatter completes (requires a second pass or atomic-free tiling where each output voxel is written by exactly one program).\n- Alternative: implement ConvTranspose3d as a gather-style GEMM where each output voxel sums over the (IC, kD, kH, kW) contributors that land on it \u2014 this avoids atomics. Output shape is (128, 64, 32, 32, 32); tile over (N, OC, output-spatial) with BLOCK_OC=32/64, BLOCK_SPATIAL=64-128, GEMM-K = IC*kD*kH*kW = 32*27 = 864. Use channels_last_3d layout so IC is the contiguous GEMM-K axis.\n- Fold the bias parameter (currently unused but present) and the add_input + hardswish into the GEMM epilogue in a single kernel \u2014 no separate elementwise pass. Autotune over BLOCK_M/N/K \u2208 {32,64,128}, num_warps \u2208 {4,8}, num_stages \u2208 {2,3,4}.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 45,
+    "global_best_node_id": 44,
+    "global_best_score": [
+        1,
+        1,
+        0.7969005240384616
+    ]
+}

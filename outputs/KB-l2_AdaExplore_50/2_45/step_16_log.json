@@ -1,0 +1,29 @@
+{
+    "node_id": 16,
+    "parent_node_id": 15,
+    "context_node_ids": [
+        15
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.6003209588745092,
+    "max_reward": 0.6003209588745092,
+    "avg_reward": 0.6003209588745092,
+    "score": [
+        1,
+        1,
+        1.7526479107147004
+    ],
+    "small_guidance": "- The first GEMM (M=16384, N=4096, K=2048) is the dominant cost; add larger autotune configs like `BLOCK_M=256, BLOCK_N=128, BLOCK_K=32, num_warps=8, num_stages=4` and `BLOCK_M=128, BLOCK_N=256, BLOCK_K=32, num_warps=8, num_stages=5` and ensure the K-loop is unmasked when K is a multiple of BLOCK_K (drop the per-iter k_offs mask via a separate epilogue iter or `K % BLOCK_K == 0` constexpr branch) to remove redundant predicate compute.\n- For `gemm_lse_kernel`, N=1024 is small \u2014 make `BLOCK_N=1024` the default so the entire N row is processed in a single tile (eliminating the online-softmax reduction loop entirely) and use `BLOCK_M=64, BLOCK_K=64, num_warps=8, num_stages=4`; also drop the `tl.where(mask_n, ..., -inf)` since N is exactly 1024.\n- Tighten autotune key to actually-encountered shapes and prune slow configs; consider passing the weights as fp16/bf16 for `tl.dot` with fp32 accumulate on 4090 to roughly 2\u00d7 the GEMM throughput (TF32 on Ada Lovelace is limited).",
+    "large_guidance": "- Fuse the two GEMMs end-to-end with a persistent split-K / streaming design: a single kernel where each program owns a tile of M rows, computes the hidden activation row-tile (K1\u2192N1 with sigmoid) into shared memory / registers, then immediately consumes it as the A operand for the second GEMM into a per-row online-LSE accumulator \u2014 this avoids writing/reading the 16384\u00d74096 hidden tensor (256 MB) to HBM.\n- Alternatively, since output N2=1024 is small, restructure as a 2-pass row-persistent kernel: pass-1 computes one row's hidden vector (4096) into SRAM via a K-reduction GEMV-like tile, pass-2 immediately does the [4096]\u00d7[4096,1024] reduction with running LSE \u2014 one program per row-group, keeping the hidden vector in registers/SMEM.\n- Switch weight storage to bf16 (cast once at init) and use `tl.dot` with fp32 accumulate; on RTX 4090 this nearly doubles tensor-core throughput vs TF32 and is well within the 5e-2 correctness tolerance.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 17,
+    "global_best_node_id": 13,
+    "global_best_score": [
+        1,
+        1,
+        1.817030895189934
+    ]
+}

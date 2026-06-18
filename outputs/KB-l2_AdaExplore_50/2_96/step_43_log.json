@@ -1,0 +1,29 @@
+{
+    "node_id": 43,
+    "parent_node_id": 38,
+    "context_node_ids": [
+        38
+    ],
+    "depth": 8,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The output tensor is initialized as zeros and updated with `atomic_add`, but the kernel also writes the per-tile mean (already divided by total_pooled) \u2014 multiple BLOCK_P tiles per (n, oc) atomic-add their partials, which is fine, but verify `inv_count` is applied once and that `total_pooled = PD*PH*PW` matches the reference's adaptive-avg over the full pooled volume. Current correctness failure (avg diff ~0.96) suggests the transposed-conv index math is wrong: double-check the sign convention `id_num = od + PAD_D - kd` \u2014 for ConvTranspose3d the correct mapping is `i*S - P + k = o`, i.e. `id_num = od - kd + PAD_D` then divide by S; ensure no off-by-one in OD/OH/OW (`OD = (ID-1)*S - 2*P + K` is right but pooled dim should also account for any remainder ignored by MaxPool3d).\n- Reduce the autotune search space (drop BLOCK_P=8 and num_warps=1) to speed compile and focus on BLOCK_P\u2208{32,64,128}, num_warps\u2208{4,8}, num_stages=2.\n- Consider hoisting the `mask = idx < total_pooled` once and replacing the `tl.where(mask, max_v, 0.0)` + `tl.sum` with a masked sum that uses `-inf`\u21920 only after the maxpool reduction (already done) \u2014 but ensure `max_v` for masked lanes does not pollute the sum (currently set to 0.0, OK).",
+    "large_guidance": "- Switch from a gather-style transposed conv (looping over output positions and inverting the stride) to the canonical **scatter-add of input \u00d7 weight outer product** into a per-block output tile held in registers/shared memory. For each (n, oc) program, iterate over input voxels (id, ih, iw) and kernel offsets (kd, kh, kw); compute `od = id*S - P + kd` etc., and accumulate into the local OD\u00d7OH\u00d7OW tile. Then fuse maxpool (reduce MK\u00d7MK\u00d7MK windows in registers) and global avg (sum then * inv_count) as the epilogue. This avoids the fragile `id_num // SD` modular check and is the recommended pattern.\n- Alternatively, since global-avg-pool collapses spatial to 1, restructure so each program owns one (n, oc) and streams over all input voxels once: maintain a small OD\u00d7OH\u00d7OW (or pooled PD\u00d7PH\u00d7PW) accumulator in SRAM. With OD=31, OH=OW=63, the full output tile is ~123K floats \u2014 too large; instead tile along D and process one (or a few) pooled-D slabs at a time, keeping a PH\u00d7PW (or OH\u00d7OW within the slab) buffer. This makes the inner loop a clean IC\u00d7KD\u00d7KH\u00d7KW MAC stream over contiguous input.\n- Fold the scalar `scale` into the weight at init (`weight * scale`) and bias (`bias * scale`) to remove a multiply from the inner loop; clamp can stay as a torch op on the tiny (N, OC) output or be fused into the final store.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 44,
+    "global_best_node_id": 20,
+    "global_best_score": [
+        1,
+        1,
+        16.336806567370672
+    ]
+}

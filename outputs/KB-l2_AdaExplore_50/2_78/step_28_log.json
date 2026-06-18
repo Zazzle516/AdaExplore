@@ -1,0 +1,30 @@
+{
+    "node_id": 28,
+    "parent_node_id": 11,
+    "context_node_ids": [
+        10,
+        11
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.47518772889417366,
+    "max_reward": 0.47518772889417366,
+    "avg_reward": 0.47518772889417366,
+    "score": [
+        1,
+        1,
+        0.7202987633769322
+    ],
+    "small_guidance": "- The conv_transpose3d is the dominant runtime now (the fused pool+sum kernel is already cheap); tuning the pool kernel further (BLOCK_C/BLOCK_OW/num_warps) will not close the gap. If staying small, at least try BLOCK_C=32 with num_warps=8 and num_stages=3, and also try a layout where the kernel reads the post-conv tensor in channels_last_3d to coalesce the C-loop.\n- Fix the BLOCK_OW logic bug: the `while ... cap` clamps BLOCK_OW back to 16, making the doubling loop dead \u2014 just set BLOCK_OW = next_pow2(OW) clamped to e.g. 8 since OW=5 here, and drop the unused ow_blocks grid axis.\n- Add a `triton.autotune` over (BLOCK_C \u2208 {16,32,64}, num_warps \u2208 {2,4,8}, num_stages \u2208 {2,3}) keyed on (C, OD, OH, OW).",
+    "large_guidance": "- The headroom is in ConvTranspose3d, not in pool+sum. Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile) computes the input\u00d7kernel outer product and scatter-adds into the output grid using stride/padding/output_padding index math, fused with the bias add.\n- Better still, fuse the entire pipeline: skip materializing the full conv_transpose output. Tile the *final* output (N, OD, OH, OW); for each output element, derive the window of conv_transpose outputs that feed its 2\u00d72\u00d72 then 3\u00d73\u00d73 max-pools (a 6\u00d76\u00d76 region), then for each of those 216 positions compute the conv_transpose value on-the-fly (gather over IC and the kernel taps that hit it), max-reduce across the 6\u00b3 window per OC, and sum across OC \u2014 all in registers. This collapses three kernels into one and eliminates the giant intermediate (16\u00d764\u00d764\u00d764\u00d764 \u2248 1 GB).\n- If full fusion is too heavy, at minimum fuse (max_pool1 + max_pool2 + sum) directly on the conv_transpose output as a single 6\u00d76\u00d76 max with stride 6 (already done) and focus the rewrite budget on the conv_transpose kernel itself with channels_last_3d layout and an autotuned GEMM-style tile over (OC, output-spatial, IC*kd*kh*kw).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 29,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.9494847335423198
+    ]
+}

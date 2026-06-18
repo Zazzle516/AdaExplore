@@ -1,0 +1,30 @@
+{
+    "node_id": 9,
+    "parent_node_id": 8,
+    "context_node_ids": [
+        1,
+        8
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4328326738483097,
+    "max_reward": 0.4328326738483097,
+    "avg_reward": 0.4328326738483097,
+    "score": [
+        1,
+        1,
+        0.3708695592485549
+    ],
+    "small_guidance": "- The epilogue kernel is already trivial; the 69ms runtime is dominated by `nn.ConvTranspose3d` (cuDNN). Tuning BLOCK_SIZE/num_warps on the bias+clamp+div kernel will not close the 2.7\u00d7 gap. At best, try BLOCK_SIZE=4096, num_warps=8, num_stages=2, and use vectorized loads via reshaping to (N, C, D*H*W) with a 2D grid over (C, spatial-tile) so bias is loaded once per program.\n- Move bias broadcast out of the addressing math: launch a (N*C, spatial) grid where each program has a single bias scalar, eliminating the `(offsets // channel_stride) % n_channels` div/mod per element.\n- These tweaks save ~1ms at best; conv dominates.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile) loads the input block and the (IC, OC, kD, kH, kW) weight slice, computes the outer product, and scatter-adds into the output grid at positions `(d*stride - pad + kd, h*stride - pad + kh, w*stride - pad + kw)`. Fuse bias add, clamp, and divide into the final write (or into a second pass that reads the accumulated output once).\n- Alternatively, implement as a gather-style GEMM: for each output voxel, gather contributing input voxels (those where `(out + pad - kd) % stride == 0` and the resulting input index is in bounds), reducing over (IC, kD, kH, kW). This avoids atomics. Use channels_last3d layout so IC is contiguous along GEMM-K. Tile BLOCK_OC=64, BLOCK_SPATIAL=64, BLOCK_IC=32, num_warps=4, autotune over a small grid.\n- Fold the bias, clamp(min=-1), and divide-by-2 entirely into the GEMM epilogue \u2014 no second kernel launch. With stride=2, padding=1, kernel=3 and output shape (16,128,47,95,95), this is ~5.5 GFLOP per sample, well within reach of a tuned Triton GEMM to beat cuDNN's transposed-conv path.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 10,
+    "global_best_node_id": 6,
+    "global_best_score": [
+        1,
+        1,
+        0.46325222924187726
+    ]
+}

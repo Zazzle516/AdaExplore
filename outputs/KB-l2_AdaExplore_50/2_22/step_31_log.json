@@ -1,0 +1,32 @@
+{
+    "node_id": 31,
+    "parent_node_id": 28,
+    "context_node_ids": [
+        10,
+        25,
+        26,
+        28
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.7857746512799032,
+    "max_reward": 0.7857746512799032,
+    "avg_reward": 0.7857746512799032,
+    "score": [
+        1,
+        1,
+        3.2826408730592007
+    ],
+    "small_guidance": "- The GEMM dominates (M=1024, N=8192, K=8192). Add larger autotune configs targeting this exact shape: BLOCK_M=128/BLOCK_N=256/BLOCK_K=32, num_warps=8, num_stages=4-5, and BLOCK_M=64/BLOCK_N=256/BLOCK_K=32 with num_stages=5; also try BLOCK_M=256/BLOCK_N=128/BLOCK_K=32. Drop the 64/128/128 and 128/64/128 configs since K=8192 favors smaller BLOCK_K with more stages on Ada.\n- Cache `Wt` once in `__init__` (weights are static) instead of lazy-caching on first forward; also store the bias as a fp32 contiguous CUDA tensor at init to avoid `.detach().contiguous().cuda()` per call. Skip the `x.contiguous().cuda()` when input is already on CUDA.\n- The intermediate write of (1024\u00d78192) fp16 to global memory then re-read for LSE is wasted bandwidth. Since M=1024 is small, consider a split-K-free design where the GEMM kernel additionally accumulates a per-row partial max/sum into atomics or a separate scratch, but the simpler win: drop the fp16 cast and instead try bf16 store (matches input dtype, no extra conversion in the producer epilogue).",
+    "large_guidance": "- Fuse the LSE reduction into the GEMM epilogue with a persistent / split-N scheme: each program computes a (BLOCK_M \u00d7 BLOCK_N) tile, applies scale+clamp, then does an in-tile max/sum-exp and atomically combines into per-row (max, sum) accumulators in global memory. A second tiny kernel finalizes `log(sum)+max` and applies mish. This eliminates the full (M\u00d7N) intermediate write/read \u2014 the largest remaining bandwidth cost.\n- Alternative: since N is fixed at 8192 and M=1024, use a 2-pass online-LSE scheme without materializing the intermediate \u2014 pass 1 computes per-row max via a tile-streaming GEMM with row-wise atomicMax (fp32 bit trick) or a partial-reduction buffer of shape [num_n_tiles, M]; pass 2 streams the GEMM again computing sum(exp(x-max)). On a 4090 with ~1TB/s HBM, eliminating the 1024\u00d78192\u00d72B intermediate is worth ~0.05ms but the recompute doubles GEMM cost, so prefer the single-pass atomic-combine design above.\n- Consider using cuBLAS (`torch.matmul`) for the GEMM and only writing a custom fused clamp+LSE+mish kernel reading from the cuBLAS output \u2014 cuBLAS hgemm/bf16 on Ada often beats hand-tuned Triton for square 8192 GEMMs, and the post-processing is cheap.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 32,
+    "global_best_node_id": 28,
+    "global_best_score": [
+        1,
+        1,
+        3.627338205272988
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 14,
+    "parent_node_id": 9,
+    "context_node_ids": [
+        8,
+        9
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing with avg_diff ~2e-4. Likely cause: `tl.where(mask, x, 0.0)` for the mean is fine, but when computing `diff = tl.where(mask, x - mean, 0.0)`, the `x` loaded with `other=0.0` already has zeros in tail lanes, so `x - mean` writes `-mean` which then gets masked \u2014 that part is OK. However, `CG=512` here (8192/16) and `BLOCK=512` exactly, so masking is moot. Recheck the GEMM: `w.stride(1), w.stride(0)` passes K-stride as `stride_bk` and N-stride as `stride_bn` correctly for `Y = X @ W^T`, but verify dtype/accumulation. Try forcing `a, b = a.to(tl.float32), b.to(tl.float32)` before `tl.dot`, and use `allow_tf32=False` in `tl.dot` to rule out TF32 accumulation drift against PyTorch's fp32 baseline.\n- Tighten eps handling: PyTorch GroupNorm default eps is `1e-5` (matches), but ensure the reference comparison uses the same `gn.weight`/`gn.bias` initialization \u2014 the ModelNew creates a fresh `nn.GroupNorm` instead of receiving the reference's parameters, so the harness re-seeds. This is fine if the harness compares modules with same init, but double-check parameter naming (`gn_weight`/`gn_bias` vs `group_norm.weight`) \u2014 if the harness copies state_dict by name, mismatched names will leave defaults and cause exactly this kind of small constant diff.\n- Rename submodule params to match reference: keep `self.gemm = nn.Linear(...)` and `self.group_norm = nn.GroupNorm(...)` as real submodules so `load_state_dict` from the reference works, then read `self.gemm.weight`, `self.group_norm.weight`, etc. inside forward.",
+    "large_guidance": "- Restructure ModelNew to hold `self.gemm = nn.Linear(...)` and `self.group_norm = nn.GroupNorm(...)` as proper submodules so parameter names match the reference exactly; the current rename to `weight`/`gn_weight` is the most likely correctness failure since the harness copies state by attribute path.\n- Fuse the GroupNorm + Hardtanh epilogue directly into the GEMM's store path is unprofitable (cross-tile reduction along N), so keep two kernels but make the GN kernel persistent per (row, group) loading once into registers \u2014 for CG=512 this fits one program with BLOCK=512, num_warps=4.\n- For the GEMM (M=1024, N=8192, K=8192), prefer tiles 128x256x32 or 256x128x32 with num_warps=8, num_stages=4, and split-K is not needed; ensure `tl.dot` uses fp32 accumulation with `allow_tf32=True` for speed, then a separate correctness pass with `allow_tf32=False` to confirm the diff source.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 15,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

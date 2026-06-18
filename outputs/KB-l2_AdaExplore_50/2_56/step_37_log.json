@@ -1,0 +1,29 @@
+{
+    "node_id": 37,
+    "parent_node_id": 35,
+    "context_node_ids": [
+        35
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The atomic_add accumulates into `out` but `torch.zeros` initialization plus multiple N-tile programs writing the same M rows is correct in principle; the bug is likely that `out` is fp32 zeros but atomic_add semantics fine \u2014 check that `out` is actually reset every call (it is). The real issue: when N tiles overlap due to autotune picking different BLOCK_N across runs, results should still be correct. Inspect whether `mask_n` correctly zeros out-of-bounds before `tl.sum` \u2014 it does. The actual failure is probably the bias/weight transpose cache being stale when Linear weights are randomized between trials; invalidate `_wt_cache` every forward or key it on `W.data_ptr()`.\n- Replace the cache with `W_for_kernel = self.linear.weight.t().contiguous()` recomputed each forward (cheap relative to the GEMM), or compare `data_ptr()` and `_version` to detect parameter updates.\n- Once correct, tighten autotune to 2-3 configs centered on `BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, num_warps=8, num_stages=3` for M=128, N=K=32768.",
+    "large_guidance": "- Since M=128 is small and N=K=32768 is huge, consider a split-K or persistent design: one program per (M-row-tile, N-tile) is fine, but you can also fuse without atomics by making each program own a full row strip \u2014 launch grid `(num_n_tiles,)` per row and reduce N inside, then a second small kernel reduces partials. Or keep atomics but use a single `tl.atomic_add` per program (already done).\n- Avoid the transpose entirely: load W as `[N, K]` row-major (its natural layout) and do `tl.dot(x, w.T)` via swapping the load pattern \u2014 saves a 32768x32768 fp32 copy (4 GB) at init/forward.\n- Consider loading B as `[K, N]` tiles via `tl.trans` on a `[BLOCK_N, BLOCK_K]` load to keep the original weight contiguous, eliminating the `_wt_cache` correctness hazard altogether.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 38,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

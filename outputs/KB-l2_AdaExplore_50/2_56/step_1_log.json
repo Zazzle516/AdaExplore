@@ -1,0 +1,27 @@
+{
+    "node_id": 1,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness bug is in the partial buffer indexing: `max_n_tiles = cdiv(N, 64)` but autotune may pick BLOCK_N=128 or 256, so `pid_n` exceeds `max_n_tiles`. Allocate `partial` based on the actual chosen BLOCK_N (read from kernel meta after launch), or just pass `num_n_tiles` and size the buffer using a launch-time grid lambda that captures meta['BLOCK_N']. Simplest: allocate inside the grid lambda by computing tiles from meta, or restrict autotune configs to a single BLOCK_N and size accordingly.\n- Alternatively, use `tl.atomic_add` into a single `(M, 1)` output buffer in the kernel epilogue, eliminating the partial buffer entirely and the second reduction kernel.\n- Once correct, expand autotune with larger BLOCK_M (64/128) since M=128 is small but N=K=32768 is huge \u2014 favor wide N tiles (BLOCK_N=128/256) with num_warps=8, num_stages=3-4 to overlap the long K loop.",
+    "large_guidance": "- Switch to atomic-add reduction directly into a `(M,)` output tensor: each (pid_m, pid_n) program computes its tile's sigmoid sum and atomically adds to `out[offs_m]`. This removes the buggy partial buffer, the second sum kernel, and the M\u00d7n_tiles materialization.\n- Alternatively, make the kernel persistent over the N dimension: one program per row-tile of M, looping over all N tiles internally, accumulating both the GEMM and the sigmoid-sum into a single scalar per row. With M=128, a grid of just `cdiv(M, BLOCK_M)` programs each streaming K once per N-tile keeps the row-accumulator in registers and writes a single value per row.\n- Given K=N=32768, consider splitting along K (split-K) only if occupancy is low; otherwise keep K serial and tile N aggressively (BLOCK_N=128, BLOCK_K=32-64) with `tl.dot` on bf16/tf32 inputs to leverage tensor cores.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 2,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

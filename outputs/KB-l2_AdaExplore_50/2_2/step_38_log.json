@@ -1,0 +1,30 @@
+{
+    "node_id": 38,
+    "parent_node_id": 37,
+    "context_node_ids": [
+        28,
+        30
+    ],
+    "depth": 5,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.03408140506329114
+    ],
+    "small_guidance": "- The current kernel does a gather-style transposed conv with `tl.dot(w_tile, x_tile)` where the K dimension is `BLOCK_IC` (=64) \u2014 this is too small per (kh,kw) iteration and the dot is repeated 9\u00d7 with low arithmetic intensity. Try collapsing the (kh,kw) loop into the K dimension by precomputing per-(kh,kw) input gathers and accumulating with larger K, or at minimum increase `BLOCK_IC` autotune to 32/64 and add configs with `BLOCK_OC=128, BLOCK_SP=128, num_warps=8, num_stages=3/4`.\n- Add channels_last layout for x and a transposed weight layout `[IC, KH, KW, OC]` so the inner `tl.load` for weight is contiguous along OC and x loads coalesce along IC; this should noticeably improve the GEMM throughput.\n- Hoist the `oh*OW + ow` decomposition out of the kh/kw loop and precompute `ih_base = oh + PAD`, `iw_base = ow + PAD` once; also skip iterations where `(kh - PAD) % STRIDE` is statically known invalid via `tl.static_range` guards.",
+    "large_guidance": "- Switch from gather (one program per output tile pulling from input) to scatter-add (one program per input tile pushing `input \u00d7 kernel` outer products into the output grid). For ConvTranspose2d with stride=2, the gather path wastes ~75% of work because most `(ih_num % STRIDE == 0)` checks fail; scatter naturally writes only the valid output pixels.\n- Alternatively, rewrite as an im2col-style GEMM where the K dimension is `IC` (full 64) and M is `OC` (64), N is the output spatial tile. Make the K loop the inner reduction with `BLOCK_K=32 or 64` so `tl.dot` operates on `[BLOCK_OC, BLOCK_K] x [BLOCK_K, BLOCK_SP]` with BLOCK_OC=64/128, BLOCK_SP=128/256 \u2014 this is the canonical convolution-as-GEMM mapping and gets full tensor-core utilization.\n- Fuse the bias-add + double-clamp + scale/inv-scale epilogue (already done) and persist over batch: launch `(SP_tiles, OC_tiles)` with a loop over N inside the kernel to amortize weight loads across the batch (weights are only `64*64*9*4=147KB` and reused N=128 times).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 39,
+    "global_best_node_id": 29,
+    "global_best_score": [
+        1,
+        1,
+        0.6189496551724137
+    ]
+}

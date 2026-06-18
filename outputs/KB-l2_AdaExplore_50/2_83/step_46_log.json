@@ -1,0 +1,30 @@
+{
+    "node_id": 46,
+    "parent_node_id": 41,
+    "context_node_ids": [
+        37,
+        41
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4538787467899333,
+    "max_reward": 0.4538787467899333,
+    "avg_reward": 0.4538787467899333,
+    "score": [
+        1,
+        1,
+        0.5444996610169492
+    ],
+    "small_guidance": "- The conv (Conv3d) almost certainly dominates runtime now that GN+min+clamp is fused; further BLOCK_S/num_warps sweeps on the GN kernel will not move fast_p much. Keep autotune but drop the giant BLOCK_S=8192 configs (S=14*62*62=53824 \u2192 BLOCK_S=2048-4096 with num_warps=8 is the sweet spot) to cut autotune overhead.\n- Replace the awkward `tl.sum(tl.where(c_offs == c_off, w_vec, 0.0))` per-channel scalar extraction with a 2D tile load `[CPG, BLOCK_S]`: load v as a 2D block, broadcast `w_vec[:, None]` and `b_vec[:, None]`, do the normalize/clamp in one fused vectorized op, then store. This removes CPG redundant scalar reductions in the second pass.\n- Fuse the dropout (eval-time it's a no-op; train-time use a Philox `tl.rand` with seed/offset) into the same kernel epilogue so the output tensor is written once instead of being re-read by `nn.Dropout`.",
+    "large_guidance": "- The Conv3d is now the bottleneck (baseline 2.89 ms vs current 5.31 ms \u2014 the fused GN tail is fine, conv is the headroom). Replace `nn.Conv3d` with a custom Triton im2col-style GEMM kernel: one program per (N, OC tile, output-spatial tile), with the `IC*kT*kH*kW=81` reduction axis fully unrolled (it's tiny). Input shape (128,3,16,64,64) \u2192 output (128,16,14,62,62); GEMM is M=OC=16, N=N*D'*H'*W'\u22486.9M, K=81 \u2014 heavily N-bound, perfect for a tiled GEMM with BLOCK_N=128/256.\n- Fuse the entire pipeline into the conv epilogue: after the K-reduction accumulator, apply GroupNorm (needs a two-stage launch \u2014 first kernel computes per-(N,group) mean/var with atomic or per-program partials, second kernel applies normalize+min+clamp+dropout). Or split as: (1) custom conv writing raw output, (2) the existing fused GN+clamp+dropout kernel \u2014 the conv replacement alone should recover most of the gap.\n- Use channels_last_3d (`memory_format=torch.channels_last_3d`) for the conv output so the GN reduction axis (channels within a group) is contiguous, eliminating the strided gather currently happening with `c_off * S` strides of S=53824 elements.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 47,
+    "global_best_node_id": 20,
+    "global_best_score": [
+        1,
+        1,
+        0.83563387283237
+    ]
+}

@@ -1,0 +1,27 @@
+{
+    "node_id": 15,
+    "parent_node_id": 6,
+    "context_node_ids": [],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The kernel failed with a generic gcc launcher build error which often indicates a kernel signature/launch issue; double-check that `num_warps` is passed correctly and that all constexpr args (KH, KW, SH, SW, PH, PW, BLOCK_OC, BLOCK_IC) are simple Python ints, not tensors. Try removing `tl.static_range` over KH/KW (use plain `range`) since they're already small constexprs.\n- Use `triton.autotune` over `BLOCK_IC \u2208 {32, 64, 128}`, `num_warps \u2208 {2, 4, 8}`, `num_stages \u2208 {2, 3}` keyed on `(IC, OC, IH, IW)`.\n- Fuse the bias-add + clamp-scale-clamp-divide into the scatter kernel's final write (after all atomics) by running the epilogue as a separate pass that's already done \u2014 but precompute `out` initialized to `conv_bias + self.bias` so the epilogue reads once and writes once.",
+    "large_guidance": "- Switch from scatter-add (one program per input pixel, atomics into output) to a **gather-based im2col GEMM** indexed by output pixels: one program per `(N, OC_tile, OH*OW tile)`, reduce over `IC*KH*KW`. For ConvTranspose with stride=2, the gather formula is `ih = (oh + PH - kh) / SH` valid only when `(oh + PH - kh) % SH == 0`. This eliminates `atomic_add` entirely (huge win on 4090) and lets you use `tl.dot` for the inner GEMM.\n- Fuse bias-add, clamp, scale, clamp, divide directly into the GEMM epilogue (single kernel, no separate pass, no extra HBM round-trip). Note `clamp(x*s,0,1)/s` with `x\u2208[0,1]` and `s=2` simplifies arithmetically but must still be expressed as the explicit op chain.\n- Use `channels_last` (NHWC) layout for both input and output so the IC and OC reductions are along the contiguous axis; transpose weight to `(OC, KH, KW, IC)` once at init for coalesced loads inside the GEMM-K loop. Tile `BLOCK_M=64` (output spatial), `BLOCK_N=64` (OC), `BLOCK_K=32` (IC) as starting point and autotune.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 16,
+    "global_best_node_id": 10,
+    "global_best_score": [
+        1,
+        1,
+        0.46421224137931033
+    ]
+}

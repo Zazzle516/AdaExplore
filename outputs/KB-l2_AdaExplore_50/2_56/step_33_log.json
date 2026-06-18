@@ -1,0 +1,27 @@
+{
+    "node_id": 33,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing because `partial` is allocated with `max_n_tiles = ceil(N/64)` but the autotuner may pick a larger `BLOCK_N` (128/256), making `pid_n * stride_pn` index past `partial`'s second dim and giving stale zeros for tiles that weren't written. Allocate `partial` after knowing the chosen `BLOCK_N` \u2014 either pin `BLOCK_N` to a single value (remove autotune over N), or allocate `(M, N)` worst-case with `stride_pn = 1` and write to a unique column per `pid_n`, then reduce.\n- Simpler fix: drop the partial buffer entirely and use `tl.atomic_add` into a `(M,1)` output, or launch with a single `pid_n` grid by making `BLOCK_N` cover the full row (N=32768 is too big, so use a 2D grid but allocate `partial` sized to the actual chosen `BLOCK_N` via `grid` closure that also allocates).\n- Add larger K tiles (BLOCK_K=64) and `num_stages=4` configs; K=32768 is huge so deeper pipelining helps overlap loads with `tl.dot`.",
+    "large_guidance": "- Restructure as a split-K / row-parallel reduction kernel: one program per (row tile, K chunk) computes a partial `sum_n sigmoid(x\u00b7W^T + b)` for its slice and atomically accumulates into a `(M,)` output. Avoids the partial-buffer sizing bug and removes the second reduction kernel.\n- Better: persistent kernel with one program per M row (batch=128 is small). Each program loops over N tiles, accumulating `acc_scalar += sum(sigmoid(matmul_tile + bias))` directly in registers, never materializing the (M,N) hidden tensor or a 2D partial. Use `BLOCK_N` around 128-256 and `BLOCK_K` 64, with multiple programs per row via split-K + atomic if needed for occupancy (M=128 rows is enough to fill the 4090 with row-only parallelism if each row does heavy work).\n- Pre-transpose W once in `__init__` so the K dimension is contiguous on the inner load for both X and W (avoid `tl.trans` in the hot loop).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 34,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

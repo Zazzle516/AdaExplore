@@ -1,0 +1,27 @@
+{
+    "node_id": 14,
+    "parent_node_id": 11,
+    "context_node_ids": [],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The atomic_add accumulation across N tiles is the correctness bug: float32 atomics on overlapping tiles are fine in principle, but the partial row sum must use the full accumulator only after K is complete \u2014 which it does. The actual issue is likely the B layout: with `stride_bk=1, stride_bn=K`, the inner load along N is strided (non-contiguous), which is slow AND combined with `BLOCK_K=32` masking may corrupt. Pre-transpose W to `(K, N)` contiguous once in `__init__` so `stride_bk=N, stride_bn=1` and the N axis is the contiguous inner load.\n- Drop atomics entirely: use a single program per M-tile that iterates the full N dimension internally, accumulating row sums in registers, then a single store. This removes the float-atomic nondeterminism risk and is faster.\n- Once correct, sweep `BLOCK_M \u2208 {32,64,128}`, `BLOCK_K \u2208 {32,64}`, num_warps 4/8, num_stages 3/4.",
+    "large_guidance": "- Reformulate as a row-reduction kernel: output is `(M, 1)`. For each row m, compute `0.5 * scaling * sum_n sum_k x[m,k] * W[n,k]` = `0.5 * scaling * sum_k x[m,k] * (sum_n W[n,k])`. WAIT \u2014 that is exactly the algebraic shortcut forbidden by the safety contract (folding the sum into a weight column-reduction). Do NOT take that path. Instead, keep the full GEMM but make it a persistent per-M-tile kernel that streams over N, accumulating a `(BLOCK_M,)` row-sum register, and writes once.\n- Pre-transpose weight to a contiguous `(K, N)` buffer in `__init__` (or cache it on first forward) so the K-loop loads B with stride 1 on N. This is the single biggest perf and correctness win.\n- Fuse the `/2`, `sum`, `*scaling` into the epilogue of the GEMM: after the K-loop completes for a `(BLOCK_M, BLOCK_N)` tile, do `tl.sum(acc, axis=1) * (0.5*scaling)` and accumulate into a per-program row register; only the M-persistent design avoids the atomic.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 15,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

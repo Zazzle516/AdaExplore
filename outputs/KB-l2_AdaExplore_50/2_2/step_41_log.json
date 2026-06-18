@@ -1,0 +1,29 @@
+{
+    "node_id": 41,
+    "parent_node_id": 38,
+    "context_node_ids": [
+        38
+    ],
+    "depth": 6,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.44721611019283747,
+    "max_reward": 0.44721611019283747,
+    "avg_reward": 0.44721611019283747,
+    "score": [
+        1,
+        1,
+        0.489532909090909
+    ],
+    "small_guidance": "- The post-process kernel is memory-bound and trivial; the 33ms runtime is dominated by `nn.ConvTranspose2d` (cuDNN). Tuning BLOCK_SP/num_warps further will not move the needle \u2014 baseline is 16ms so cuDNN's transposed conv alone exceeds budget.\n- If staying with this structure, switch to channels_last (`y = y.to(memory_format=torch.channels_last)`) and a 1D-flattened grid over `N*C*H*W` with vectorized loads to reduce overhead, but expect <5% gain.\n- Drop the separate `out` allocation and write in-place into `y` to save a full tensor's worth of memory traffic.",
+    "large_guidance": "- Replace `nn.ConvTranspose2d` with a custom Triton scatter-add kernel: for each `(N, IC, ih, iw)` input element, compute the `kh*kw` outer product with the weight slice `W[IC, :, :, :]` and `atomic_add` into the output positions `(n, oc, ih*stride - pad + kh, iw*stride - pad + kw)`. Fuse the bias add + clamp + scale + clamp + invscale into the final epilogue (after all scatter-adds complete) \u2014 this requires a second small kernel pass over the output to apply the epilogue, or use a gather-style formulation instead.\n- Better: gather-style direct conv-transpose. One program per `(N, OC_tile, OH_tile, OW_tile)` in channels_last layout; inner loop over `IC` and `(kh, kw)` with index math `ih = (oh + pad - kh) / stride` (only valid when divisible). Implement as a GEMM where K = IC and we accumulate `kh*kw` contributions. Fuse bias + clamp + scale + clamp + invscale into the epilogue before store. This gives a single kernel for the entire forward.\n- Autotune over BLOCK_OC \u2208 {32,64}, BLOCK_SPATIAL \u2208 {64,128,256}, BLOCK_IC \u2208 {16,32,64}, num_warps \u2208 {4,8}, num_stages \u2208 {2,3}. Output is 128\u00d764\u00d7256\u00d7256 = 537M elements; ConvT is the >95% of runtime, so this is the only path to fast_p > 1.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 42,
+    "global_best_node_id": 29,
+    "global_best_score": [
+        1,
+        1,
+        0.6189496551724137
+    ]
+}

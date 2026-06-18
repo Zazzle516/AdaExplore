@@ -1,0 +1,29 @@
+{
+    "node_id": 2,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure is from `allow_tf32=False` not being the issue \u2014 likely `acc * multiplier` then `leaky_relu` is fine, but the output mismatch (~0.4 avg diff) suggests the bias or weight transpose is wrong. Verify `w_t = weight.t().contiguous()` shape: `nn.Linear` weight is `(out_features, in_features)` so `weight.t()` is `(K, N)` with stride_bk=N, stride_bn=1 \u2014 that's correct. The real bug is likely the cached `_w_t_cache` becoming stale across calls when weights are re-initialized; remove caching and recompute `w.t().contiguous()` each forward, or key the cache on `w.data_ptr()`.\n- Set `allow_tf32=True` for fp32 inputs on Ada (RTX 4090) to use TF32 tensor cores \u2014 this gives a large speedup and is within the 5e-2 tolerance.\n- Trim autotune configs to a few proven shapes (e.g. 128\u00d7128\u00d732 nw=4 ns=3, 128\u00d7256\u00d732 nw=8 ns=3, 64\u00d7128\u00d764 nw=4 ns=4) to cut autotune overhead.",
+    "large_guidance": "- Keep the fused GEMM+bias+mul+LeakyReLU structure but fix the cache-staleness bug: avoid caching `w.t()` across forward calls because reseed/re-init may change weights without changing the Parameter object identity in some test harnesses; just call `weight.t()` and pass strides directly (no contiguous transpose) \u2014 Triton handles strided B fine if the inner load axis remains coalesced.\n- Alternatively, load B directly from `weight` with swapped stride arguments (pass `stride_bk=weight.stride(1)`, `stride_bn=weight.stride(0)`), eliminating the transpose memcopy entirely.\n- Use TF32 tensor cores (`allow_tf32=True`) and consider a split-K variant only if K=8192 stalls the K-loop; otherwise a single-pass GEMM with `BLOCK_K=32` and `num_stages=3-4` is sufficient on a 4090.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 3,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

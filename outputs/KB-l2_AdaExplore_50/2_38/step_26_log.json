@@ -1,0 +1,30 @@
+{
+    "node_id": 26,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        14,
+        6
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.43983604435261714,
+    "max_reward": 0.43983604435261714,
+    "avg_reward": 0.43983604435261714,
+    "score": [
+        1,
+        1,
+        0.4286473659090909
+    ],
+    "small_guidance": "- The conv_transpose3d is almost certainly dominating runtime (softmax over 32*64*64=131072 elements/row is memory-bound but only ~256MB total). Tune softmax with smaller BLOCK (e.g. 1024-2048) and use a single-pass online softmax per (b,c) row with persistent kernel \u2014 the current 3-pass approach (partial/finalize/write) reads x twice and writes intermediates. Fuse partial+finalize+write into one persistent kernel per row with num_warps=8.\n- Drop the NB_PADDED cat (extra allocations + memcpy on host path) by sizing partials to a compile-time power-of-2 from the start, or eliminate partials entirely with the persistent single-row kernel.\n- Fuse scale multiply into the write epilogue (already done via inv*scale) \u2014 good; also fuse clamp into the conv_transpose epilogue if conv is replaced.",
+    "large_guidance": "- Replace nn.ConvTranspose3d with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile), computing input \u00d7 weight outer product and atomically scattering into the output grid with stride=2, padding=1, output_padding=1. Fuse bias-add and clamp(0,1) directly in the scatter epilogue. This is the dominant cost \u2014 softmax tuning alone cannot reach 9.4ms.\n- Alternatively, fold AvgPool3d (pool_kernel=2) into the conv_transpose input gather: since avg-pool is a 2x2x2 box filter, you can either (a) precompute the pooled tensor with a tiny fused Triton kernel that also writes channels_last, or (b) absorb the 1/8 averaging factor into the weight at eval-time-equivalent only if recomputed per-forward (but the pool still must run \u2014 keep it as a fused kernel, not a weight rewrite).\n- For softmax over S=131072 per row, switch to a two-pass online softmax with one program per (b,c) row using a strided loop over BLOCK=4096 chunks; this halves memory traffic vs the current 3-kernel pipeline and removes the host-side padding logic.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 27,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.43060465981735163
+    ]
+}

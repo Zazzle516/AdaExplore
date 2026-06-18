@@ -1,0 +1,27 @@
+{
+    "node_id": 1,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4243987976969697,
+    "max_reward": 0.4243987976969697,
+    "avg_reward": 0.4243987976969697,
+    "score": [
+        1,
+        1,
+        0.301290081
+    ],
+    "small_guidance": "- The fused post-conv kernel is tiny (output ~128*9*17*17 \u2248 332k elements) and not the bottleneck \u2014 ConvTranspose3d dominates the 20ms runtime. Tuning BLOCK_C/num_warps here will not close the gap.\n- If keeping current structure, try increasing num_warps to 2-4 and tiling multiple spatial points per program (BLOCK_S=4 or 8) to amortize launch overhead, but expect small gains.\n- Consider folding the MaxPool3d into the post-conv kernel by gathering the 2\u00d72\u00d72 pool window directly from the conv output, eliminating an intermediate tensor.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)` computing the outer product `input \u00d7 weight` and scattering into the output grid with proper stride=2, padding=1, output_padding=1 index math. This is the heavy op (>90% of runtime).\n- Fuse bias-add, MaxPool3d (2\u00d72\u00d72 stride 2), softmax-over-channels, subtract, swish, and channel-max all into the conv-transpose epilogue path. Since pool reduces spatial 2\u00d7, compute conv-transpose outputs into a small register tile sized to a pool window, then immediately reduce. The channel-axis softmax+max can run as a second kernel over the pooled (N, C=16, D', H', W') tensor with one program per output spatial element and BLOCK_C=16 (already done well \u2014 keep it).\n- Alternative: implement conv-transpose as gather-style (im2col on output) \u2014 one program per `(N, OC tile, output-spatial tile)` looping over `(IC, kD, kH, kW)` to accumulate from valid input positions. With OC=16 small and output spatial ~32\u00d764\u00d764, an output-tiled GEMM with BLOCK_M=16 (OC), BLOCK_N=64-128 (spatial), BLOCK_K=IC*kd*kh*kw=81 is a clean fit on the 4090.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 2,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.301290081
+    ]
+}

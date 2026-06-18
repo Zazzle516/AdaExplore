@@ -1,0 +1,30 @@
+{
+    "node_id": 12,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        3,
+        4
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4343549667054208,
+    "max_reward": 0.4343549667054208,
+    "avg_reward": 0.4343549667054208,
+    "score": [
+        1,
+        1,
+        0.3834284753197215
+    ],
+    "small_guidance": "- The current kernel recomputes the full matmul tile per pooled-group iteration \u2014 the outer loop over `pg` re-loads `x` for every group, making total x reads = `POOLED_LEN/BLOCK_P` \u00d7 full K. Restructure to a single pass: tile over the OUT_FEATURES axis with `BLOCK_N = BLOCK_P*POOL_K`, do one K-loop per batch tile, and reduce pool\u2192GELU\u2192scale\u2192max in the epilogue of each N-tile while keeping a running max across N-tiles. This alone should cut traffic ~`POOLED_LEN/BLOCK_P`\u00d7.\n- After the restructure, try `BLOCK_M=64/128, BLOCK_N=128/256, BLOCK_K=32/64` with `num_warps=8, num_stages=3-4`, and add a `GROUP_M` swizzle (=8) for better L2 reuse on the weight tile.\n- Load bias once per N-tile outside the K-loop (already done) and ensure `wt` is loaded with the contiguous axis as inner (OUT_FEATURES inner) \u2014 current layout is fine; consider `tl.multiple_of`/`tl.max_contiguous` hints on `of_offs` to improve vectorization.",
+    "large_guidance": "- Redesign as a single-pass split-K-free GEMM-epilogue-reduce: grid = `(cdiv(B, BLOCK_M),)`, inside loop over N-tiles of size `BLOCK_N = multiple of POOL_K`; for each N-tile run the full K-reduction once, then fuse avg-pool (reshape `[BLOCK_M, BLOCK_N/POOL_K, POOL_K]`, sum axis=2, \u00d71/POOL_K), GELU, scale, partial-max, and combine into a running `[BLOCK_M]` max. This eliminates the redundant matmul work the current kernel does.\n- Alternatively, since OUT_FEATURES=8192 is small enough, try a persistent kernel where each program owns a `BLOCK_M` batch tile and streams all N-tiles, holding the row of `x` partially in shared memory across N-tiles to amortize x loads.\n- Consider split-K with a second tiny reduction kernel only if single-pass occupancy is poor; with B=1024 and BLOCK_M=64 you get 16 programs \u2014 likely under-occupied on a 4090, so prefer BLOCK_M=32 (32 programs) or split the N dimension across the grid and do a final max-reduce.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 13,
+    "global_best_node_id": 7,
+    "global_best_score": [
+        1,
+        1,
+        1.5913389900552604
+    ]
+}

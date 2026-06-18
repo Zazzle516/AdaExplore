@@ -1,0 +1,29 @@
+{
+    "node_id": 2,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4385451019511889,
+    "max_reward": 0.4385451019511889,
+    "avg_reward": 0.4385451019511889,
+    "score": [
+        1,
+        1,
+        0.4179970910973084
+    ],
+    "small_guidance": "- Add a `triton.autotune` sweep over `BLOCK_M \u2208 {32,64,128,256}`, `num_warps \u2208 {2,4,8}`, `num_stages \u2208 {2,3,4}`; current 64/4/2 is likely suboptimal given M=128*14*62*62\u22486.9M points.\n- Tile over OC as well (e.g. `BLOCK_N=16` matching OC=16) and switch the output store to channels-last write followed by a cheap permute, OR write directly via the strided offsets you already compute \u2014 but precompute `Do*Ho*Wo` and `Ho*Wo` as scalars and reuse to cut index math.\n- The inner `BLOCK_K` loop over IC=3 is wasteful (BLOCK_K=16 with mask, only 3 valid lanes); pad IC to 16 once outside the kernel (or unroll KT*KH*KW*IC=81 as the K dimension of a single GEMM) so `tl.dot` runs at full lane utilization.",
+    "large_guidance": "- Rewrite as an implicit-GEMM where K = IC*KT*KH*KW = 81 is the full reduction axis of one `tl.dot`, M = N*Do*Ho*Wo tile, N = OC (=16, pad to 16). One pass, no triple static loop, dramatically fewer loads since each input voxel is reused across (kt,kh,kw) within the tile via shared offsets.\n- Use channels-last output layout (N, Do, Ho, Wo, OC) inside the kernel for coalesced stores across OC, then a single `permute(0,4,1,2,3).contiguous()` at the end (or fold the permute into the store via strided indexing) \u2014 current store has stride `Do*Ho*Wo` between OC elements which is non-coalesced.\n- Consider persistent-CTA / split along (N, Do) with each program covering a (BLOCK_HW, OC) tile of one (n, do) slice, so the input tile for a given (n,do) is reused across kt with only KT input loads per program; fuse bias+scale+tanh+bias2+sigmoid in epilogue (already done) \u2014 the win is in the GEMM, not the tail.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 3,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.5326981398416886
+    ]
+}

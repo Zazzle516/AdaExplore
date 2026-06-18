@@ -1,0 +1,29 @@
+{
+    "node_id": 16,
+    "parent_node_id": 13,
+    "context_node_ids": [
+        10
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness issue: the kernel ignores spatial bounds. `ih = oh + kh` and `iw = ow + kw` can index out-of-bounds rows/cols when `offs_m` is masked-off lanes \u2014 but more importantly, `x_off` is computed with unmasked `ih/iw` and the load mask only checks `mask_m & mask_k`, not the spatial validity. Add `ih_valid = (ih >= 0) & (ih < IH)` and `iw_valid = (iw >= 0) & (iw < IW)` to the x load mask, and clamp `ih/iw` (e.g. via `tl.where`) before computing `x_off` to avoid OOB pointer arithmetic. For valid (non-padded) conv this should still be added because masked-off `offs_m` lanes can produce garbage `oh/ow` that index past the input.\n- Also ensure `n_idx` for masked-off lanes is clamped \u2014 when `offs_m >= M_total`, `n_idx` may exceed N and cause OOB pointer arithmetic even if the load mask is false. Use `tl.where(mask_m, n_idx, 0)` etc. before forming offsets.\n- Once correct, keep autotune list but add `(64,64,32,4,3)` and `(128,128,16,4,2)` (fits SMEM: (128\u00b716+16\u00b7128)\u00b74\u00b72 = 32KB).",
+    "large_guidance": "- Keep the implicit-im2col GEMM structure (one program per (M-tile of N\u00b7OH\u00b7OW, OC tile)); it's the right design for a 3x3 stride-1 conv with these shapes. The redesign should mainly harden index safety: clamp `n_idx`, `oh_idx`, `ow_idx`, `ih`, `iw` with `tl.where(mask, idx, 0)` before any pointer arithmetic, and OR the spatial-validity predicates into the x-load mask.\n- Consider switching to NHWC (channels-last) layout for both input and output so the GEMM-K stride (over IC inside a (kh,kw)) is contiguous; this typically gives 1.3-1.8\u00d7 on 3\u00d73 convs. Pack the weight as (KH, KW, IC, OC) to match.\n- Fuse the epilogue (min, +bias, *scale) as already done; ensure `conv.bias + per-channel bias` is precomputed on the host into a single (OC,) vector (but multiplied by scaling_factor only at the right place \u2014 bias is added after min, so it must stay separate from conv_bias). Precompute `bias * scaling_factor` and `constant_value` epilogue constants on host to remove an op per element.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 17,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.686288845766129
+    ]
+}

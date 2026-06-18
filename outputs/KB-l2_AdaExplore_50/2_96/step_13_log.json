@@ -1,0 +1,29 @@
+{
+    "node_id": 13,
+    "parent_node_id": 10,
+    "context_node_ids": [
+        10
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.014320555123929357
+    ],
+    "small_guidance": "- The current kernel recomputes the full ConvTranspose3d output from scratch per (n, oc), redoing IC*KD*KH*KW work for every output position with no reuse. Tuning BLOCK_IC / num_warps will not close a 70\u00d7 gap; at minimum, swap the loop order so the outer loop is over input voxels (n, ic, id, ih, iw) and scatter-add into a per-(n, oc) output buffer in shared memory / registers, then pool.\n- If keeping the gather structure, add `@triton.autotune` over BLOCK_IC \u2208 {4, 8, 16}, num_warps \u2208 {1, 2, 4}, num_stages \u2208 {2, 3}, and parallelize over (n, oc, pd) instead of just (n, oc) so the 8\u00d78\u00d716 = 1024 pooled-position serial loop is split across more SMs (currently only 128*16 = 2048 programs, each doing ~1M FLOPs serially).\n- Precompute `inv_total` and hoist the `num_d/id_/valid_d` and `num_h/ih_/valid_h` computations out of the inner kw / ic loop \u2014 currently they're recomputed every kw iteration.",
+    "large_guidance": "- Rewrite as scatter-add ConvTranspose3d: one program per (n, ic-tile, id, ih, iw) loads the input voxel and the (OC, KD, KH, KW) weight slice, computes the outer product, and atomic-adds into a materialized (N, OC, OD, OH, OW) output tensor. Then run a separate fused (scale + maxpool + global-avg + clamp) reduction kernel \u2014 one program per (n, oc) reducing over OD*OH*OW with a 2\u00d72\u00d72 max in registers. This matches the recommended ConvTranspose scatter-add pattern in the skills and avoids the ~512\u00d7 redundant gather work the current kernel does.\n- Alternative: implement ConvTranspose3d as an im2col-style GEMM where the \"K\" axis is (IC*KD*KH*KW) with masked validity, one program per (n, OC-tile, output-spatial-tile), using tl.dot with BLOCK_M=16 (OC), BLOCK_N=64-128 (spatial), BLOCK_K=32. Fuse scale into the epilogue, write to a (N, OC, OD, OH, OW) buffer, then run a tiny pool+avg+clamp kernel.\n- Fusion boundary: do NOT try to fuse conv-transpose + maxpool + GAP into one kernel as the current code does \u2014 the data dependency (every conv output contributes to exactly one max-pool window, every max contributes to one GAP) means a 2-kernel split (conv-transpose with fused scale \u2192 fused max/avg/clamp reduction) is both simpler and dramatically faster because the conv output is materialized once and reused.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 14,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.46894253048307527
+    ]
+}

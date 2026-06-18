@@ -1,0 +1,29 @@
+{
+    "node_id": 21,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        4
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.46938106272022556,
+    "max_reward": 0.46938106272022556,
+    "avg_reward": 0.46938106272022556,
+    "score": [
+        1,
+        1,
+        0.6723937674418605
+    ],
+    "small_guidance": "- Bug in fused GN kernel: `y = tl.maximum(tl.minimum(y, min_value), min_value)` clamps to `[min_value, min_value]` (constant), ignoring `max_value`. Fix to `tl.minimum(tl.maximum(y, min_value), max_value)` \u2014 this is also a correctness concern though it passes loose tolerance because min(x, 0)+clamp(0,1) often collapses to 0.\n- The conv kernel dominates runtime. Add larger spatial tiles and BLOCK_OC=16 (since OC=16) with BLOCK_SP=1024/2048, num_warps=8, num_stages=2-3. Also try fully unrolling the IC=3 loop by removing the IC loop (since IC is tiny and known) and pre-loading all 27 weight taps per oc tile into registers once before the spatial sweep.\n- Combine (N, OC) into a single program axis and let one program handle the full OC=16 in one tile (BLOCK_OC=16) to maximize weight reuse; sweep BLOCK_SP in {256, 512, 1024}.",
+    "large_guidance": "- Rewrite conv3d as an implicit-GEMM with channels_last layout: pack (N, OD, OH, OW) into the GEMM-M axis, OC into GEMM-N (only 16, so one tile), and IC*KD*KH*KW=81 into GEMM-K (fits fully in one BLOCK_K). One program per output spatial tile computes the full OC=16 output in a single `tl.dot`, fusing bias add, GroupNorm (groups=8, channels_per_group=2 \u2014 tiny, easy in-kernel), min/clamp, and dropout-mask multiply in the epilogue. This eliminates the separate GN pass entirely.\n- Alternative: a two-stage design where conv writes to channels_last fp32, then a single persistent GN+min+clamp+dropout kernel does one program per (N, group) with the reduction kept in registers; current code re-loads x twice (stats + apply) which doubles memory traffic \u2014 make it single-pass via Welford or by caching x in shared memory.\n- Pre-compute GN stats fused into the conv epilogue: per program tile, accumulate partial sum/sum_sq across spatial tiles for each group, then a second small kernel finalizes mean/rstd and applies normalization; avoids the redundant load of the full conv output.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 22,
+    "global_best_node_id": 20,
+    "global_best_score": [
+        1,
+        1,
+        0.83563387283237
+    ]
+}

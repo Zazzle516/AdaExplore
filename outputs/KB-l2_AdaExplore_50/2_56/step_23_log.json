@@ -1,0 +1,29 @@
+{
+    "node_id": 23,
+    "parent_node_id": 20,
+    "context_node_ids": [
+        20
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The atomic_add into `out[offs_m]` from multiple N-tile programs is the correctness bug: `out` is initialized to zeros but multiple pid_n programs race-accumulate into the same row. That itself is fine for atomics, BUT the issue is likely that `out` is reused across calls or there's an accumulation issue \u2014 verify out is freshly zeroed (it is). More likely: each pid_n contributes its partial row_sum, summing across all N tiles gives the full row sum \u2014 this is correct. Recheck: the mask on sig uses `m_mask[:, None] & n_mask[None, :]`, good. The bug may be float32 atomic ordering is fine. Re-examine: `tl.atomic_add(out_ptr + offs_m, row_sum, mask=m_mask)` \u2014 offs_m is a BLOCK_M vector, this should atomic-add elementwise. Verify the weight transpose: `self.linear.weight` is `(N, K)=(hidden, input)`, `.t()` gives `(K, N)`, stride_wk=N, stride_wn=1 \u2014 correct.\n- The huge numerical error (3M) suggests the output is being multiplied across N tiles incorrectly \u2014 possibly the bias `b` is added once per N-tile but then row_sum across all N-tiles double-counts. Actually adding bias per-tile is correct since bias is indexed by offs_n. Suspect: the kernel is run twice (e.g., the autotuner re-launches during tuning, and `out` is the same tensor \u2014 but autotune launches use fresh inputs). However, in eval the model may be called multiple times and `out` is freshly allocated each call. The real bug may be that `out.view(M, 1)` is fp32 but `torch.sum` reference returns same shape \u2014 should be fine. Recommend switching to a two-stage approach: write partial sums to `partials[M, num_n_tiles]` then reduce, avoiding atomic_add entirely.\n- Increase configs to include BLOCK_N=256 since N=32768 is huge; the N-tile count dominates atomic contention.",
+    "large_guidance": "- Replace atomic-add accumulation with a two-stage design: stage-1 kernel computes per-(M-tile, N-tile) partial sums of sigmoid(x@wT+b), writing to a `partials[M, num_n_tiles]` buffer (no atomics, no races); stage-2 kernel reduces along the N-tile axis. This eliminates atomic contention on `out` and the suspected correctness issue.\n- Alternatively, since M=128 is tiny and N=K=32768, use one program per row (BLOCK_M=1 or 16) that streams the full K dimension and accumulates the sigmoid-sum in a register \u2014 persistent per-row kernel. Each row does a (1 x K) @ (K x N) matvec-like operation tiled over N, applying sigmoid and summing into a scalar accumulator before the next N tile. No atomics, no partials buffer, single kernel launch.\n- Given M=128 is small, the GEMM is fat-K and fat-N \u2014 a split-K or row-parallel persistent kernel is a better fit than a 2D GEMM grid. Use grid=(M,) with each program looping over N tiles, holding the row of x in shared/register reuse across N tiles via the K-loop, fusing sigmoid+sum in the epilogue of each N-tile.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 24,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

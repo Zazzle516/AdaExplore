@@ -1,0 +1,30 @@
+{
+    "node_id": 17,
+    "parent_node_id": 9,
+    "context_node_ids": [
+        1,
+        9
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4953700584393877,
+    "max_reward": 0.4953700584393877,
+    "avg_reward": 0.4953700584393877,
+    "score": [
+        1,
+        1,
+        0.8868029821249482
+    ],
+    "small_guidance": "- The GEMM (1024\u00d78192\u00d78192) dominates runtime; the LSE+Mish kernel is tiny. Focus tuning on replacing/augmenting `addmm` with a custom tiled Triton GEMM autotuned with configs like (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, num_warps=8, num_stages=3-4), (64,128,32), (128,64,32), with GROUP_M=8 swizzle.\n- Fuse bias add, `*scale2`, and clamp into the GEMM epilogue so the intermediate (1024,8192) tensor is never written; write the post-clamp values directly. This removes one full read/write of 32 MiB.\n- For the existing LSE kernel, try BLOCK_N=4096 with num_warps=8, num_stages=2, and unify the two passes by caching `v` in registers when N fits (here 8192 \u2014 split into 2 tiles, store in registers across both passes).",
+    "large_guidance": "- Redesign as a two-kernel pipeline: (1) a custom tiled Triton GEMM with `tl.dot` that fuses bias + scale*2 + clamp in the epilogue and writes the (M,N) clamped tensor; (2) the existing LSE+Mish reduction kernel. The current `torch.addmm` is the bottleneck (~2.7 ms baseline is essentially GEMM), so beating baseline requires replacing it.\n- Alternatively, fuse the entire pipeline into a single split-K-free GEMM-reduce kernel: one program per output row computes its full row of (x @ W^T + b) using `tl.dot` over K tiles in registers/SRAM, applies scale+clamp, then performs online LSE in the same kernel \u2014 eliminating the (M,N) materialization entirely. This is high-payoff since M=1024, N=8192 and reduction over N is natural per row.\n- Use autotune on the GEMM with multiple (BM,BN,BK) configs; ensure W^T is precomputed/stored contiguously in `__init__` to make the inner load coalesced.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 18,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.8922229236424055
+    ]
+}

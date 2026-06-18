@@ -1,0 +1,29 @@
+{
+    "node_id": 27,
+    "parent_node_id": 26,
+    "context_node_ids": [
+        24
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM (1024x8192x8192 = 137 GFLOPs) dominates runtime; tuning the GN+min kernel won't move the needle much. If staying with cuBLAS, ensure inputs are fp16/bf16 or at least keep TF32 \u2014 but a custom Triton GEMM with fused bias is likely needed to beat 1.79ms.\n- For the GN+min kernel, try `num_warps=16` since N=8192 is wide; also consider eliminating the `tl.reshape` and instead computing per-group reductions with a 2D program grid `(M, NUM_GROUPS)` writing partial mins, then a second pass for the row-min.\n- Drop the `out.view(1, N, M, 1)` transpose layout \u2014 write directly into `[1, N, M, 1]` contiguous with strides matching that shape so the bias-add kernel uses the natural layout instead of an N-major scratch.",
+    "large_guidance": "- Replace `torch.addmm` with a custom tiled Triton GEMM (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8, num_warps=8, num_stages=3-4) that fuses the linear bias add into the epilogue. This is where >90% of the 1.79ms lives.\n- Consider fusing GN + min directly into the GEMM epilogue per output row: after computing a full `[BLOCK_M, N]` row tile, do the per-row group reduction and min within the same kernel \u2014 but since N=8192 doesn't fit in one tile, instead use a two-stage pipeline where the GEMM writes Y, then a single fused GN+min+bias kernel produces the final `[1,N,M,1]` output.\n- The final bias add is broadcasting a `[M]` min vector against `[N]` bias to produce `[N, M]` \u2014 fuse this into the GN+min kernel's tail by storing min directly, then have a single elementwise kernel produce the broadcast `out[n,m] = min[m] + bias[n]` with coalesced writes along M (innermost), tuning BLOCK_M=1024 to vectorize.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 28,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

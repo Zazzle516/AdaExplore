@@ -1,0 +1,29 @@
+{
+    "node_id": 34,
+    "parent_node_id": 29,
+    "context_node_ids": [
+        29
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.452539264229006,
+    "max_reward": 0.452539264229006,
+    "avg_reward": 0.452539264229006,
+    "score": [
+        1,
+        1,
+        0.5334489298892989
+    ],
+    "small_guidance": "- The conv3d (128\u00d716\u00d714\u00d762\u00d762 output \u2248 690M elements with 27 FMAs/element) dominates runtime; tuning the GN kernel won't move fast_p meaningfully. If staying small, at least drop BLOCK_S to 1024 with num_warps=4 (S=14\u00d762\u00d762=53816 per group, so 4096 wastes registers) and remove the redundant `tl.minimum(norm, min_value)` before the `tl.maximum(norm, min_value)` (the min is then clamped right back up).\n- Add a `triton.autotune` over `BLOCK_S \u2208 {512, 1024, 2048}`, `num_warps \u2208 {4, 8}`, `num_stages \u2208 {2, 3}` keyed on `(S, CPG)`.\n- Fold the conv bias add into the GN pass-1 load so the conv output can be written without bias (saves one pass over 690M elements).",
+    "large_guidance": "- Replace `nn.Conv3d` with a custom Triton im2col-GEMM kernel: grid over `(N, OC_tile, D*H*W_tile)`, K-loop over `IC*kT*kH*kW=81`, compute input offsets implicitly. With OC=16 (small), use BLOCK_N (spatial) = 128, BLOCK_M (OC) = 16 (full), BLOCK_K = 32, num_warps=4. This is the headroom: torch's cudnn conv on this tiny OC=16 shape is not well-tuned.\n- Fuse GroupNorm directly into the conv epilogue is hard (needs cross-tile reduction), but you can fuse the conv-bias + write into a `channels_last` (NDHWC) layout so the subsequent GN reads contiguously across channels-within-group; this also lets GN use one program per `(N, g)` with vectorized loads across CPG=2 channels at once.\n- Keep min/clamp/dropout fused into the GN epilogue as today; min(x, 0)+clamp(0,1) simplifies to `clamp(x, 0, 0)` only when min_value==max_lower \u2014 here min_value=0 so the result is `min(0, x)` clamped to [0,1] = `min(max(x,0), 0)` = effectively `clamp(x, 0, 0)`... actually min_value=0, max_value=1, so output = clamp(min(x,0), 0, 1) = clamp(min(x,0), 0, 1); since min(x,0)\u22640, clamping to \u22650 yields 0 everywhere. Verify this isn't an algebraic shortcut opportunity the baseline also takes \u2014 the reference does compute it, so a fused kernel that still reads x and writes 0 (after dropout mask) is legal and very cheap. The expensive work is conv+GN; focus the rewrite there.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 35,
+    "global_best_node_id": 20,
+    "global_best_score": [
+        1,
+        1,
+        0.83563387283237
+    ]
+}

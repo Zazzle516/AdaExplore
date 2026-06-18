@@ -1,0 +1,29 @@
+{
+    "node_id": 28,
+    "parent_node_id": 27,
+    "context_node_ids": [
+        27
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.44465660978203086,
+    "max_reward": 0.44465660978203086,
+    "avg_reward": 0.44465660978203086,
+    "score": [
+        1,
+        1,
+        0.46841703070175433
+    ],
+    "small_guidance": "- The softmax/sigmoid kernel is fine but minor; with C=64 a single warp is enough \u2014 try `BLOCK_C=64, num_warps=1, num_stages=1` and consider processing multiple positions per program (e.g. 4 rows \u00d7 64 channels) to amortize launch overhead.\n- Ensure the ConvTranspose3d actually runs in channels_last_3d (cuDNN sometimes falls back); verify via a `.is_contiguous(memory_format=...)` check, and try casting weights/inputs explicitly each forward.\n- Add `triton.autotune` over `{(BLOCK_C=64, warps=1), (BLOCK_C=64, warps=2), (BLOCK_C=128, warps=2)}` keyed on `C`.",
+    "large_guidance": "- The torch ConvTranspose3d dominates runtime (fast_p\u22480.47 even with the tail fused). Replace it with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)` computing the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and `tl.atomic_add`-ing into the output grid at `(n, oc, d*stride-pad+kd, ...)`, handling output_padding in index math. Fuse bias add into the same kernel epilogue (or as a small init pass before scatter).\n- Alternatively, implement ConvTranspose3d as a gather-style GEMM: for each output voxel, gather the contributing input values via the strided/dilated index relation and run a tiled matmul against the kernel \u2014 avoids atomics, one program per `(N, OC tile, output-spatial tile)`, tile sizes like `BM=32,BN=32,BK=16, num_warps=4, num_stages=2` to fit SMEM.\n- Fuse softmax+sigmoid into the conv-transpose epilogue only if the kernel writes complete channel rows per program (channels_last output layout with one program covering all OC for a spatial tile); otherwise keep softmax/sigmoid as a second pass on channels_last output.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 29,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.5287083316831683
+    ]
+}

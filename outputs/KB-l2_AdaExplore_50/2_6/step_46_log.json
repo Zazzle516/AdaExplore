@@ -1,0 +1,29 @@
+{
+    "node_id": 46,
+    "parent_node_id": 45,
+    "context_node_ids": [
+        45
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.45280400354939526,
+    "max_reward": 0.45280400354939526,
+    "avg_reward": 0.45280400354939526,
+    "score": [
+        1,
+        1,
+        0.5356330292825106
+    ],
+    "small_guidance": "- The fused_conv_softmax_pool kernel launches N*PD*PH*PW = 128*3*7*7 = 18816 programs but each does heavy work over WIN3=64 positions \u00d7 OC=16 \u2014 try reducing WIN (pool factor seems WIN=pool_kernel_size^2=4, WIN3=64) by splitting the two pools: do conv+softmax+pool1 (WIN=2, WIN3=8) in one kernel, then a separate small pool2 kernel; this drastically shrinks the per-program acc tile and matmul.\n- Add autotune configs varying num_warps\u2208{2,4,8} and num_stages\u2208{2,3,4} keyed on (N,OC,PD,PH,PW), and consider tiling multiple (pd,ph,pw) per program to reuse weights across spatial neighbors.\n- Ensure the weight tensor is preloaded/reshaped at init into [OC, IC*KD*KH*KW] contiguous so the inner tl.dot uses a single coalesced load instead of strided gathers per (kd,kh,kw).",
+    "large_guidance": "- Restructure as two separate fused kernels rather than one: (1) a conv+softmax+pool1 kernel using im2col-style GEMM where one program computes a (OC, output-spatial tile) tile of conv output, applies softmax across OC in registers, and reduces over the 2\u00d72\u00d72 pool window \u2014 this exposes a clean GEMM with BLOCK_M=OC (16, padded to 16), BLOCK_N=spatial tile, BLOCK_K=IC*KD*KH*KW=81; (2) a tiny pool2 kernel for the second 2\u00d72\u00d72 max pool. This avoids the awkward WIN3=64 acc tile and produces a more standard GEMM shape.\n- Alternatively, merge both pools into one effective 4\u00d74\u00d74 stride-4 max pool over the softmax output, but compute conv only once per output position and stream it through softmax+max \u2014 i.e. one program per (n, OC tile, final pooled spatial element) iterates the 4\u00d74\u00d74=64 conv outputs lazily, doing softmax (which needs all OC at each spatial point) and tracking running max per channel. Use channels_last layout so the OC axis is contiguous for softmax.\n- For the conv portion, use im2col-implicit GEMM: program tiles (OC=16, S_tile=64 output spatial points), reduction K=IC*KD*KH*KW=81, with BLOCK_M=16, BLOCK_N=64, BLOCK_K=32; this matches RTX-4090 tensor-core friendly shapes much better than the current per-(n,pd,ph,pw) layout that wastes parallelism.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 47,
+    "global_best_node_id": 22,
+    "global_best_score": [
+        1,
+        1,
+        2.689860190720031
+    ]
+}

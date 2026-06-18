@@ -1,0 +1,30 @@
+{
+    "node_id": 7,
+    "parent_node_id": 5,
+    "context_node_ids": [
+        4,
+        5
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (max_diff ~3.5e-3, avg ~5e-5) suggests a subtle numerical issue rather than a structural bug. Check that `gamma` and `beta` in the multi-group kernel are loaded with the correct per-channel layout \u2014 `chan_off` shape is `[GROUPS_PER_BLOCK, CH_PER_G]` and these are per-channel (length C) tensors, so the indexing should be correct, but verify the `mw` (multiply_weight) load uses the same channel offsets and not a row-replicated load.\n- The variance computation uses `xc = x - mean[:, None]` then `sum(xc*xc)/CH_PER_G`. This is fine but for better numerical stability and parity with PyTorch's GroupNorm, compute `var = sum(x*x)/N - mean*mean` OR use the exact same two-pass form PyTorch uses. Try the two-pass form explicitly with float32 accumulation and verify against `F.group_norm`.\n- Add a correctness gate: temporarily fall back to `F.group_norm` then fused swish/mul/swish to isolate whether the bug is in normalization or in the fused epilogue.",
+    "large_guidance": "- The GEMM (1024\u00d78192\u00d78192) dominates runtime; the fused norm+swish is cheap by comparison. Focus the redesign on the GEMM: try a split-K or stream-K variant, or use `tl.dot` with `tf32` allowed (`allow_tf32=True`) and `out_dtype=tl.float32` to match reference precision. Also consider larger tiles (BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, stages=4) tailored to K=8192.\n- For the fused norm kernel: with C=8192 and num_groups=256, CH_PER_G=32. A program-per-(row, group) gives 1024\u00d7256=262K programs which is fine, but each only reduces 32 elements \u2014 heavy launch overhead. Pack many groups per program (current path does this with GROUPS_PER_BLOCK=16 \u2192 BLOCK_C=512). Consider one program per row that reduces all 256 groups in a single 2D tile [256,32], doing per-row work in registers and eliminating the (row,group) grid dimension.\n- Verify that `multiply_weight` is applied as a per-channel vector \u2014 the reference broadcasts `(out_features,)` across the batch dim. Ensure the load uses `chan_off` indices into a length-C buffer (not row-strided). A small indexing bug here would produce exactly the kind of small-but-nonzero diff observed.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 8,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

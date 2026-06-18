@@ -1,0 +1,30 @@
+{
+    "node_id": 28,
+    "parent_node_id": 22,
+    "context_node_ids": [
+        2,
+        22
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0990571643907563
+    ],
+    "small_guidance": "- The fused kernel recomputes the 2\u00d72\u00d72 avg-pool gather 27\u00d7 per output voxel (once per kernel tap) and re-reads the same pooled input across taps; pre-pool the input into a separate buffer with a tiny avg_pool3d kernel (or F.avg_pool3d), then have the conv-transpose kernel gather a single pooled value per (ic, id_q, ih_q, iw_q). This removes ~7\u00d7 redundant global loads and is the single biggest tuning win available without redesign.\n- After pre-pooling, sweep autotune configs over `BLOCK_OC \u2208 {16,32,64}`, `BLOCK_SP \u2208 {32,64,128}`, `num_warps \u2208 {4,8}`, `num_stages \u2208 {2,3}`; current 32/64/4w/2s is almost certainly suboptimal for OC=64, Ho*Wo=4096.\n- For softmax, S=Do*Ho*Wo = 32*64*64 = 131072 is far larger than BLOCK=4096, so the two-pass loop dominates; raise BLOCK to 8192 with num_warps=16, or split each row across multiple programs and do a tree-reduce for max/sum to expose more parallelism (currently only B*OC=2048 programs, each serial over 131k elements).",
+    "large_guidance": "- Restructure as three kernels: (1) avg_pool3d \u2192 pooled tensor (B,IC,Dp,Hp,Wp), (2) conv_transpose3d via **scatter-add** of input\u00d7kernel outer products into the output grid (one program per (B, IC tile, Dp, Hp_tile*Wp_tile), atomic-add or per-program private tile), fused with bias+clamp in an epilogue pass, (3) split-row softmax+scale with a two-stage reduction (per-tile max/sum then global combine). The current gather formulation pays the divisibility-check cost on every output voxel and re-fetches pooled values OC times; scatter-add naturally reuses each pooled input value K\u00b3\u00b7OC times in registers.\n- Alternative: implement conv_transpose3d as an im2col-style GEMM where the \"im2col\" is implicit \u2014 one program per (B, OC_tile, output-spatial tile), K-loop is IC*K\u00b3, with the pooled input gathered via the transposed-conv index map. This maps cleanly onto `tl.dot` and gets tensor-core throughput, which the current scalar outer-product accumulation does not.\n- Fuse clamp into the conv-transpose epilogue (already done) and consider fusing the per-channel scale into the softmax normalization (multiply `inv` by `scale` once, already done) \u2014 but also fuse the final `view` away by writing the softmax kernel to index directly into the 5D layout, removing the contiguous reshape pressure.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 29,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.43060465981735163
+    ]
+}

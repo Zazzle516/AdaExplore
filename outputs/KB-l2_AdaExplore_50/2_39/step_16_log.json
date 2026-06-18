@@ -1,0 +1,29 @@
+{
+    "node_id": 16,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        13
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4816511884805502,
+    "max_reward": 0.4816511884805502,
+    "avg_reward": 0.4816511884805502,
+    "score": [
+        1,
+        1,
+        0.773622304964539
+    ],
+    "small_guidance": "- The addmm (16384x4096 @ 4096x4096) dominates runtime; tuning the scale_bn kernels will not close the gap to 10.9ms baseline. If staying small, at least fuse the bias+scale into the apply kernel and drop the separate stats pass by using a single-pass Welford or sum/sumsq kernel with larger BLOCK_N (128 or 256) and num_warps=8 to better saturate memory bandwidth.\n- For the apply kernel try BLOCK_M=128, BLOCK_N=128, num_warps=4, num_stages=3 \u2014 current 64x256 with 8 warps wastes registers on a pure elementwise pass; also drop GROUP_M swizzle (not useful for elementwise).\n- Avoid the `torch.addmm` followed by separate Triton passes \u2014 fuse the post-GEMM scale and BN-apply into a GEMM epilogue Triton kernel so y never has to round-trip through HBM twice.",
+    "large_guidance": "- Replace `torch.addmm` with a custom Triton GEMM (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8, num_warps=8, num_stages=3-4) that fuses linear bias + per-column scale into the epilogue, and writes y to global memory. The GEMM is the heavy op (~550 GFLOPs) and is where the bulk of the time goes; the BN stats/apply are cheap memory-bound passes.\n- Use a two-launch design: (1) custom fused GEMM+bias+scale that also accumulates per-column sum and sumsq into atomically-added partial buffers (one partial per program along M, then a small reduction), so stats are computed during the GEMM write rather than re-reading y. (2) BN-apply kernel reads y once and writes out.\n- Alternatively, since training mode requires reading y twice anyway (once for stats, once for apply), persist y in L2 by tiling so apply tiles reuse the same rows the stats kernel just touched, or fuse stats reduction into the GEMM epilogue via per-block partial sums + a small follow-up reduction kernel over N \u2014 eliminating one full HBM pass over the M*N=256M-element y tensor.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 17,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.7791481785714286
+    ]
+}

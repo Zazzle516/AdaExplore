@@ -1,0 +1,29 @@
+{
+    "node_id": 25,
+    "parent_node_id": 18,
+    "context_node_ids": [
+        8
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure is the split-K bias path: when `SPLIT_K>1`, only `pid_k==0` adds the bias via `atomic_add`, but the other pid_k tiles atomic-add `acc` (without bias) into the same cells \u2014 this is fine in principle, but the output is initialized to zero only for split_k>1. The real bug is likely that `tl.atomic_add` accumulates with the bias-added tile racing other tiles in float32 (non-deterministic rounding) and may exceed tolerance only occasionally. Switch to `split_k=1` (M=128 is tiny, K=16384 fits in a single-program K-loop with deep `num_stages`), eliminating atomics entirely.\n- With split_k=1, add a `GROUP_M=8` swizzle and add larger-K configs (`BLOCK_K=64/128`, `num_stages=4`) since K=16384 dominates; M=128 means only 1-2 row tiles, so prefer `BLOCK_M=64, BLOCK_N=128/256, num_warps=8`.\n- Softmax row length is 16384; use a two-pass kernel with `BLOCK_N=4096` and `num_warps=16` (or 8) to reduce loop iterations, and fuse dropout scaling (`1/(1-p)` mask) into the softmax input load if dropout is kept enabled \u2014 but at eval `dropout_p` is identity, so confirm `.eval()` behavior.",
+    "large_guidance": "- The GEMM is the dominant cost (128\u00d716384\u00d716384 \u2248 68 GFLOPs). Drop split-K entirely \u2014 M=128 gives only 1 row tile, so a standard non-split tiled GEMM with `BLOCK_M=64/128, BLOCK_N=128/256, BLOCK_K=64`, `num_stages=4`, `num_warps=8`, plus L2 swizzle, will beat split-K because there are already enough N tiles (128) to fill the SMs without splitting K.\n- Fuse the bias add cleanly into the epilogue (single-store path, no atomics), and consider fusing the entire softmax as a second kernel that reads the GEMM output once; since dropout at p=0.2 is stochastic, generate the dropout mask inside the softmax kernel via `tl.rand` keyed by a seed, so the GEMM output is read exactly once and softmax+dropout fuse into one pass.\n- For softmax over N=16384 per row of only 128 rows, use one program per row with a persistent two-pass online softmax (max+sum in one pass via running renormalization), `BLOCK_N=4096`, `num_warps=16`, to minimize HBM traffic.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 26,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

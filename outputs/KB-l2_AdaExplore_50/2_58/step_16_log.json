@@ -1,0 +1,29 @@
+{
+    "node_id": 16,
+    "parent_node_id": 14,
+    "context_node_ids": [
+        14
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4235251819980499,
+    "max_reward": 0.4235251819980499,
+    "avg_reward": 0.4235251819980499,
+    "score": [
+        1,
+        1,
+        0.29408275148391133
+    ],
+    "small_guidance": "- The fused_post kernel currently uses BLOCK_S=64 with BLOCK_C=16 (next_pow2 of 16) and num_warps=2; sweep BLOCK_S in {128,256,512} with num_warps in {4,8} to better saturate bandwidth since this kernel is purely memory-bound over a [N,C,D,H,W]=[128,16,33,65,65] tensor (~233M elements reduced to ~14M).\n- The dominant cost is `F.conv_transpose3d` (cuDNN). Tuning fused_post alone cannot move fast_p much beyond ~0.3; the conv_transpose itself must be replaced.\n- If staying with F.conv_transpose3d, at least try `torch.backends.cudnn.benchmark=True` and ensure channels_last_3d memory format to let cuDNN pick a faster algo.",
+    "large_guidance": "- Replace `F.conv_transpose3d` with a custom Triton kernel: implement as a gather-style direct conv where each program computes a tile of `(OC, output-spatial)` for a given N by looping over `(IC, KD, KH, KW)` and gathering the corresponding input voxel when `(od+PD-kd) % SD == 0` (current scatter-from-output formulation is correct; the existing kernel is just under-tiled \u2014 one program per single (n,od,oh,ow) with no OC tiling beyond BLOCK_OC=16 leaves massive parallelism on the table per-thread and poor reuse).\n- Tile along output spatial: one program per `(n, oc_tile, spatial_tile)` with BLOCK_OC=16, BLOCK_S=32-64; load weight `[IC, BLOCK_OC, KD*KH*KW]` once per program and reuse across the spatial tile (im2col-style GEMM on K=IC, M=BLOCK_S output positions, N=BLOCK_OC channels). This converts the work into a small-K GEMM with good register reuse.\n- Fuse the LogSumExp+HardSwish+bias+clamp epilogue directly into the conv_transpose kernel: since OC=16 fits in one tile, each program can compute the full OC vector per output position, do the LSE reduction in-register, then write a single scalar per output voxel \u2014 eliminating the entire 128\u00d716\u00d733\u00d765\u00d765 intermediate tensor (currently ~900MB of read+write traffic in fused_post).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 17,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.3267919485553208
+    ]
+}

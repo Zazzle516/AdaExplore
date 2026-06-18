@@ -1,0 +1,30 @@
+{
+    "node_id": 33,
+    "parent_node_id": 31,
+    "context_node_ids": [
+        30,
+        31
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (avg diff ~2.4e-4, max ~6e-3) suggests the GroupNorm reduction is using too few elements per group or has a precision issue. Check that `CH_PER_GROUP = C // num_groups = 8192/512 = 16` \u2014 with only 16 elements per group, the variance computed as `E[x^2] - E[x]^2` is numerically unstable. Switch to a two-pass algorithm: first compute mean via `tl.sum`, then compute `sum((x-mean)^2)` for variance.\n- Verify the gamma/beta indexing: when `GROUPS_PER_BLOCK=32` and `g_start*CH_PER_GROUP` is the base, ensure `gamma_ptr + g_base + offs` correctly indexes channels \u2014 the layout of `offs = g_off[:,None]*CH_PER_GROUP + c_off[None,:]` is consistent with the input load, so that is fine, but double-check no out-of-bounds read when `num_groups=512` and `GROUPS_PER_BLOCK=32` (num_g_blocks=16, OK).\n- Add `num_stages=2` to the GN kernel autotune, and consider `num_warps=4` since each program handles only 32*16=512 elements.",
+    "large_guidance": "- Rewrite the GN+LeakyReLU+double kernel using a numerically stable two-pass reduction (mean first, then variance from centered values) to eliminate the catastrophic cancellation in `E[x^2] - E[x]^2` that is causing the ~2.4e-4 average drift.\n- Consider fusing the GEMM epilogue with GroupNorm: since each row's groups are independent and `BLOCK_N` can be sized to `CH_PER_GROUP * k` for some k, a persistent kernel that produces a row tile of the GEMM and immediately normalizes within the row could halve memory traffic. Alternatively, keep them separate but ensure the GN kernel is launched with one program per `(N, group_block)` and uses `tl.rsqrt` instead of `1.0/tl.sqrt`.\n- For the 1024x8192 GN tensor, a row-resident persistent kernel where one program handles all 512 groups of one row in registers/SMEM could outperform the current per-group-block layout, since `C=8192` floats = 32KB per row fits comfortably.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 34,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

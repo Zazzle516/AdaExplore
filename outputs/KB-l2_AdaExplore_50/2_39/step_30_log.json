@@ -1,0 +1,29 @@
+{
+    "node_id": 30,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness issue is likely in the BN variance computation: `bn_var_kernel` reads x with `mask=mask, other=0.0` then computes `d = x - mean`, but masked-out lanes get `(0 - mean)^2` which is then suppressed by `tl.where`. That's actually fine \u2014 but check that `M` divides cleanly; the real bug is more likely that PyTorch's `BatchNorm1d` in training mode normalizes with biased var (population) for the output but stores unbiased var in running stats \u2014 your code does this correctly. Inspect numerical precision: input `x` is fp32 from `torch.rand` but `self.gemm.weight` is created on CPU and `.contiguous()` doesn't move to CUDA \u2014 ensure W, b, scale, and BN params are all on CUDA before kernel launch.\n- Increase `BLOCK_M` in the BN reduction kernels to 4096 with `num_warps=8` so the M=16384 reduction completes in ~4 iterations per program; also fuse `bn_mean` + `bn_var` into a single Welford-style pass over x to halve global-memory traffic.\n- Add larger GEMM autotune configs (e.g. `BLOCK_M=128,BLOCK_N=256,BLOCK_K=64,num_warps=8,num_stages=3`) since M=N=K=4096 is large and square; also try `num_stages=4` to better overlap K-loop loads.",
+    "large_guidance": "- Fuse the BN epilogue with the GEMM by using a two-kernel split-K / persistent strategy: kernel 1 computes `y = (x@W^T + b) * scale` and simultaneously accumulates per-column sum and sum-of-squares into atomic-add buffers; kernel 2 finalizes mean/var and applies the affine in a single elementwise pass, eliminating one full read of the M\u00d7N output tensor.\n- Alternatively, since M=16384 is large, do a two-stage column reduction: GEMM kernel writes y AND per-tile column partial sums (sum, sum_sq) to a `(num_pid_m, N)` workspace. A small reduction kernel collapses `num_pid_m` rows to per-column mean/var. Then a fused BN-apply kernel reads y once and writes the normalized output. This avoids atomics and keeps the GEMM tile-local.\n- Ensure the model moves all parameters to CUDA in `__init__` (`.cuda()` on the module) rather than relying on `.contiguous()` in forward \u2014 the current code may be running with CPU weights producing wrong outputs that masquerade as a numerical mismatch.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 31,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.7791481785714286
+    ]
+}

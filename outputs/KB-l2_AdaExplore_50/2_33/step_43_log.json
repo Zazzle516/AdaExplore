@@ -1,0 +1,33 @@
+{
+    "node_id": 43,
+    "parent_node_id": 41,
+    "context_node_ids": [
+        3,
+        4,
+        6,
+        8,
+        41
+    ],
+    "depth": 6,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5672467573451443,
+    "max_reward": 0.5672467573451443,
+    "avg_reward": 0.5672467573451443,
+    "score": [
+        1,
+        1,
+        1.4797857480974401
+    ],
+    "small_guidance": "- The GEMM (1024\u00d78192\u00d78192) dominates runtime; replace `torch.addmm` with a custom tiled Triton GEMM that fuses the scale multiply in the epilogue and writes the pre-BN activations. Sweep BLOCK_M=64/128, BLOCK_N=128/256, BLOCK_K=32/64, num_warps=4/8, num_stages=3-4, GROUP_M=8.\n- Merge `bn_stats_kernel` into the GEMM epilogue: each N-column tile already computes the full M reduction's worth of outputs across program rows \u2014 use `atomic_add` on per-column `sum_y`/`sum_y2` accumulators (or a 2D split-K stats buffer + small reduce kernel) so stats come \"free\" from the GEMM pass.\n- For the apply kernel, try BLOCK_M=128/BLOCK_N=256 with num_warps=8, num_stages=3, and add a (2,1) row-group swizzle to improve L2 reuse on the (1024, 8192) output.",
+    "large_guidance": "- Rewrite as a single fused \"GEMM + scale + BN-apply\" pipeline: one tiled GEMM kernel (BLOCK_M\u00d7BLOCK_N over K) where the epilogue multiplies by `scale[n] * bn_weight[n] * inv_std[n]` and adds `bn_bias[n] - mean[n]*bn_weight[n]*inv_std[n]`. In eval mode use `bn.running_mean/var` directly so the whole forward is one launch; in train mode precompute stats first (or use a two-pass: stats-from-GEMM kernel with atomics, then a fused GEMM+apply pass).\n- For training, fuse stats collection into the GEMM itself: after the K-loop, each tile holds y = (x @ w + b) * scale for its (M, N) slab \u2014 reduce along the M axis within the tile, then atomic-add the partial sum and sum-of-squares into per-column buffers. Finalize mean/var with a tiny N-sized kernel. This eliminates the separate stats pass entirely (currently re-reads the full M\u00d7N output).\n- Consider keeping the GEMM output only in registers/SMEM and never writing it to HBM \u2014 fuse stats + apply by recomputing the GEMM (cheap relative to the HBM round-trip saved), or use a split-K layout where each program handles a full column tile so apply can happen in-kernel without re-materialization.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 44,
+    "global_best_node_id": 43,
+    "global_best_score": [
+        1,
+        1,
+        1.4797857480974401
+    ]
+}

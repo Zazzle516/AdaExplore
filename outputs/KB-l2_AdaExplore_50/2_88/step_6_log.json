@@ -1,0 +1,29 @@
+{
+    "node_id": 6,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure likely comes from the matmul kernel's masking: `tl.load(a_ptrs, mask=k_mask, ...)` uses `k_mask = offs_k[None, :] < K - k*BLOCK_K` which has shape (1, BLOCK_K) but `a` is (BLOCK_M, BLOCK_K) \u2014 it works via broadcast but offs_am uses `% M` so out-of-bound M rows wrap and read valid data (fine), but the avg_difference 5e-5 is small. The real issue: max_diff ~0.004 suggests a numerical precision issue, possibly TF32. Set `allow_tf32=False` by using `tl.dot(a, b, allow_tf32=False)` or accept the tolerance \u2014 actually 5e-2 tol should pass. Check if `out` from triton_linear is being compared correctly; ensure bias is loaded as fp32.\n- In `fused_gn_swish_mul_swish_kernel`, make sure mean/var use fp32 accumulation (already do). The numerical mismatch likely is TF32 in tl.dot \u2014 pass `allow_tf32=False` to match torch's default fp32 linear.\n- Add more autotune configs for M=1024, N=8192, K=8192 (large square), favor BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3.",
+    "large_guidance": "- Keep the two-kernel structure (GEMM+bias, then fused GN+Swish+Mul+Swish) \u2014 it's the right fusion boundary. The GEMM dominates (1024\u00d78192\u00d78192). Focus on a high-quality tiled GEMM with `tl.dot(..., allow_tf32=False)` to match torch's fp32 reference, or alternatively allow TF32 (torch linear uses TF32 by default on Ampere/Ada when allowed, but the 5e-2 tol should accept it \u2014 investigate why correctness fails despite 5e-5 avg diff: likely a shape/stride bug producing wrong output on some trials).\n- Consider pre-transposing the weight once in `__init__` to (K, N) contiguous so the inner B load is fully coalesced without strided access; store as a buffer.\n- For GroupNorm with C=8192, G=256, CH_PER_G=32 \u2014 very small group. Use one program per (N, group) with BLOCK=32, num_warps=1 or 2 (current num_warps=4 wastes lanes). Alternatively, pack multiple groups per program to amortize launch overhead (e.g. 8 groups per program \u2192 256 rows \u00d7 32 programs).",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 7,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

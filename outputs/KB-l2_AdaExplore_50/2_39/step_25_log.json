@@ -1,0 +1,29 @@
+{
+    "node_id": 25,
+    "parent_node_id": 21,
+    "context_node_ids": [
+        21
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.48033968637423186,
+    "max_reward": 0.48033968637423186,
+    "avg_reward": 0.48033968637423186,
+    "score": [
+        1,
+        1,
+        0.7628024125874125
+    ],
+    "small_guidance": "- The GEMM (16384\u00d74096\u00d74096) dominates; `torch.addmm` is already cuBLAS but a fused Triton GEMM that absorbs the scale+BN affine into the epilogue would remove the entire post-GEMM read/modify/write pass. Short of that, increase `BLOCK_N_AP` to 512 or use `BLOCK_M_AP=128, BLOCK_N_AP=128, num_warps=8` for the apply kernel \u2014 the current 64\u00d7256 tile underuses L2 on a 16384\u00d74096 output.\n- In the stats kernel, raise `BLOCK_N_STAT` to 512 and `M_CHUNKS` to 16 (better SM occupancy on 128 SMs) and drop `num_stages` to 2 \u2014 the atomic_add contention is low because `pid_n` partitions N, so more chunks per N tile is fine.\n- During eval the stats pass is skipped; for training, consider a single-pass Welford on the *post-scale* values to avoid the separate `mean = sum/M; var = sumsq/M - mean\u00b2` Python step, but the bigger win is fusing stats collection into the GEMM epilogue.",
+    "large_guidance": "- Replace `torch.addmm` with a custom tiled Triton GEMM (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8, num_warps=8, num_stages=3) whose epilogue multiplies by `scale * gamma * invstd` and adds `beta - mean * gamma * invstd`. At eval this collapses GEMM+scale+BN into one kernel and eliminates two full 16384\u00d74096 fp32 passes (~1 GB of traffic).\n- For training, do a two-launch design: (1) GEMM with epilogue that writes y and atomically accumulates per-column sum and sumsq into small N-sized buffers (one reduction per BLOCK_M tile, so atomic pressure is bounded by num_m_tiles, not M); (2) a tiny kernel computes mean/invstd/a/b; (3) a fused apply kernel rewrites y in place. This removes the standalone stats pass over y entirely.\n- Alternative: a split-K GEMM where the K-reduction programs also produce partial sum/sumsq of the output tile before the final accumulator write \u2014 keeps the accumulator in registers and avoids re-reading y from HBM for statistics.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 26,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.7791481785714286
+    ]
+}

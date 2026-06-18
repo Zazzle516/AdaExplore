@@ -1,0 +1,29 @@
+{
+    "node_id": 4,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.47512169979897256,
+    "max_reward": 0.47512169979897256,
+    "avg_reward": 0.47512169979897256,
+    "score": [
+        1,
+        1,
+        0.7197540233415233
+    ],
+    "small_guidance": "- The current kernel computes `tl.dot(w, x)` where `w` is `[BLOCK_M, BLOCK_K]` and `x` is `[BLOCK_K, BLOCK_N]` \u2014 good \u2014 but spatial tile `BLOCK_N` decomposed via `% OW, // OW` causes non-contiguous input gathers across the N dim. Tile only along OW (contiguous axis): make `pid_n` iterate over `(od, oh, ow_tile)` so `ow` is a contiguous range and `id/ih` are scalars per program, collapsing the input gather to a strided 1-D load that coalesces.\n- Add larger autotune configs biased to this workload (OC=64 is small, OD*OH*OW=30*62*62\u2248115k is huge): try `BLOCK_M=64, BLOCK_N=128/256, BLOCK_K=64/96` with `num_warps=8`, `num_stages=3-4`. Drop the `BLOCK_M=128` config since OC=64.\n- Hoist `ic_k*stride_xc + kd_k*stride_xd + kh_k*stride_xh + kw_k*stride_xw` (the K-side offset, independent of spatial tile) into a single `[BLOCK_K]` vector and add to a `[BLOCK_N]` `ow` offset vector \u2014 fewer multiplies in the inner loop.",
+    "large_guidance": "- Rewrite as an explicit im2col-tiled GEMM where the spatial tile is purely along OW (contiguous). One program = `(batch, oc_tile, od, oh, ow_tile)`. This makes input loads a contiguous vector per `(ic, kd, kh, kw)`, dramatically improving L2/L1 reuse and coalescing vs. the current generic 3D decomposition.\n- Switch to a channels-last (NDHWC) layout for both input and output, with weight laid out as `[OC, KD, KH, KW, IC]`. Then the GEMM-K inner loop walks IC contiguously per spatial point, enabling vector loads of size `BLOCK_K=IC` (32 here) with one load per `(kd,kh,kw)` \u2014 far fewer address computations and perfect coalescing. Convert once at module init for the weight; convert input/output around the kernel (or fuse the layout transform).\n- Fuse mish+tanh in the epilogue (already done) using the stable form `mish(x) = x * tanh(softplus(x))` with `softplus = tl.where(x>20, x, log1p(exp(x)))` to avoid overflow, then `tanh` via `2*sigmoid(2*y)-1` (current). Keep accumulator in fp32. Consider a persistent-CTA scheme over `(oc_tile, od, oh)` reusing the loaded weight tile across multiple `ow_tile`s within the same program.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 5,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.7197540233415233
+    ]
+}

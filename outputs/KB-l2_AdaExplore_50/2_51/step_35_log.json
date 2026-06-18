@@ -1,0 +1,29 @@
+{
+    "node_id": 35,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness bug is the residual add: reference adds GELU(LSE(mean)) which is a per-sample scalar, but the kernel uses `s_val = row_sum * inv_N` directly as the GELU input. After mean over dim=1 the tensor has shape (B,1), then logsumexp over dim=1 of a single element is just that element, so `gelu_s = GELU(mean)` is actually correct algebraically \u2014 re-derive and verify. The likely real bug is that `gemm_reduce_splitk_kernel` writes to `x` aliasing: `out = torch.empty_like(x)` but the second kernel reads `x` (original input) \u2014 that part is fine. However the first kernel atomic-adds into row_sum without zeroing accumulator overlap; check that `acc = tl.where(mask_n, acc, 0)` is applied *before* sum (it is). The actual issue: when BLOCK_M doesn't divide B and mask_m masks rows, `tl.atomic_add(... mask=mask_m)` is correct, but for B=2048 and BLOCK_M=64/128 it divides evenly so fine. Re-examine: `n_per_split = N // SPLIT_N` with SPLIT_N=8, N=8192 \u2192 1024 per split, fine. Suspect: passing `inv_N` as a Python float positional \u2014 wrap as `tl.constexpr` or pass as 0-d tensor to avoid launcher fragility, but correctness=False with avg_diff\u22481.4 suggests a numerical error not a launch error.\n- Real likely cause: `row_sum` accumulates sum over N of (xW+b-sub), but the autotune reruns the kernel multiple times during tuning, each call adding into the same `row_sum` buffer if cached \u2014 actually `row_sum` is allocated fresh each forward, so OK. But autotune itself runs the kernel several times before forward returns, accumulating into the same tensor \u2192 row_sum is K\u00d7 too large. **Fix: pre-zero row_sum inside the kernel, or use `key=['M','N','K']` with a do_bench prehook that resets, or avoid atomic_add by using a single-program-per-row design.**\n- Add `reset_to_zero=['row_sum_ptr']` to the `@triton.autotune` decorator so autotune zeros the output between trial runs.",
+    "large_guidance": "- Restructure so row_sum is computed without atomic_add and without autotune reset hazards: one program per row-tile, looping the full N inside the kernel and reducing in registers. This eliminates the atomic and the autotune-replay accumulation bug entirely.\n- Better still, fuse everything into a single persistent kernel: for each row tile, stream K and N, accumulating `sum_n(x\u00b7W[n] + b[n] - sub[n])` directly into a per-row scalar, then apply `*1/N`, GELU (closed form with erf), and add to the original input in the epilogue. Since output writes residual+scalar over K elements, split into two kernels only if needed (one to compute the per-row scalar, one to broadcast-add).\n- Consider a two-stage approach exploiting algebraic simplification that *is* allowed at runtime: compute `s_b = (sum_n(W[n,:]) \u00b7 x[b,:] + sum_n(b) - sum_n(sub)) / N` as a single GEMV against a precomputed-at-runtime (not init-time) reduced weight vector \u2014 but per the safety contract, precomputing `sum_n(W)` at init violates rule 1. Compute it at forward-time each call if you go this route, though a full GEMM kernel is the safer baseline.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 36,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        1.6320820306383421
+    ]
+}

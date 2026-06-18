@@ -1,0 +1,30 @@
+{
+    "node_id": 40,
+    "parent_node_id": 39,
+    "context_node_ids": [
+        38,
+        39
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.42946582060606064,
+    "max_reward": 0.42946582060606064,
+    "avg_reward": 0.42946582060606064,
+    "score": [
+        1,
+        1,
+        0.34309302
+    ],
+    "small_guidance": "- The autotune key uses `M, NN, K` but `M = N*OH*OW = 64*126*126 \u2248 1M`, so tiles like `BLOCK_M=128, BLOCK_N=128` with `BLOCK_K=32` are likely best \u2014 verify the chosen config and prune small tiles (e.g. drop `BLOCK_M=64, BLOCK_N=64`) to reduce autotune noise. Add `(128,128,16, nw=8, ns=2)` and `(128,64,32, nw=4, ns=3)` explicitly.\n- The inner `tl.load` on `x` recomputes a non-contiguous gather (stride IC across BLOCK_K). Switch the K-loop ordering to iterate `(kh, kw)` outer and `ic` inner with `BLOCK_K` along `ic` only \u2014 then the K-axis loads are contiguous along the channels-last IC dimension, and `ih/iw` are loop-invariant per K-block.\n- The weight tensor is laid out `(K, OC)` with stride OC across K \u2014 fine for `tl.dot`, but ensure `w_k_oc` is built once at eval and cached as a buffer (currently rebuilt every forward). Cache `scale`, `shift`, `w_k_oc` in `__init__`-time hooks or on first eval call to remove the per-call `transpose().contiguous()` cost.",
+    "large_guidance": "- Restructure the GEMM-K loop so `ic` is the inner contiguous reduction axis and `(kh, kw)` are an outer pair of small unrolled loops (KH=KW=3 \u2192 9 iterations). For each `(kh, kw)`, accumulate `tl.dot(x_tile[BM, BK_ic], w_tile[BK_ic, BN])` where x-loads are fully contiguous along IC. This eliminates the strided gather currently dominating memory traffic.\n- Consider an output-stationary persistent kernel: one program per `(N, OH-tile, OW-tile, OC-tile)` with the OC-tile sized to keep the output accumulator in registers and the spatial tile chosen so adjacent output pixels share input rows across the `kh` loop (reuse loaded `x` rows across `oh` tile). With KH=KW=3 and IC=64, a tile of `(BM_spatial=64, BN_oc=64, BK_ic=64)` fits easily and exploits halo reuse.\n- Cache the folded BN scale/shift and the reshaped weight as registered buffers updated lazily (only when `bn.running_mean` changes, or unconditionally on first eval), so the forward path only launches the kernel and does the NHWC permute. The two `.contiguous()` calls in forward are non-trivial at this tensor size.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 41,
+    "global_best_node_id": 16,
+    "global_best_score": [
+        1,
+        1,
+        0.5587834201954398
+    ]
+}

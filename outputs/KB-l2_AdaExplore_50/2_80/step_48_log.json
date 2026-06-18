@@ -1,0 +1,29 @@
+{
+    "node_id": 48,
+    "parent_node_id": 47,
+    "context_node_ids": [
+        47
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5816062983489931,
+    "max_reward": 0.5816062983489931,
+    "avg_reward": 0.5816062983489931,
+    "score": [
+        1,
+        1,
+        1.598251961379193
+    ],
+    "small_guidance": "- The split-K partials reduction (`partials.max(dim=0)`) launches an extra kernel over a `(num_n_tiles, M)` tensor; fuse this into the GEMM by using `tl.atomic_max` on a single `(M,)` row_max buffer (initialized to -inf) so no separate reduce launch is needed.\n- Since `max_dim=1` collapses to a single column, `x.mean(dim=1)` of a `(M,1)` tensor equals `x` itself \u2192 the subtraction is identically zero and GELU(0)=0. But you must still execute the ops; fuse the trivial `(x - mean)` and GELU into a tiny epilogue kernel on the `(M,1)` rowmax tensor instead of two torch ops.\n- Add larger-N autotune configs (`BLOCK_N=256, BLOCK_M=64, num_warps=8, num_stages=4`) and try `BLOCK_K=64` with `num_stages=4` \u2014 K=8192 is large enough that deeper pipelining should help; also pre-transpose W once in `__init__` so the inner load is contiguous along K.",
+    "large_guidance": "- Rewrite as a persistent split-K GEMM-then-rowmax where each program owns a fixed `(BLOCK_M)` row tile and streams across all N tiles in a loop, keeping a running max in registers. This avoids the partials tensor and the second reduction kernel entirely \u2014 output is directly `(M,)`.\n- Alternatively, use a two-stage design: stage 1 is a tiled GEMM+bias that writes nothing but updates a global `(M,)` rowmax via `atomic_max` (bitcast fp32\u2192int32 for atomic_max on sign-correct positives; or use a locked CAS loop). Stage 2 is a single tiny kernel doing `(rowmax - rowmax)` \u2192 GELU \u2192 store, fused.\n- Pre-transpose and cache W as `(K, N)` contiguous in `__init__` (one-time cost) so the K-loop loads W with stride-1 along K and uses `tl.dot(x, w)` directly without `tl.trans` in the hot loop; this typically gives 10-20% on large-K GEMMs.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 49,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        1.7954388916792234
+    ]
+}

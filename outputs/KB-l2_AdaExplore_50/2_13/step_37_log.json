@@ -1,0 +1,29 @@
+{
+    "node_id": 37,
+    "parent_node_id": 27,
+    "context_node_ids": [
+        27
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4400062067662068,
+    "max_reward": 0.4400062067662068,
+    "avg_reward": 0.4400062067662068,
+    "score": [
+        1,
+        1,
+        0.43005120582120576
+    ],
+    "small_guidance": "- Try larger tile per program: process multiple (h,w) per program (e.g. BLOCK_HW=4 or 8) so the kernel amortizes bias load and softmax reduction; couple with num_warps=8 for the C=64,D=32 reduction (2048 elements/program).\n- Autotune over (BLOCK_HW, num_warps\u2208{4,8}, num_stages\u2208{2,3}) \u2014 current kernel launches B*H*W=262144 programs each doing only 64*32 work, which is grid-bound; coarsening will reduce launch overhead.\n- Bias and 1/D are loop-invariant scalars \u2014 keep them; ensure x is in (B,C,D,H,W) contiguous so the BLOCK_D inner-axis loads on stride HW=16384 are coalesced across programs sharing the same (h,w) tile.",
+    "large_guidance": "- ConvTranspose3d with stride=1, padding=1, k=3 dominates runtime (~25ms+). The post kernel is a tiny fraction. Replace the cuDNN conv_transpose with a custom Triton kernel: since stride=1, ConvTranspose3d with padding=1 and k=3 is equivalent to a regular Conv3d with the kernel flipped and same padding \u2014 implement as a direct Conv3d-style gather kernel (one program per (N, OC tile, output spatial tile)) and fuse the depth-mean reduction into its epilogue (accumulate over D inside the kernel rather than writing the full (B,C,D,H,W) tensor).\n- Fusion boundary: kernel computes, for each (b, oc, h, w), \u03a3_{d,ic,kd,kh,kw} x[b,ic,d-\u2026,h-\u2026,w-\u2026] * w_flipped[ic,oc,kd,kh,kw], divides by D, adds bias, and then performs softmax across OC \u2014 softmax requires all OC values for a given (b,h,w), so either (a) write the post-mean (B,C,H,W) tensor and run the existing tiny softmax-tanh-scale kernel on it, or (b) make one program own all OC for a (b,h,w) tile and fuse end-to-end. Option (a) is simpler and captures the bulk of the speedup.\n- Use channels-last-ish layout for the conv kernel weight (OC contiguous in inner dim) and tile OC=64 fully per program; loop over IC*kd*kh*kw as the GEMM-K. This avoids materializing the (B,64,32,128,128)=128MB intermediate, since depth is reduced inside the kernel.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 38,
+    "global_best_node_id": 24,
+    "global_best_score": [
+        1,
+        1,
+        2.8571081491712707
+    ]
+}

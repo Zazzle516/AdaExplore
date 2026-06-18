@@ -1,0 +1,29 @@
+{
+    "node_id": 11,
+    "parent_node_id": 10,
+    "context_node_ids": [
+        10
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4472053750401759,
+    "max_reward": 0.4472053750401759,
+    "avg_reward": 0.4472053750401759,
+    "score": [
+        1,
+        1,
+        0.4894443440814509
+    ],
+    "small_guidance": "- The conv kernel iterates `C_IN` with `tl.static_range` but loads x/w separately per (kh,kw,ic); restructure inner loop so the GEMM-K dimension is `C_IN*KH*KW` and use `tl.dot` on `[BLOCK_OC, BLOCK_K] x [BLOCK_K, BLOCK_HW]` tiles for tensor-core throughput. Add autotune configs with BLOCK_K=8/16/24 (C_IN*KH*KW=72).\n- In `fused_gn_pool_kernel`, the per-channel pool loop re-reads conv output from global memory; widen BLOCK to 2048 and lower `num_warps` to 4 for the small (H_OUT*W_OUT = 31*31 \u2248 961) tile so one BLOCK covers all output pixels per channel and the inner `ohw_start` loop disappears.\n- Pass `H_OUT, W_OUT, HW, GROUP_SIZE` as `tl.constexpr` so divisions/modulo become compile-time and the kernel can vectorize the pool gather.",
+    "large_guidance": "- Rewrite conv as an im2col-style implicit GEMM: one program per `(N, OC_tile, OHW_tile)` with `tl.dot` over K = C_IN*KH*KW (=72). With C_IN=8, KH=KW=3, BLOCK_K can be 32 or 64 in one shot; coalesce x loads by switching activations to channels_last (NHWC) so the K-axis (ic varies fastest) is contiguous.\n- Fuse the GroupNorm epilogue with the conv kernel only after computing per-group stats in a separate small kernel (conv output is 128*64*126*126 \u2248 130M elts; GN needs full per-group reduction first). Structure as: (1) conv\u2192NHWC tile kernel writes conv output, (2) GN-stats kernel reduces per (N,G) using one program per group with vectorized loads, (3) fused apply+scale+maxpool+clamp kernel reads conv output once, normalizes, pools 4x4, and writes final 32x32 output. This removes the current per-channel re-traversal pattern.\n- Alternatively, fuse scale into gamma/beta on the host (`gamma' = gamma*scale`, `beta' = beta*scale`) since scale is per-channel and constant w.r.t. spatial \u2014 saves 2 loads per output pixel in the epilogue kernel.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 12,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        0.8013158925967656
+    ]
+}

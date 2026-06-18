@@ -1,0 +1,27 @@
+{
+    "node_id": 14,
+    "parent_node_id": 9,
+    "context_node_ids": [],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing with avg_difference ~9e-5 and max ~1.5e-3, suggesting a numerical issue rather than a layout bug. Likely cause: the `diff = tl.where(mask, x - mean, 0.0)` is correct, but `mean = tl.sum(x, axis=0) / GS` uses `x` that was loaded with `other=0.0` \u2014 mean is correct, however when computing `(x - mean) * rstd * gamma + beta` and storing with mask, the unmasked lanes write garbage only if mask filters them; double-check stride: `out.stride(0)=N`, `out.stride(1)=1`, so `row * C + g*GS + offs` is correct only if `C == N` and `out` is contiguous. Add an explicit contiguous() on `out` before group_norm, and verify `GS=64`, `BLOCK_GS=64`.\n- More likely: the GEMM uses `W.stride(1), W.stride(0)` to transpose B, but `tl.dot(a, b)` expects contiguous-K on B's outer axis; the strided access is correct but loads are uncoalesced. Try materializing `W_t = W.t().contiguous()` once (cache it) and pass with natural strides \u2014 also improves perf.\n- Tune autotune configs: add `BLOCK_M=128, BLOCK_N=256, num_warps=8, num_stages=3` and add a `GROUP_M=8` swizzle on the program-id mapping for L2 reuse across N tiles in a row.",
+    "large_guidance": "- Redesign GEMM with B pre-transposed and cached as a buffer on the module so the inner-K load is contiguous (stride_bk = N, stride_bn = 1). Fuse linear-bias + swish + extra-bias in the epilogue exactly as now, but add `GROUP_M` block swizzle and use `tl.dot(..., out_dtype=tl.float32)` with `tf32=False` to keep fp32 accuracy (likely fixes the 1.5e-3 max-diff if tf32 is being used implicitly).\n- Consider fusing GroupNorm's reduction with the GEMM epilogue when `out_features/num_groups = 64` and `BLOCK_N` is chosen as a multiple of GS: each program tile already holds a full group's worth of channels per row, so mean/var can be computed in-tile and the GroupNorm pass eliminated entirely. This collapses two kernel launches into one and removes the M\u00d7N intermediate write/read.\n- If full fusion is too aggressive, at minimum make the GroupNorm kernel persistent per-row with `BLOCK_GS=64` constexpr (no power-of-two padding), `num_warps=1`, and process multiple groups per program to amortize launch overhead (grid = (M, num_groups//GROUPS_PER_PROG)).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 15,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

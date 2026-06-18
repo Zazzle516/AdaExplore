@@ -1,0 +1,30 @@
+{
+    "node_id": 50,
+    "parent_node_id": 45,
+    "context_node_ids": [
+        3,
+        45
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4616849437519003,
+    "max_reward": 0.4616849437519003,
+    "avg_reward": 0.4616849437519003,
+    "score": [
+        1,
+        1,
+        0.6089007859531771
+    ],
+    "small_guidance": "- The conv dominates runtime (fast_p\u22480.61 with the epilogue already fused and tiny). Further tuning of `BLOCK_SIZE`/`num_warps` on the activation+bias kernel will not close the gap \u2014 the entire epilogue is <5% of runtime.\n- If staying small, at least drop the modulo: precompute `c` via `(offs // S) % C` is fine but you can fuse the bias add inside the same expression chain (already done); also pass `bias` through a broadcast load with `tl.load(bias_ptr + c, mask=mask)` to avoid OOB reads on tail lanes.\n- Consider channels-last (NDHWC) layout so the bias index is just `offs % C`, eliminating the divide.",
+    "large_guidance": "- Replace `nn.Conv3d` with a custom Triton conv3d kernel implemented as an implicit-im2col GEMM: one program per `(N, OC_tile, out-spatial tile)`, K-loop over `IC*KD*KH*KW` with implicit gather of input offsets. Fuse ReLU\u2192LeakyReLU\u2192GELU\u2192Sigmoid\u2192bias entirely in the accumulator epilogue before the store, eliminating the extra full-tensor read/write currently done by the activation kernel.\n- Start with safe SMEM-fitting tiles in an autotune list: `(BM,BN,BK) \u2208 {(32,32,16),(64,32,16),(32,64,16),(64,64,32)}`, `num_warps=4`, `num_stages=2`. Key autotune on `(OC, N*D_out*H_out*W_out, IC*KD*KH*KW)`. Output shape is `(64,32,30,62,62)` \u2014 OC=32 is small so BN can be 32; spatial M is huge so BM=64 is preferable.\n- Use channels-last (NDHWC) memory layout for both input and weight so the GEMM-K (over IC*KD*KH*KW) has contiguous IC inner stride, enabling coalesced loads. Note: all activations collapse to a single closed form `sigmoid(GELU(x))` for `x\u22650` (ReLU+LeakyReLU are identities on non-negatives, since GELU output of a non-negative is itself non-negative-ish \u2014 but be careful: ReLU clamps negatives to 0, then LeakyReLU is identity on \u22650, then GELU then Sigmoid). Apply this fused closed form in the epilogue.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 51,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        1.9646906654676257
+    ]
+}

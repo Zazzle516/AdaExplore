@@ -1,0 +1,29 @@
+{
+    "node_id": 48,
+    "parent_node_id": 16,
+    "context_node_ids": [
+        4
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (~1.6e-3 max diff, ~9e-5 avg) is just below the 5e-2 tolerance but flagged as mismatch \u2014 likely the GroupNorm tile loads OOB lanes where `BLOCK_CPG > CPG` (CPG=64 is pow2 so fine) but BLOCK_G==G==64 also fine. The real bug: `xc = x - mean[:, None]` is computed for masked-out lanes too, but those were loaded as 0 so `xc = -mean` there, then masked out before sum \u2014 that's correct. The actual issue may be that `self.bias` and `self.matmul.bias`/`weight` are on CPU at first call; ensure module is `.cuda()` and parameters are on the same device as `x`. Also verify `W.stride(0)=K, W.stride(1)=1` matches the kernel's `stride_wn, stride_wk` interpretation (W is (N,K) row-major, so stride_wn=K, stride_wk=1 \u2014 correct).\n- More likely culprit: numerical precision in GroupNorm \u2014 with CPG=64 the two-pass mean/var in fp32 should be fine, but check that `eps` is passed correctly (it's a python float, should be `tl.constexpr` or scalar arg \u2014 currently passed as positional float, which can be fragile). Convert `eps` to a 0-d tensor or bake as constexpr.\n- Once correct, tune GEMM: M=32768, N=4096, K=1024 \u2014 favor `BLOCK_M=128, BLOCK_N=256, BLOCK_K=32/64, num_warps=8, num_stages=3-4` with `GROUP_M=8` swizzle for L2 reuse. Add the swizzle to the kernel.",
+    "large_guidance": "- Fuse the entire pipeline more aggressively: after the GEMM+Swish+bias, write the per-row partial sums and sum-of-squares for each group directly from the GEMM epilogue into a small `(M, G)` workspace, then a tiny second kernel finalizes mean/rstd and a third applies the affine. This avoids re-reading the full `(M, N)` tensor for GroupNorm stats. Alternatively, since N=4096 fits, use a persistent GroupNorm kernel where each program handles one row and processes all 64 groups by looping with a `BLOCK=64` tile per group, accumulating in registers.\n- Consider splitting GEMM tiles along N to align with group boundaries (CPG=64), so the GEMM output tile's reduction along N can directly produce per-group partial stats written to a small buffer \u2014 then GroupNorm becomes a cheap normalize-and-scale pass.\n- Pass `eps` as `tl.constexpr` (it's a fixed 1e-5) and pre-flatten `gamma`/`beta` so the GroupNorm kernel does 1D contiguous loads instead of 2D `(G, CPG)` reshape \u2014 simpler indexing, better coalescing.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 49,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

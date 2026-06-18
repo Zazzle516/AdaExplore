@@ -1,0 +1,29 @@
+{
+    "node_id": 24,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        4
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4142415752439651,
+    "max_reward": 0.4142415752439651,
+    "avg_reward": 0.4142415752439651,
+    "score": [
+        1,
+        1,
+        0.21749299576271186
+    ],
+    "small_guidance": "- The gather kernel is doing tl.dot on a tiny K dimension (BLOCK_IC=16/32 with IC=64), which underutilizes tensor cores. Add autotune configs that use BLOCK_IC=64 (full IC) to eliminate the inner IC loop, plus larger BLOCK_SP (256, 512) with BLOCK_OC=32/64 \u2014 the per-tap masking already costs more than the FMA, so amortize over more spatial.\n- Swap the program-id ordering so pid_sp is axis 0 (or use grid swizzling) for better L2 reuse of weights across spatial tiles within the same (N, OC) block, and try num_stages=3-4 with num_warps=4 for the BLOCK_IC=64 configs.\n- Hoist `od/oh/ow` decomposition and the `(num - idx*S)==0` validity tests out of the kd/kh/kw triple loop where possible \u2014 only `id_/ih_/iw_` and their valid masks depend on the tap, the spatial-tile arange and OHW math can be precomputed once.",
+    "large_guidance": "- Switch from gather (one program per output tile pulling from strided input positions) to scatter-add: one program per (N, IC tile, input-spatial tile) computes the outer product `input[n, ic, id, ih, iw] * weight[ic, :, kd, kh, kw]` and atomically adds into the OC\u00d7(OD,OH,OW) output. With stride=2 the gather kernel wastes ~7/8 of its taps on invalid `(num % S != 0)` positions; scatter visits only the valid output cells. Fuse clamp+divide into a second tiny epilogue kernel (or a single pass after accumulation) to avoid atomics on the activation.\n- Alternative: implement as an explicit GEMM where A=weight reshaped to (IC, OC*KD*KH*KW) and B=input reshaped to (IC, N*ID*IH*IW), producing a col2im buffer of shape (N, OC, KD*KH*KW, ID, IH, IW) which is then reduced/scattered into the output with stride-2 placement. This routes the heavy math through cuBLAS-class tl.dot on a large-K GEMM (K=IC=64, M=OC*27=3456, N=N*ID*IH*IW=1.3M) which is far better-shaped than the current per-tap micro-dot.\n- For this specific shape (stride=2, kernel=3, padding=1) the output is just `2\u00d7` the input spatially with each output cell receiving contribution from at most 1 (corner of kernel) or a handful of input positions depending on parity \u2014 consider a parity-specialized kernel that splits the 8 output-parity classes and runs a dense GEMM per class, eliminating all validity masking.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 25,
+    "global_best_node_id": 21,
+    "global_best_score": [
+        1,
+        1,
+        0.6530324045801528
+    ]
+}

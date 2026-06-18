@@ -1,0 +1,31 @@
+{
+    "node_id": 12,
+    "parent_node_id": 11,
+    "context_node_ids": [
+        3,
+        6,
+        11
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5719847307288655,
+    "max_reward": 0.5719847307288655,
+    "avg_reward": 0.5719847307288655,
+    "score": [
+        1,
+        1,
+        1.5188740285131392
+    ],
+    "small_guidance": "- Add `triton.autotune` over the GEMM with configs sweeping `(BLOCK_M, BLOCK_N, BLOCK_K) \u2208 {(128,256,32),(256,128,32),(128,128,64),(64,128,64)}` and `num_warps \u2208 {4,8}`, `num_stages \u2208 {3,4}`; with M=N=K=8192 a larger BLOCK_N/BLOCK_K usually wins on Ada.\n- Add a `GROUP_M` swizzle (e.g. 8) to the pid\u2192(pid_m,pid_n) mapping for better L2 reuse across the row group; current row-major scheduling thrashes L2 on an 8192\u00d78192 weight.\n- Replace the `atomic_add` rowsum with a deterministic two-stage reduction: have each program write its `(BLOCK_M,)` partial sum to a `[grid_n, B]` scratchpad, then a tiny second kernel sums along grid_n \u2014 atomics on fp32 across 64 N-tiles per row serialize and inflate runtime.",
+    "large_guidance": "- Restructure as a split-K GEMM where each program computes a `BLOCK_M \u00d7 1` row-mean partial directly (reduce across BLOCK_N inside the program before writing), storing into a `[num_n_tiles, B]` partials buffer; then a tiny reduction kernel fuses the final sum-over-N-tiles, scaling (\u00d71/N), the LogSumExp (trivial since dim=1 has size 1, so it's just the value), GELU, and broadcast-add with the residual. This removes the atomic and the second pass over x.\n- Since after `mean(dim=1, keepdim=True)` the tensor is `[B,1]` and logsumexp over a size-1 dim is identity, the entire post-GEMM chain collapses to `gelu(mean_over_N(Wx+b-sub))` broadcast-added to `x` \u2014 fuse this scalar-per-row computation directly into the GEMM epilogue so only one kernel writes the final `[B, IN_F]` output by streaming the original `x` through.\n- Consider a persistent-CTA GEMM with `tl.dot` using `tf32` (`allow_tf32=True` in `tl.dot`) since inputs are fp32 on Ada \u2014 this can roughly 2\u00d7 the matmul throughput while still passing 5e-2 tolerance.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 13,
+    "global_best_node_id": 10,
+    "global_best_score": [
+        1,
+        1,
+        1.5925164056531704
+    ]
+}

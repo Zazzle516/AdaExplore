@@ -1,0 +1,29 @@
+{
+    "node_id": 8,
+    "parent_node_id": 5,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The `tl.dot(w_tile, tl.trans(x_tile))` fails because BLOCK_K=8 is below the minimum dot tile size on Ampere (min 16). Set BLOCK_K=16 unconditionally and zero-pad with the `k_mask` (since IC=8 < 16, the masked lanes load 0 and contribute nothing). Also ensure all three dims (BLOCK_M, BLOCK_N, BLOCK_K) are \u226516.\n- Alternatively, since IC=8 is small and KD*KH*KW*IC=216, collapse the IC loop into the kd/kh/kw static loop and accumulate via `tl.dot` on a fixed (BLOCK_M, 16) \u00d7 (16, BLOCK_N) tile per kernel position, padding IC to 16.\n- Try `num_stages=2` and `num_warps=4` once compile is fixed; sweep BLOCK_N \u2208 {32,64,128} over the spatial tile (OD*OH*OW = 14*62*62).",
+    "large_guidance": "- Restructure as a true im2col GEMM: K = IC * KD * KH * KW = 216. Pad K up to a multiple of 16 (e.g., 224) and do one outer loop `for k0 in range(0, K_PADDED, BLOCK_K)` with BLOCK_K=16 or 32. Decompose `k = ((kd*KH+kh)*KW+kw)*IC + ic` inside the kernel to compute x gather offsets; weights are stored as (OC, K) contiguous so w-loads are a simple 2D tile. This avoids the nested static loops and gives Triton a clean MMA pipeline.\n- Use NDHWC layout (already done) and stage one program per (N, spatial-tile, OC-tile) with BLOCK_M=64, BLOCK_N=64, BLOCK_K=32. Mask k beyond actual K=216. Fuse bias+leakyReLU+sum+clamp+GELU in the epilogue on the accumulator before the store (already done).\n- Wrap the launcher in `triton.autotune` over a small grid of {BLOCK_M,BLOCK_N}\u2208{(64,64),(128,32),(32,128)} with num_warps\u2208{4,8}, keyed on (OC, spatial_total).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 9,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.532616119047619
+    ]
+}

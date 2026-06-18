@@ -1,0 +1,31 @@
+{
+    "node_id": 14,
+    "parent_node_id": 5,
+    "context_node_ids": [
+        3,
+        4,
+        5
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM dominates (M=1024, N=8192, K=8192 \u2192 ~137 GFLOPs). Add larger tile autotune configs tuned for 4090: `BLOCK_M=128, BLOCK_N=256, BLOCK_K=32/64, num_warps=8, num_stages=3` and `BLOCK_M=256, BLOCK_N=128, BLOCK_K=32, num_warps=8, num_stages=3`. Also try `BLOCK_K=128` with `num_stages=2-3` since K=8192 is huge and deep pipelining helps.\n- In `gn_min_kernel`, C_PER_G = 8192/512 = 16 \u2014 extremely small. The current 2D tile with GROUPS_PER_BLOCK=16 gives a 16\u00d716 tile per iter and loops 32 times per row. Increase `GROUPS_PER_BLOCK` to 64 or 128 (or process the full row in one shot: 512 groups \u00d7 16 ch fits in registers as 8192 elements) so the row becomes a single load + single reduction; bump `num_warps` to 8.\n- Drop the `self.training`/refresh branch in forward \u2014 `weight_t` is registered as a buffer so it's already on device; recomputing `.t().contiguous()` every forward when training=False is wasted work (and the model is invoked in eval). Cache once in `__init__`.",
+    "large_guidance": "- Fuse GEMM epilogue with GroupNorm reduction: since num_groups=512 and C_PER_G=16, each GEMM N-tile of width 128 covers exactly 8 groups. Have the GEMM write its tile and then a second persistent kernel per row that reads the row once, computes per-group mean/var/normalize, applies \u03b3/\u03b2, and reduces to a scalar min \u2014 avoiding the full materialization-then-reread pattern. Alternatively, do a split-K GEMM that produces y in a layout where each row's groups are contiguous and immediately reducible.\n- Even better: a single \"GN+min\" persistent kernel per row that loads the entire 8192-wide row into SRAM/registers (M=1024 rows, one program per row, BLOCK=8192 with 16 warps), computes 512 group stats via a reshape-and-reduce (`tl.reshape` to [512,16], reduce axis=1), normalizes, applies affine, and reduces to row min \u2014 one kernel, one pass over y.\n- The final `fused_min_bias_kernel` writes to a (1, N, M, 1) layout where the N-stride is M=1024. Output is 8192\u00d71024 = 8M elements written with stride-M scatter \u2014 this is fine but consider writing as (1, N, M, 1) contiguous via `out_ptr + offs_n*M + pid_m` (already done); ensure BLOCK_N=512 or 1024 with num_warps=4 for better bandwidth, and consider grid = (cdiv(N,BLOCK_N), M) so the inner dim is N for coalesced bias loads.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 15,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

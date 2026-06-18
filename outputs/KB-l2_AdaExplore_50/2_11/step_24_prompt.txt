@@ -1,0 +1,845 @@
+## Problem Statement
+
+You write custom kernels to replace the pytorch operators in the given architecture to get speedups.
+
+You have complete freedom to choose the set of operators you want to replace. You may make the decision to replace some operators with custom kernels and leave others unchanged. You may replace multiple operators with custom implementations, consider operator fusion opportunities (combining multiple operators into a single kernel, for example, combining matmul+relu), or algorithmic changes (such as online softmax). You are only limited by your imagination — within the constraints of the Optimization Skills below.
+
+# Safety contract
+
+These two rules apply to every kernel you write, regardless of which
+operators appear in the reference and regardless of whether you are
+designing from scratch or tuning an existing kernel.
+
+1. **No graph-level algebraic shortcuts.** Every operator in the reference
+   forward must execute at runtime on the actual input tensor. Do **not**
+   collapse a heavy op into a downstream reduction at init time (for example,
+   precomputing a column/row sum of a weight so that forward runs a matvec
+   instead of the full operator). These rewrites pass the loose
+   `atol=rtol=5e-2` correctness check but are not the optimization target —
+   the comparison baseline runs the graph as written.
+
+2. **Custom kernels are authorized.** Any `nn.*` operator in the reference is
+   a valid replacement target. You may rewrite it with a Triton kernel or a
+   CUDA C++ extension (`torch.utils.cpp_extension`). Do not assume any op is
+   the immovable part of the graph — the heaviest op usually has the most
+   headroom.
+
+3. **Triton Grammer.** Any Python-float reference parameter that becomes a
+   kernel input must be passed as `tl.constexpr` (preferred — it lets Triton
+   bake the value into PTX) or as a 0-d CUDA tensor. Never pass it as an
+   untyped positional arg — Triton's launcher specialization for raw Python
+   floats is fragile and can fail at the gcc launcher build stage
+   (`subprocess.CalledProcessError` building `__triton_launcher.*.so`) even
+   when the kernel itself is logically correct.
+
+- Do not run an activation as a standalone Triton kernel in the final design —
+  fuse it into the kernel that produces its input (conv-bias-ReLU,
+  matmul-bias-GELU, norm-activation). A standalone activation kernel is
+  memory-bound and only justified as an early starter sketch.
+- Apply the activation in the producer's epilogue, on the accumulator, before
+  the store — this avoids an extra full read/write of the activation tensor.
+- Use the closed-form for the activation (e.g. `x * sigmoid(x)` for SiLU,
+  `0.5 * x * (1 + erf(x / sqrt(2)))` or the tanh approximation for GELU) so it
+  stays a few flops on data already in registers.
+
+- Conv2d/3d: implement as im2col-style indexing into a tiled GEMM — one
+  program per `(N, OC tile, output-spatial tile)`. The im2col gather can stay
+  implicit (compute input offsets inside the kernel) to avoid materializing
+  the unfolded tensor.
+- ConvTranspose1d/2d/3d: implement as a scatter-add of the `input × kernel`
+  outer product into the output grid, handling `stride` / `padding` /
+  `output_padding` in the index math. Do not approximate it with a plain conv.
+- Fold BatchNorm into the conv weight/bias at eval time (the BN running stats
+  are constant), and absorb a trailing bias add and activation (ReLU, etc.)
+  into the same kernel epilogue.
+- When the torch convolution dominates runtime (symptom: `fast_p < 0.8` while
+  the epilogue is already fused), replacing the conv with a custom kernel is
+  the high-headroom move — not further tuning of the tail.
+
+- BatchNorm / InstanceNorm: at eval the running mean/var are constant — fold
+  the normalization plus affine into a single scale/shift applied in one
+  elementwise kernel (or into the producing kernel's epilogue). Use Welford
+  only when stats must be computed at runtime.
+- LayerNorm / GroupNorm: two-pass (compute mean, then variance) over the
+  normalized axis inside one program; keep the whole reduction in-kernel so it
+  is not split across launches.
+- RMSNorm: skip the mean, normalize by `rsqrt(mean(x^2) + eps)`.
+- Fuse the normalization with the adjacent activation, and fold a pure affine
+  into a preceding Linear/Conv only when it is genuinely a pure affine.
+
+- One program per `(N, C, output-spatial tile)`; gather the pooling window
+  with coalesced strided reads and reduce (max or mean) in registers.
+- Combine the pool with an adjacent activation or scalar op in the same kernel
+  epilogue rather than launching separately.
+- AdaptiveAvgPool: the input→output index map depends only on the static
+  shapes — precompute the per-output-element window bounds at init and pass
+  them in, instead of recomputing the division inside the kernel.
+- For global average pooling (output spatial size 1), treat it as a reduction
+  over the full spatial axis (see reduction skills).## Example Formats
+
+Here's an example to show you the syntax of inline embedding custom Triton kernels in torch: The example given architecture is:
+
+```
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+class Model(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+
+    def forward(self, a, b):
+        return a + b
+
+
+def get_inputs():
+    # randomly generate input tensors based on the model architecture
+    a = torch.randn(1, 128).cuda()
+    b = torch.randn(1, 128).cuda()
+    return [a, b]
+
+
+def get_init_inputs():
+    # randomly generate tensors required for initialization based on the model architecture
+    return []
+
+```
+
+The example new arch with custom Triton kernels looks like this:
+
+<kernel>
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import triton
+import triton.language as tl
+
+AUTOTUNE_CONFIGS = [
+    triton.Config({"BLOCK_SIZE": 64},  num_warps=1, num_stages=2),
+    triton.Config({"BLOCK_SIZE": 128}, num_warps=2, num_stages=2),
+    triton.Config({"BLOCK_SIZE": 256}, num_warps=4, num_stages=2),
+    triton.Config({"BLOCK_SIZE": 512}, num_warps=8, num_stages=2),
+    triton.Config({"BLOCK_SIZE": 1024}, num_warps=8, num_stages=3),
+]
+
+@triton.autotune(configs=AUTOTUNE_CONFIGS, key=['n_elements'])
+@triton.jit
+def add_kernel(
+    x_ptr,  # Pointer to first input
+    y_ptr,  # Pointer to second input
+    out_ptr,  # Pointer to output
+    n_elements,  # Total number of elements in input/output
+    BLOCK_SIZE: tl.constexpr,
+):
+    # Each program handles a contiguous block of data of size BLOCK_SIZE
+    block_start = tl.program_id(0) * BLOCK_SIZE
+    # Create a range of offsets [0..BLOCK_SIZE-1]
+    offsets = block_start + tl.arange(0, BLOCK_SIZE)
+    # Mask to ensure we don't go out of bounds
+    mask = offsets < n_elements
+    # Load input values
+    x = tl.load(x_ptr + offsets, mask=mask, other=0.0)
+    y = tl.load(y_ptr + offsets, mask=mask, other=0.0)
+    # Perform the elementwise addition
+    out = x + y
+    # Store the result
+    tl.store(out_ptr + offsets, out, mask=mask)
+
+
+def triton_add(x: torch.Tensor, y: torch.Tensor):
+    """
+    This function wraps the Triton kernel call. It:
+      1. Ensures the inputs are contiguous on GPU.
+      2. Calculates the grid (blocks) needed.
+      3. Launches the Triton kernel.
+    """
+    assert x.is_cuda and y.is_cuda, "Tensors must be on CUDA."
+    x = x.contiguous()
+    y = y.contiguous()
+
+    # Prepare output tensor
+    out = torch.empty_like(x)
+
+    # Number of elements in the tensor
+    n_elements = x.numel()
+
+    # grid based on the selected BLOCK_SIZE
+    grid = lambda meta: ((n_elements + meta["BLOCK_SIZE"] - 1) // meta["BLOCK_SIZE"],)
+
+    # launch the Triton kernel
+    add_kernel[grid](x, y, out, n_elements)
+    return out
+
+
+class ModelNew(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+
+    def forward(self, a, b):
+        # Instead of "return a + b", call our Triton-based addition
+        return triton_add(a, b)
+
+</kernel>
+
+## Common Pitfalls (from previous optimization attempts)
+
+The following are frequently observed failure patterns from prior kernel optimization runs. **Avoid** these patterns in your implementation:
+
+You cannot reference the name PADDING_LEFT when it is not defined.
+You cannot call the compiled Triton kernel without providing the required positional 'meta' argument.
+You cannot call tl.load(x_ptr + x_addrs, mask=mask_x, other=0.0) inside the Triton kernel.
+You cannot have an `else:` at line 223 of the module source (SyntaxError: invalid syntax).
+You cannot access triton.language.math.tanh.
+You cannot use the 'continue' statement in a Triton kernel.
+You cannot call tl.float32 as a function inside a Triton kernel.
+You cannot pass a callable constexpr for the Triton kernel constexpr parameter BLOCK_M.
+You cannot use k_mask & (offs_n[None, :] < N) as the mask argument to tl.load in this Triton kernel when k_mask and (offs_n[None, :] < N) have incompatible dimensions 32 and 128.
+You cannot access W.shape when W is an int.
+You cannot call tl.arange(0, BLOCK) inside the Triton kernel _mean_invstd_kernel.
+You cannot pass the keyword argument 'num_warps' to triton.jit.
+You cannot use Triton builder operations that require a `_builder` argument outside of functions compiled with @triton.jit.
+You cannot index a Triton tensor with an int32[] tensor index inside a Triton kernel during compilation.
+You cannot pass multiple values for the 'BLOCK' argument when launching the Triton kernel.
+You cannot access the .dtype attribute of a dict object.
+You cannot call triton.language.log1p.
+You cannot index a Triton tensor with a constexpr index inside a Triton kernel at compile time.
+You cannot call the Triton kernel without providing the required constexpr positional arguments 'BLOCK_C' and 'BLOCK_L'.
+You cannot specify the keyword argument meta when launching this Triton kernel.
+You cannot access the global variable BLOCK_L from within an @jit'ed Triton kernel.
+You cannot call the Triton kernel without passing the required constexpr parameter 'BLOCK'.
+You cannot call torch.cuda.reset().
+You cannot call .reshape(-1) inside a Triton kernel.
+You cannot access triton.language.div.
+You cannot call float() on a tensor (kernel_vol) inside the Triton kernel.
+You cannot pass an integer as the grid parameter when launching the Triton kernel.
+You cannot call len() on an int.
+You cannot access the attribute 'dropout3d' on a ModelNew object.
+You cannot call a function that requires a `_builder` argument from inside a Triton jitted function.
+You cannot index tl.zeros((1,), dtype=tl.float32) with [0] inside a Triton @jit kernel.
+You cannot pass a dict as an argument when launching a Triton kernel.
+You cannot use triton.language.pow.
+You cannot have an unexpected indent at line 23 (the '@staticmethod' decorator) in the loaded Python module.
+You cannot call tensor.view with a size argument that contains a torch.nn.Parameter.
+You cannot access the local variable 'W' in ModelNew.forward before it is assigned.
+You cannot call out.view(N * C_, S) when the tensor's size and stride make that view incompatible.
+You cannot use triton.language.full_like.
+You cannot call tl.dot(x, x) inside the Triton kernel shown.
+You cannot compile the Triton kernel.
+You cannot call a function decorated with @triton.jit outside the scope of a kernel.
+You cannot call the .sum() method on the expression vals.to(tl.float32) inside a Triton @triton.jit kernel.
+You cannot use the break statement inside a Triton kernel.
+You cannot use the variable neg_inf as the other argument to tl.load inside the Triton kernel.
+You cannot reference the name 'EMBED' when instantiating ModelNew.
+You cannot call triton.language.any.
+You cannot perform the assignment out_ptr[row * pooled_len + pidx] = acc in the Triton kernel (AssertionError during compilation).
+You cannot access the attribute 'ones' on module triton.language.
+You cannot call ModelNew.__init__ with 6 positional arguments.
+You cannot use chained boolean operators (e.g., A or B or C) inside a Triton kernel.
+You cannot pass a size tuple to torch.nn.functional.interpolate that contains a torch.nn.parameter.Parameter as one of its elements.
+You cannot index a Triton tensor using a non-constexpr integer variable inside a Triton kernel (e.g., w_vals[:, c_inner]).
+You cannot use tl.load(inp_ptr + in_index) in this Triton kernel.
+You cannot pass a dtype keyword argument to tl.sum inside a Triton kernel.
+You cannot call int() on a tensor inside a Triton kernel.
+You cannot pass an indices tensor with float elements to torch.nn.functional.max_unpool3d.
+You cannot compare a pointer<fp32> (e.g., a kernel pointer argument like weight_ptr) to the integer 0 inside a Triton kernel.
+You cannot require more shared memory than the device's hardware limit when launching the Triton kernel.
+You cannot access triton.language.constant (i.e., call tl.constant).
+You cannot use chained/simultaneous multiple comparisons like "0 <= dd < D" inside a Triton kernel.
+You cannot define class ModelNew that inherits from the name 'Model' when 'Model' is not defined.
+You cannot reassign a loop-carried variable that is initially a scalar fp32 to a vector of shape [256] fp32 inside a Triton kernel loop.
+You cannot omit the @triton.jit decorator on a Triton kernel function.
+You cannot call tl.max with arguments max_val and m in this Triton kernel.
+You cannot call tl.arange(0, BLOCK_C) inside the Triton kernel _softmax_channelwise_kernel.
+You cannot pass a torch.cuda.FloatTensor as the indices (argument #1) to torch.embedding_bag.
+You cannot add the Python loop variable l_start to the result of tl.arange(0, BLOCK_L) inside the Triton jitted kernel.
+You cannot call tl.arange(0, D) where D is provided as a Triton kernel argument inside the kernel.
+You cannot call the method new_empty_like on a Tensor object (e.g., x.new_empty_like(x_flat)).
+You cannot call torch.mul with an out=... argument when one of the arguments requires grad.
+You cannot reference the name 'Model' inside ModelNew.__init__.
+You cannot create an attribute named 'encoder_weight' when an attribute with that name already exists.
+You cannot access the attribute 'tanh' on module 'triton.language'.
+You cannot compile this Triton kernel when it contains the call tl.load(x_ptrs, mask=mask, other=0.0).
+You cannot call tl.load(..., mask=mask) without supplying an 'other' argument inside this Triton kernel during compilation.
+You cannot use the expression tl.program_id(3) < 1024 inside a Triton kernel.
+You cannot reference the name 'math' in _init_params.
+You cannot call F.avg_pool1d when F is an int.
+
+## Optional context — diagnosis of the previous attempt
+
+The evaluator analyzed the previous kernel and suggested the following
+design directions. Use them if they fit; ignore them if a different
+approach is better.
+
+- Recast as an implicit-GEMM where M=N*OH_POOL*OW_POOL (or per-N tile of pooled positions), N=OC, K=IC*KH*KW, with the 2×2 max-pool collapsed into the M-dimension epilogue: each program produces a [BLOCK_M_pool, BLOCK_OC] tile by accumulating 4 separate GEMM accumulators (one per sub-position) and reducing via `tl.maximum` after BN+tanh — this matches Triton's matmul template and unlocks BLOCK_K=32 software pipelining.
+- Switch input/output to channels-last (NHWC) so the K dimension (IC) is contiguous; coalesces the inner GEMM-K loads which currently stride by IH*IW.
+- Fuse GroupNorm directly: since OH_POOL*OW_POOL=15*15=225 is small and CPG=16, one persistent program per (N, group) can hold the entire group's pooled output in registers/SMEM produced by an earlier conv pass; alternatively, do a two-stage design where stage 1 writes pooled+partial group stats (sum, sum_sq via atomic_add to [N,G] buffers), stage 2 normalizes — removes the current double-pass over the pooled tensor inside group_norm_kernel.
+
+
+## Hardware Information
+
+Here is some information about the underlying hardware that you should keep in mind:
+
+- The GPU that will run the kernel is NVIDIA RTX-4090-D, Ampere architecture.
+
+## Task Instruction
+
+You are given the following architecture:
+
+```python
+import torch
+import torch.nn as nn
+
+class Model(nn.Module):
+    """
+    Model that performs a transposed convolution, batch normalization, tanh activation, max pooling, and group normalization.
+    """
+    def __init__(self, in_channels, out_channels, kernel_size, stride, padding, groups, num_groups):
+        super(Model, self).__init__()
+        self.conv_transpose = nn.ConvTranspose2d(in_channels, out_channels, kernel_size, stride=stride, padding=padding)
+        self.batch_norm = nn.BatchNorm2d(out_channels)
+        self.tanh = nn.Tanh()
+        self.max_pool = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.group_norm = nn.GroupNorm(num_groups=num_groups, num_channels=out_channels)
+
+    def forward(self, x):
+        x = self.conv_transpose(x)
+        x = self.batch_norm(x)
+        x = self.tanh(x)
+        x = self.max_pool(x)
+        x = self.group_norm(x)
+        return x
+
+batch_size = 512
+in_channels  = 64  
+out_channels = 128  
+height = width = 2048  
+kernel_size  = 5
+stride       = 1  
+padding      = 1
+groups       = 8
+num_groups   = 8
+height, width = 32, 32
+
+def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
+    return [torch.rand(batch_size, in_channels, height, width)]
+
+def get_init_inputs():
+    return [in_channels, out_channels, kernel_size, stride, padding, groups, num_groups]
+```
+
+The input shapes can be found in the input of the architecture, and the dtype is fp32.
+
+Optimize the architecture named Model with custom Triton kernels! Name your optimized output architecture ModelNew. Output the new code in the format described below. Please generate real code, NOT pseudocode, make sure the code compiles and is fully functional. Just output the new model code, no other text, and NO testing code!
+## Kernel Pool
+
+Here are some community-developed kernels and their runtime metrics. These represent strong baseline implementations for the given task.
+
+Your goal is to generate a kernel that OUTPERFORMS all kernels in the pool.
+
+You are allowed to reuse, adapt, or directly build upon any kernel in the pool. You may combine ideas, modify implementations, or even start from the best-performing kernel and improve it further.
+
+Objective:
+- Minimize runtime as much as possible.
+- Your kernel should aim to beat the fastest kernel in the pool.
+
+<Kernels and their Runtime Metrics>
+## Context type: recent
+
+### 0-th kernel:
+
+```python
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import triton
+import triton.language as tl
+import math
+
+
+@triton.autotune(
+    configs=[
+        triton.Config({}, num_warps=4, num_stages=2),
+        triton.Config({}, num_warps=8, num_stages=2),
+        triton.Config({}, num_warps=8, num_stages=3),
+        triton.Config({}, num_warps=4, num_stages=3),
+    ],
+    key=['CPG', 'HW_OUT'],
+)
+@triton.jit
+def fused_bn_tanh_pool_gn_kernel(
+    x_ptr,           # input after conv_transpose: [N, C, H, W]
+    out_ptr,         # output: [N, C, H/2, W/2]
+    scale_ptr,       # bn fused scale [C]
+    shift_ptr,       # bn fused shift [C]
+    gn_weight_ptr,   # [C]
+    gn_bias_ptr,     # [C]
+    N, C, H, W,
+    H_out, W_out,
+    G,               # num_groups
+    eps,
+    CPG: tl.constexpr,
+    HW_OUT: tl.constexpr,
+    BLOCK: tl.constexpr,
+):
+    # one program per (n, g)
+    pid = tl.program_id(0)
+    n = pid // G
+    g = pid % G
+
+    total = CPG * HW_OUT
+    c_base = g * CPG
+
+    # 2D tile: [CPG, BLOCK]
+    offs_c = tl.arange(0, CPG)               # [CPG]
+    offs_s = tl.arange(0, BLOCK)             # [BLOCK]
+    mask_s = offs_s < HW_OUT                 # [BLOCK]
+
+    # Load scale/shift per channel
+    scale = tl.load(scale_ptr + c_base + offs_c)  # [CPG]
+    shift = tl.load(shift_ptr + c_base + offs_c)  # [CPG]
+    gw = tl.load(gn_weight_ptr + c_base + offs_c) # [CPG]
+    gb = tl.load(gn_bias_ptr + c_base + offs_c)   # [CPG]
+
+    oh = offs_s // W_out
+    ow = offs_s % W_out
+    ih = oh * 2
+    iw = ow * 2
+
+    # Compute input addresses for the 2D tile [CPG, BLOCK]
+    # base offset per (c, s) in NCHW: n*C*H*W + c*H*W + ih*W + iw
+    n_off = n * C * H * W
+    c_stride = H * W
+    c_off = (c_base + offs_c)[:, None] * c_stride  # [CPG, 1]
+
+    s00 = (ih * W + iw)[None, :]              # [1, BLOCK]
+    s01 = (ih * W + (iw + 1))[None, :]
+    s10 = ((ih + 1) * W + iw)[None, :]
+    s11 = ((ih + 1) * W + (iw + 1))[None, :]
+
+    mask2 = mask_s[None, :]
+
+    p00 = tl.load(x_ptr + n_off + c_off + s00, mask=mask2, other=-1e30)
+    p01 = tl.load(x_ptr + n_off + c_off + s01, mask=mask2, other=-1e30)
+    p10 = tl.load(x_ptr + n_off + c_off + s10, mask=mask2, other=-1e30)
+    p11 = tl.load(x_ptr + n_off + c_off + s11, mask=mask2, other=-1e30)
+
+    sc = scale[:, None]
+    sh = shift[:, None]
+
+    v00 = p00 * sc + sh
+    v01 = p01 * sc + sh
+    v10 = p10 * sc + sh
+    v11 = p11 * sc + sh
+
+    # tanh = 2*sigmoid(2x) - 1
+    t00 = 2.0 * tl.sigmoid(2.0 * v00) - 1.0
+    t01 = 2.0 * tl.sigmoid(2.0 * v01) - 1.0
+    t10 = 2.0 * tl.sigmoid(2.0 * v10) - 1.0
+    t11 = 2.0 * tl.sigmoid(2.0 * v11) - 1.0
+
+    m0 = tl.maximum(t00, t01)
+    m1 = tl.maximum(t10, t11)
+    pooled = tl.maximum(m0, m1)  # [CPG, BLOCK]
+
+    pooled_m = tl.where(mask2, pooled, 0.0)
+    sum_val = tl.sum(pooled_m)
+    sum_sq = tl.sum(pooled_m * pooled_m)
+
+    mean = sum_val / total
+    var = sum_sq / total - mean * mean
+    rstd = 1.0 / tl.sqrt(var + eps)
+
+    normed = (pooled - mean) * rstd * gw[:, None] + gb[:, None]
+
+    # Store output [CPG, BLOCK]
+    out_n_off = n * C * H_out * W_out
+    out_c_stride = H_out * W_out
+    out_c_off = (c_base + offs_c)[:, None] * out_c_stride
+    out_s_off = offs_s[None, :]
+
+    tl.store(out_ptr + out_n_off + out_c_off + out_s_off, normed, mask=mask2)
+
+
+class ModelNew(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride, padding, groups, num_groups):
+        super().__init__()
+        self.conv_transpose = nn.ConvTranspose2d(in_channels, out_channels, kernel_size, stride=stride, padding=padding)
+        self.batch_norm = nn.BatchNorm2d(out_channels)
+        self.tanh = nn.Tanh()
+        self.max_pool = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.group_norm = nn.GroupNorm(num_groups=num_groups, num_channels=out_channels)
+        self.num_groups = num_groups
+        self.out_channels = out_channels
+        self.stride = stride
+        self.padding = padding
+        self.kernel_size = kernel_size
+
+    def forward(self, x):
+        # Conv transpose using torch (highly optimized cuDNN path)
+        x = self.conv_transpose(x)
+
+        # Fold BN
+        bn = self.batch_norm
+        if bn.training:
+            # fall back
+            x = bn(x)
+            x = torch.tanh(x)
+            x = self.max_pool(x)
+            x = self.group_norm(x)
+            return x
+
+        scale = bn.weight / torch.sqrt(bn.running_var + bn.eps)
+        shift = bn.bias - bn.running_mean * scale
+
+        N, C, H, W = x.shape
+        H_out = H // 2
+        W_out = W // 2
+        G = self.num_groups
+        CPG = C // G
+        HW_OUT = H_out * W_out
+
+        x = x.contiguous()
+        out = torch.empty((N, C, H_out, W_out), device=x.device, dtype=x.dtype)
+
+        # BLOCK is next power of 2 >= HW_OUT
+        BLOCK = 1
+        while BLOCK < HW_OUT:
+            BLOCK *= 2
+        if BLOCK < 16:
+            BLOCK = 16
+
+        grid = (N * G,)
+        fused_bn_tanh_pool_gn_kernel[grid](
+            x, out,
+            scale.contiguous(), shift.contiguous(),
+            self.group_norm.weight.contiguous(), self.group_norm.bias.contiguous(),
+            N, C, H, W,
+            H_out, W_out,
+            G,
+            self.group_norm.eps,
+            CPG=CPG,
+            HW_OUT=HW_OUT,
+            BLOCK=BLOCK,
+        )
+        return out
+```
+
+### 0-th metrics:
+compiled=True correctness=True metadata={'hardware': 'NVIDIA GeForce RTX 4090', 'device': '0', 'correctness_trials': '(5 / 5)'} runtime=9.19 runtime_stats={'mean': 9.19, 'std': 0.0552, 'min': 9.12, 'max': 9.29, 'num_trials': 90, 'hardware': 'NVIDIA GeForce RTX 4090', 'device': '0', 'fast_p': 0.6971980816507477, 'baseline_time': 6.407250370370371, 'baseline_type': 'recorded'}
+
+
+### 1-th kernel:
+
+```python
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import triton
+import triton.language as tl
+import math
+
+
+@triton.jit
+def fused_conv_bn_tanh_pool_kernel(
+    x_ptr,           # input: [N, IC, IH, IW]
+    w_ptr,           # weight: [IC, OC, KH, KW] (ConvTranspose2d weight layout)
+    scale_ptr,       # bn fused scale [OC]
+    shift_ptr,       # bn fused shift [OC]
+    out_ptr,         # output: [N, OC, OH_pool, OW_pool]
+    N, IC, IH, IW,
+    OC, OH, OW,
+    OH_POOL, OW_POOL,
+    KH: tl.constexpr, KW: tl.constexpr,
+    PAD: tl.constexpr,
+    BLOCK_OC: tl.constexpr,
+    BLOCK_SP: tl.constexpr,  # spatial block in pooled output
+):
+    # Each program handles one (n, oc_block, sp_block) of pooled output
+    pid = tl.program_id(0)
+    n = tl.program_id(1)
+    oc_block_id = tl.program_id(2)
+
+    sp_block_id = pid
+    sp_start = sp_block_id * BLOCK_SP
+    sp_offs = sp_start + tl.arange(0, BLOCK_SP)
+    sp_mask = sp_offs < (OH_POOL * OW_POOL)
+
+    # pooled output positions
+    oh_p = sp_offs // OW_POOL
+    ow_p = sp_offs % OW_POOL
+
+    oc_start = oc_block_id * BLOCK_OC
+    oc_offs = oc_start + tl.arange(0, BLOCK_OC)
+    oc_mask = oc_offs < OC
+
+    # We need to compute 4 conv outputs per pooled position: (2*oh_p, 2*ow_p), (2*oh_p, 2*ow_p+1), (2*oh_p+1, 2*ow_p), (2*oh_p+1, 2*ow_p+1)
+    # And max-pool them after bn+tanh.
+
+    # accumulators for 4 outputs, shape [BLOCK_SP, BLOCK_OC]
+    acc00 = tl.zeros((BLOCK_SP, BLOCK_OC), dtype=tl.float32)
+    acc01 = tl.zeros((BLOCK_SP, BLOCK_OC), dtype=tl.float32)
+    acc10 = tl.zeros((BLOCK_SP, BLOCK_OC), dtype=tl.float32)
+    acc11 = tl.zeros((BLOCK_SP, BLOCK_OC), dtype=tl.float32)
+
+    # Output coords for the 4 positions (in conv output, before pooling)
+    oh0 = oh_p * 2
+    ow0 = ow_p * 2
+    oh1 = oh0 + 1
+    ow1 = ow0 + 1
+
+    # ConvTranspose2d with stride=1, padding=PAD is equivalent to:
+    # out[oh, ow] = sum_{ic, kh, kw} x[ic, oh + PAD - kh, ow + PAD - kw] * w[ic, oc, kh, kw]
+    # i.e., a regular convolution with the weight flipped, with effective padding = (KH-1-PAD)
+    # Using direct formula: ih = oh + PAD - kh, iw = ow + PAD - kw
+
+    for kh in tl.static_range(0, KH):
+        for kw in tl.static_range(0, KW):
+            # input positions for each of the 4 outputs
+            ih00 = oh0 + PAD - kh
+            iw00 = ow0 + PAD - kw
+            ih01 = oh0 + PAD - kh
+            iw01 = ow1 + PAD - kw
+            ih10 = oh1 + PAD - kh
+            iw10 = ow0 + PAD - kw
+            ih11 = oh1 + PAD - kh
+            iw11 = ow1 + PAD - kw
+
+            valid00 = (ih00 >= 0) & (ih00 < IH) & (iw00 >= 0) & (iw00 < IW)
+            valid01 = (ih01 >= 0) & (ih01 < IH) & (iw01 >= 0) & (iw01 < IW)
+            valid10 = (ih10 >= 0) & (ih10 < IH) & (iw10 >= 0) & (iw10 < IW)
+            valid11 = (ih11 >= 0) & (ih11 < IH) & (iw11 >= 0) & (iw11 < IW)
+
+            # Loop over IC in tiles
+            BLOCK_IC: tl.constexpr = 64
+            for ic_start in range(0, IC, BLOCK_IC):
+                ic_offs = ic_start + tl.arange(0, BLOCK_IC)
+                ic_mask = ic_offs < IC
+
+                # Load weights w[ic, oc, kh, kw] -> shape [BLOCK_IC, BLOCK_OC]
+                w_ptrs = w_ptr + ic_offs[:, None] * (OC * KH * KW) + oc_offs[None, :] * (KH * KW) + kh * KW + kw
+                w_vals = tl.load(w_ptrs, mask=ic_mask[:, None] & oc_mask[None, :], other=0.0)
+
+                # Load x for the 4 positions: shape [BLOCK_SP, BLOCK_IC]
+                x_base = n * (IC * IH * IW)
+                # position 00
+                x_ptrs00 = x_ptr + x_base + ic_offs[None, :] * (IH * IW) + ih00[:, None] * IW + iw00[:, None]
+                m00 = sp_mask[:, None] & ic_mask[None, :] & valid00[:, None]
+                x00 = tl.load(x_ptrs00, mask=m00, other=0.0)
+                acc00 += tl.dot(x00, w_vals)
+
+                x_ptrs01 = x_ptr + x_base + ic_offs[None, :] * (IH * IW) + ih01[:, None] * IW + iw01[:, None]
+                m01 = sp_mask[:, None] & ic_mask[None, :] & valid01[:, None]
+                x01 = tl.load(x_ptrs01, mask=m01, other=0.0)
+                acc01 += tl.dot(x01, w_vals)
+
+                x_ptrs10 = x_ptr + x_base + ic_offs[None, :] * (IH * IW) + ih10[:, None] * IW + iw10[:, None]
+                m10 = sp_mask[:, None] & ic_mask[None, :] & valid10[:, None]
+                x10 = tl.load(x_ptrs10, mask=m10, other=0.0)
+                acc10 += tl.dot(x10, w_vals)
+
+                x_ptrs11 = x_ptr + x_base + ic_offs[None, :] * (IH * IW) + ih11[:, None] * IW + iw11[:, None]
+                m11 = sp_mask[:, None] & ic_mask[None, :] & valid11[:, None]
+                x11 = tl.load(x_ptrs11, mask=m11, other=0.0)
+                acc11 += tl.dot(x11, w_vals)
+
+    # Apply BN fold + tanh + maxpool
+    scale = tl.load(scale_ptr + oc_offs, mask=oc_mask, other=0.0)
+    shift = tl.load(shift_ptr + oc_offs, mask=oc_mask, other=0.0)
+
+    v00 = acc00 * scale[None, :] + shift[None, :]
+    v01 = acc01 * scale[None, :] + shift[None, :]
+    v10 = acc10 * scale[None, :] + shift[None, :]
+    v11 = acc11 * scale[None, :] + shift[None, :]
+
+    # tanh via 2*sigmoid(2x) - 1 (more stable than exp form)
+    # Use: tanh(x) = 1 - 2/(exp(2x)+1)
+    e00 = tl.exp(2.0 * v00)
+    e01 = tl.exp(2.0 * v01)
+    e10 = tl.exp(2.0 * v10)
+    e11 = tl.exp(2.0 * v11)
+    t00 = 1.0 - 2.0 / (e00 + 1.0)
+    t01 = 1.0 - 2.0 / (e01 + 1.0)
+    t10 = 1.0 - 2.0 / (e10 + 1.0)
+    t11 = 1.0 - 2.0 / (e11 + 1.0)
+
+    m0 = tl.maximum(t00, t01)
+    m1 = tl.maximum(t10, t11)
+    pooled = tl.maximum(m0, m1)
+
+    # Store to output [N, OC, OH_POOL, OW_POOL]
+    out_base = n * (OC * OH_POOL * OW_POOL)
+    out_ptrs = out_ptr + out_base + oc_offs[None, :] * (OH_POOL * OW_POOL) + sp_offs[:, None]
+    tl.store(out_ptrs, pooled, mask=sp_mask[:, None] & oc_mask[None, :])
+
+
+@triton.jit
+def group_norm_kernel(
+    x_ptr,           # [N, C, H, W]
+    out_ptr,         # [N, C, H, W]
+    gw_ptr,          # [C]
+    gb_ptr,          # [C]
+    N, C, H, W,
+    G,
+    CPG: tl.constexpr,
+    HW: tl.constexpr,
+    eps,
+    BLOCK: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    n = pid // G
+    g = pid % G
+
+    c_base = g * CPG
+    total = CPG * HW
+
+    sum_val = 0.0
+    sum_sq = 0.0
+
+    base = n * C * HW + c_base * HW
+
+    for ci in tl.static_range(0, CPG):
+        for blk_start in range(0, HW, BLOCK):
+            offs = blk_start + tl.arange(0, BLOCK)
+            mask = offs < HW
+            v = tl.load(x_ptr + base + ci * HW + offs, mask=mask, other=0.0)
+            sum_val += tl.sum(v)
+            sum_sq += tl.sum(v * v)
+
+    mean = sum_val / total
+    var = sum_sq / total - mean * mean
+    rstd = 1.0 / tl.sqrt(var + eps)
+
+    for ci in tl.static_range(0, CPG):
+        c = c_base + ci
+        gw = tl.load(gw_ptr + c)
+        gb = tl.load(gb_ptr + c)
+        for blk_start in range(0, HW, BLOCK):
+            offs = blk_start + tl.arange(0, BLOCK)
+            mask = offs < HW
+            v = tl.load(x_ptr + base + ci * HW + offs, mask=mask, other=0.0)
+            v = (v - mean) * rstd * gw + gb
+            tl.store(out_ptr + base + ci * HW + offs, v, mask=mask)
+
+
+class ModelNew(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride, padding, groups, num_groups):
+        super().__init__()
+        self.conv_transpose = nn.ConvTranspose2d(in_channels, out_channels, kernel_size, stride=stride, padding=padding)
+        self.batch_norm = nn.BatchNorm2d(out_channels)
+        self.tanh = nn.Tanh()
+        self.max_pool = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.group_norm = nn.GroupNorm(num_groups=num_groups, num_channels=out_channels)
+        self.num_groups = num_groups
+        self.out_channels = out_channels
+        self.in_channels = in_channels
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.padding = padding
+
+    def forward(self, x):
+        if self.training or self.stride != 1:
+            x = self.conv_transpose(x)
+            x = self.batch_norm(x)
+            x = self.tanh(x)
+            x = self.max_pool(x)
+            x = self.group_norm(x)
+            return x
+
+        N, IC, IH, IW = x.shape
+        OC = self.out_channels
+        KH = self.kernel_size
+        KW = self.kernel_size
+        PAD = self.padding
+
+        # ConvTranspose2d output spatial size with stride=1
+        OH = IH + KH - 1 - 2 * PAD
+        OW = IW + KW - 1 - 2 * PAD
+        OH_POOL = OH // 2
+        OW_POOL = OW // 2
+
+        # BN fold (eval mode)
+        bn = self.batch_norm
+        scale_bn = bn.weight / torch.sqrt(bn.running_var + bn.eps)
+        shift_bn = bn.bias - bn.running_mean * scale_bn
+
+        # Add conv bias to shift
+        if self.conv_transpose.bias is not None:
+            shift = shift_bn + self.conv_transpose.bias * scale_bn
+        else:
+            shift = shift_bn
+        scale = scale_bn
+
+        # Weight: ConvTranspose2d weight is [IC, OC, KH, KW]
+        # We need to flip kh, kw because the equivalent conv uses flipped kernel
+        # ConvTranspose with stride=1, padding=p: out[h, w] = sum x[h+p-kh, w+p-kw] * w[ic, oc, kh, kw]
+        # That's our formula already, no flip needed in this index math.
+        weight = self.conv_transpose.weight.contiguous()  # [IC, OC, KH, KW]
+
+        x = x.contiguous()
+        out_pooled = torch.empty((N, OC, OH_POOL, OW_POOL), device=x.device, dtype=x.dtype)
+
+        BLOCK_OC = 128
+        BLOCK_SP = 32
+
+        sp_blocks = (OH_POOL * OW_POOL + BLOCK_SP - 1) // BLOCK_SP
+        oc_blocks = (OC + BLOCK_OC - 1) // BLOCK_OC
+
+        grid = (sp_blocks, N, oc_blocks)
+        fused_conv_bn_tanh_pool_kernel[grid](
+            x, weight, scale.contiguous(), shift.contiguous(), out_pooled,
+            N, IC, IH, IW,
+            OC, OH, OW,
+            OH_POOL, OW_POOL,
+            KH, KW, PAD,
+            BLOCK_OC=BLOCK_OC,
+            BLOCK_SP=BLOCK_SP,
+            num_warps=8,
+            num_stages=2,
+        )
+
+        # GroupNorm
+        G = self.num_groups
+        CPG = OC // G
+        HW = OH_POOL * OW_POOL
+
+        out = torch.empty_like(out_pooled)
+        BLOCK = 256
+        if HW <= 64:
+            BLOCK = 64
+        elif HW <= 256:
+            BLOCK = 256
+        else:
+            BLOCK = 512
+
+        grid_gn = (N * G,)
+        group_norm_kernel[grid_gn](
+            out_pooled, out,
+            self.group_norm.weight.contiguous(),
+            self.group_norm.bias.contiguous(),
+            N, OC, OH_POOL, OW_POOL,
+            G, CPG, HW,
+            self.group_norm.eps,
+            BLOCK=BLOCK,
+            num_warps=4,
+        )
+        return out
+```
+
+### 1-th metrics:
+compiled=True correctness=True metadata={'hardware': 'NVIDIA GeForce RTX 4090', 'device': '0', 'correctness_trials': '(5 / 5)'} runtime=9.14 runtime_stats={'mean': 9.14, 'std': 0.0611, 'min': 8.99, 'max': 9.25, 'num_trials': 90, 'hardware': 'NVIDIA GeForce RTX 4090', 'device': '0', 'fast_p': 0.7010120755328633, 'baseline_time': 6.407250370370371, 'baseline_type': 'recorded'}
+</Kernels and their Runtime Metrics>
+
+Now generate a kernel that can potentially outperform the best existing kernel and achieves the lowest possible runtime.
+## Output Format
+
+Return exactly ONE complete, runnable Python file wrapped in a single
+<kernel>...</kernel> block. The file MUST include every import (torch, triton,
+triton.language, etc.) and the full `class ModelNew` definition. Do NOT emit
+sketches, partial snippets, or multiple code blocks — only the final complete
+file inside the <kernel> tags. Put no prose inside the tags.
+
+<kernel>
+# imports + @triton.jit kernels + class ModelNew(nn.Module): ...
+</kernel>

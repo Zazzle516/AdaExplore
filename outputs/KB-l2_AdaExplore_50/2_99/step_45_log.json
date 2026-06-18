@@ -1,0 +1,29 @@
+{
+    "node_id": 45,
+    "parent_node_id": 11,
+    "context_node_ids": [
+        10
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5766829323500037,
+    "max_reward": 0.5766829323500037,
+    "avg_reward": 0.5766829323500037,
+    "score": [
+        1,
+        1,
+        1.55763419188753
+    ],
+    "small_guidance": "- Add larger GEMM autotune configs targeting M=N=K=8192 on 4090: BLOCK_M=128/BLOCK_N=256/BLOCK_K=64 num_warps=8 num_stages=3, and BLOCK_M=256/BLOCK_N=128/BLOCK_K=64 num_warps=8 num_stages=3; also try BLOCK_K=128 with num_stages=2 to reduce K-loop iterations on this large K=8192.\n- Pre-transpose the weight once in `__init__` to a contiguous `[K, N]` layout (store as `self.weight_t`) so the GEMM B-operand has stride_bk=N, stride_bn=1 (currently uses w.stride(1)/w.stride(0) on row-major weight, giving strided inner loads of B which hurts L2/coalescing on K=8192).\n- For softmax with N=8192, use the single-pass kernel with BLOCK_SIZE=8192, num_warps=16 (or 8) and num_stages=2; ensure the input is read once \u2014 the current path already does that, but bumping num_warps and confirming registers don't spill should shave the softmax tail.",
+    "large_guidance": "- The dominant cost is the 1024\u00d78192\u00d78192 GEMM (~137 GFLOPs). A from-scratch design should use a split-K or persistent tiled GEMM with cp.async-style pipelining (num_stages=4) on a transposed/contiguous-K weight, and fuse bias+GELU in the epilogue (already done). Consider TF32 `tl.dot(..., allow_tf32=True)` since correctness uses 5e-2 tolerance \u2014 this roughly doubles tensor-core throughput on Ampere/Ada.\n- Fuse softmax's first reduction pass with the GEMM epilogue when N fits per row: have each (pid_m) row group write its tile and also atomically/locally accumulate per-row max and sum-of-exp into auxiliary buffers, then a small second kernel normalizes. Alternatively, since N=8192 fits in one block, launch a persistent per-row softmax kernel that loads the full row in registers and reuses it.\n- Replace the row-major weight storage with a pre-packed `[N, K]`\u2192`[K, N]` contiguous transpose at init (legal: same op, just better layout) and switch GEMM to a standard non-`%`-wrapped tile-mapping (the current `% M`/`% N` wrap-around is unnecessary when masking on stores and may inhibit the compiler).",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 46,
+    "global_best_node_id": 44,
+    "global_best_score": [
+        1,
+        1,
+        1.5776038610142933
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 17,
+    "parent_node_id": 16,
+    "context_node_ids": [
+        16
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5796598016576524,
+    "max_reward": 0.5796598016576524,
+    "avg_reward": 0.5796598016576524,
+    "score": [
+        1,
+        1,
+        1.5821933636756322
+    ],
+    "small_guidance": "- The current kernel constrains BLOCK_N to be the full N dimension per tile (since it pools across BLOCK_N and reduces row max within the tile, then a second-pass row-reduction). With N=8192 and BLOCK_N=128/256, there are 32-64 partial tiles per row \u2014 the second reduction is cheap, but the GEMM tiles are tall-skinny. Add larger-N configs (BLOCK_M=64, BLOCK_N=512, BLOCK_K=32/64, num_warps=8, num_stages=3) and (BLOCK_M=32, BLOCK_N=512) to reduce N-tile count and amortize the pool/max epilogue.\n- M=1024, N=8192, K=8192 \u2192 favor BLOCK_K=64 with num_stages=3-4 to better overlap the K-loop loads; drop the BLOCK_K=32 small configs from the autotune list since K=8192 makes the inner loop launch-bound on small BLOCK_K.\n- Replace `tl.trans(w)` in the hot loop by loading W as `[BLOCK_K, BLOCK_N]` directly (swap stride_wn/stride_wk in the pointer computation) \u2014 this removes a per-iteration transpose and lets `tl.dot(x, w)` consume W in its natural layout.",
+    "large_guidance": "- Make this a single-pass persistent kernel: one program per row tile (BLOCK_M rows), iterating over all N-tiles internally and maintaining a running max in registers. This eliminates the partial buffer + second reduction kernel entirely and keeps the GELU/scale/max epilogue in registers. With M=1024 and BLOCK_M=32-64, grid is 16-32 programs \u2014 fits well on a 4090's 128 SMs if you split-K is added, otherwise use BLOCK_M=8 to expose more parallelism per row group.\n- Alternative: split-K GEMM with atomic-free two-stage reduction. Stage 1 computes BLOCK_M \u00d7 BLOCK_N tiles of the matmul+bias+pool+gelu+scale, writes to a (M, N/POOL_K) intermediate. Stage 2 does a row-max reduction. Current kernel already fuses through max within a tile; the bottleneck is the GEMM itself (1024\u00b78192\u00b78192\u00b72 \u2248 137 GFLOPs, ~1.7ms \u2248 80 TFLOPS, decent but RTX 4090 can hit ~165 TFLOPS fp32-via-tf32). Enable TF32 by using `tl.dot(x, w, allow_tf32=True)` and consider casting weights to bf16/fp16 at init for ~2\u00d7 tensor-core throughput.\n- Consider transposing/preparing weight as `[K, N]` contiguous at module init (store `weight.t().contiguous()`) so the GEMM loads W with the contiguous axis being N \u2014 improves coalescing on the B-operand load and removes the `tl.trans` in the inner loop.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 18,
+    "global_best_node_id": 15,
+    "global_best_score": [
+        1,
+        1,
+        1.7535136642010192
+    ]
+}

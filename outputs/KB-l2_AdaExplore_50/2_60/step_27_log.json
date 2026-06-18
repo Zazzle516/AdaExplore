@@ -1,0 +1,30 @@
+{
+    "node_id": 27,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        1,
+        24
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.6549051586529102,
+    "max_reward": 0.6549051586529102,
+    "avg_reward": 0.6549051586529102,
+    "score": [
+        1,
+        1,
+        2.2029675588865096
+    ],
+    "small_guidance": "- The conv_transpose3d kernel iterates `IC=3` and `OC=16` per program \u2014 accumulator is only [16, BLOCK_OW]. Try larger `BLOCK_OW` (256) and `num_warps=4` since the per-program work is small; also add configs with `num_stages=4` to overlap the IC\u00d7KD\u00d7KH\u00d7KW loads.\n- In the GN kernel, `C_per_G * S = 4 * 139425 = 557700` is large; the two-pass design re-reads x. Cache the loaded x tile in a scratch buffer is not possible across programs, but you can fuse the running sums using `tl.sum` over wider `BLOCK_SIZE=8192` with `num_warps=8` (16 warps may oversubscribe). Drop the mask on weight/bias loads \u2014 `c_global` is bounded by construction and an unmasked load is faster; precompute `c_in_g = idx // S` once.\n- Add an autotune key on `OW` (and `OD*OH`) for the conv kernel so the tuner picks distinct configs for the 33\u00d765\u00d765 output shape; current key already has it but ensure BLOCK_OW=128/256 are exercised with num_warps=4.",
+    "large_guidance": "- Switch the GroupNorm to a two-stage design: stage 1 is a partial-reduction kernel where each (N, G) group is split across many programs (e.g. 16-32 programs per group) each producing partial sum/sum_sq into a small scratch tensor; stage 2 is a fused normalize+hardswish kernel that reads x once and uses the precomputed per-group mean/rstd. This converts a serially-bound 557K-element single-program reduction into a parallel reduction and halves global x traffic for stage 2's normalization (currently x is read 2\u00d7 in one kernel; with shared scratch the second kernel still reads once but reduction parallelism rises dramatically).\n- For ConvTranspose3d, the current gather formulation iterates kd*kh*kw*ic = 3*3*3*3 = 81 inner iterations per output element with very small accumulator. Reformulate as scatter-add from the input side: launch over (N, IC tile, ID, IH, IW), compute the input\u00d7weight outer product into BLOCK_OC\u00d7(KD\u00b7KH\u00b7KW) registers, then atomic-add into the OC-major output. With IC=3 and OC=16 this trades 81 gathers for 27 atomic adds per input voxel and fully fuses the swish in the producer's epilogue \u2014 but needs a separate finalize pass for swish since multiple programs contribute. Alternatively, materialize as im2col-style GEMM in channels_last layout: pack the gather indices, then call a tiled GEMM with BLOCK_M=OC=16, BLOCK_N=spatial tile, BLOCK_K=IC*KD*KH*KW=81, fitting entirely in registers.\n- Fuse swish + GN-stats into one kernel: the conv kernel's epilogue can compute swish AND atomically accumulate per-group sum/sum_sq into a scratch buffer of size [N, G, 2], eliminating one full read of the post-swish tensor before GN.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 28,
+    "global_best_node_id": 27,
+    "global_best_score": [
+        1,
+        1,
+        2.2029675588865096
+    ]
+}

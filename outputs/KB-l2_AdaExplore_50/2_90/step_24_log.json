@@ -1,0 +1,30 @@
+{
+    "node_id": 24,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        20,
+        23
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4524383174603175,
+    "max_reward": 0.4524383174603175,
+    "avg_reward": 0.4524383174603175,
+    "score": [
+        1,
+        1,
+        0.532616119047619
+    ],
+    "small_guidance": "- The epilogue is already memory-bound and fused; further tuning of BLOCK_SIZE/num_warps will not close the 2\u00d7 gap. The Conv3d call dominates runtime (~14-15ms of 16.8ms). Tuning effort here yields <5%.\n- If staying with this structure, try BLOCK_SIZE=4096 with num_warps=4 and num_stages=2, and compute `c = (offsets // spatial) % C` once with `spatial` and `C` passed as `tl.constexpr` so the divmod folds into shifts when possible.\n- Consider passing the conv output in channels_last_3d layout so `c` is the innermost axis \u2014 then the sum_tensor load becomes a contiguous broadcast and the divmod disappears.",
+    "large_guidance": "- Replace `nn.Conv3d` with a custom Triton conv3d kernel \u2014 this is where the 8ms\u219216.8ms gap lives. Implement as an implicit-GEMM: one program per `(N, OC tile, output-spatial tile)`, with the K loop over `IC * kD * kH * kW` computing input offsets on the fly (no im2col materialization). Fuse the entire epilogue (bias add, LeakyReLU, sum_tensor add, clamp, GELU) into the accumulator before the store.\n- Fold the conv bias and `sum_tensor` together at forward time into a single per-OC bias vector (`conv.bias + sum_tensor.view(-1)`) \u2014 but only the *constant* fold of two bias-like tensors; the conv itself must still execute. LeakyReLU must be applied before the sum_tensor add, so structure the epilogue as: `acc = acc + conv_bias[oc]; acc = leaky(acc, 0.2); acc = acc + sum_tensor[oc]; acc = clamp; acc = gelu`.\n- Output shape is (128, 64, 14, 62, 62) = ~43M elements; tile with BLOCK_OC=32 or 64, BLOCK_SPATIAL=64 or 128, BLOCK_K=32. Use `triton.autotune` over 4-6 configs. Keep weight in (OC, IC*kD*kH*kW) layout reshaped once at init. Use channels_last_3d for input so the K-dimension (IC) is contiguous and loads coalesce.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 25,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        1.0859163592233008
+    ]
+}

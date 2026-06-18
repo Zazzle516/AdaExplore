@@ -1,0 +1,31 @@
+{
+    "node_id": 48,
+    "parent_node_id": 14,
+    "context_node_ids": [
+        9,
+        12,
+        14
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.414154931640454,
+    "max_reward": 0.414154931640454,
+    "avg_reward": 0.414154931640454,
+    "score": [
+        1,
+        1,
+        0.21677818603374552
+    ],
+    "small_guidance": "- The current kernel materializes a full BLOCK_M\u00d7BLOCK_N tile and reduces it; instead fuse the row-sum directly into the K-loop accumulator by maintaining a `[BLOCK_M]` running sum (sum over N is just sum of `x @ w_col_sum + bias_sum`-equivalent contributions per K tile). Concretely: accumulate `acc[BLOCK_M, BLOCK_N]` over K as today, but skip the per-N-tile allocation by using larger BLOCK_N (256/512) and num_warps=8, since N=K=8192 favors wider N tiles to amortize the K-loop.\n- Add configs with BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4 and BLOCK_M=64, BLOCK_N=256, BLOCK_K=64 \u2014 current best configs top out at BLOCK_N=256 only with BLOCK_K=32, which under-utilizes the K pipeline for K=8192.\n- Enable `allow_tf32=True` in `tl.dot` \u2014 the downstream is a sum\u2192max\u2192mean\u2192logsumexp\u2192logsumexp which collapses to a single scalar per row at atol=5e-2; tf32 will roughly double tensor-core throughput on Ada.",
+    "large_guidance": "- The whole pipeline reduces to a single scalar per row: `out[m] = sum_n (x[m,:] @ W[n,:] + b[n])`. Reorder algebraically at *runtime* (not as a weight rewrite) by computing `acc[BLOCK_M] += sum_n( tl.dot(x_block, w_block) )` inside the K-loop via `tl.sum(..., axis=1)` after each `tl.dot`, so we never carry the full N dimension in registers. Better: launch a 2D grid over (M-tiles, K-tiles) with split-K atomics into a `[M]` output, where each program computes `x_tile @ w_tile` then sums over N and over BLOCK_K into a scalar-per-row contribution \u2014 turns the problem into a bandwidth-bound streaming reduce.\n- Alternative redesign: since the final result is `sum(x @ W.T) + sum(b) = x @ (W.T.sum(dim=1)) + sum(b)` mathematically, but the safety contract forbids precomputing `W.T.sum`. Instead, compute `w_colsum[K] = sum over N of W[n,k]` *at runtime* in a first small kernel (K elements, reduce over N=8192), then the main kernel is a single `(M,K) \u00b7 (K,)` matvec + scalar bias-sum. This keeps every op executing at runtime but turns an 8192\u00d78192\u00d71024 GEMM into a 1024\u00d78192 matvec \u2014 ~8000\u00d7 less arithmetic. Verify this satisfies the contract (the matmul is still happening as a matvec form computed each forward, not folded into init).\n- If keeping full GEMM, switch to a persistent-kernel design with one program per SM that loops over M-tiles; on the 4090's 128 SMs this gives better L2 reuse of W across rows than the current one-program-per-M-tile launch.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 49,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        0.8826896197781255
+    ]
+}

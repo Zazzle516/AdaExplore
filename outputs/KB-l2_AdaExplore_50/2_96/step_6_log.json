@@ -1,0 +1,30 @@
+{
+    "node_id": 6,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        3,
+        4
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4444273092053943,
+    "max_reward": 0.4444273092053943,
+    "avg_reward": 0.4444273092053943,
+    "score": [
+        1,
+        1,
+        0.4665253009445028
+    ],
+    "small_guidance": "- The conv_transpose3d call is the dominant cost (the fused pool kernel only handles a small reduction); tuning BLOCK/num_warps on the pool kernel won't move fast_p much. If staying small, at least add `num_stages=2` and try `num_warps=4` since the per-program work is tiny (PD*PH*PW = 16*32*32 / 8 = 2048 elements, but with MK=2 it's 8*16*16=2048).\n- Consider folding the conv_transpose bias into the pool kernel epilogue and processing channels_last so the channel axis coalesces; current contiguous (N,C,D,H,W) layout means each program reads a strided slab.\n- Use `triton.autotune` over BLOCK \u2208 {256, 512, 1024} and num_warps \u2208 {2,4,8} keyed on (PD*PH*PW), and drop the unused `mask` redundancy in the inner static loop (the in_bounds already covers tail).",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile), compute the input \u00d7 weight outer product and scatter-add into the output grid using stride/padding index math. This is the heavy op (output shape ~ 128\u00d716\u00d731\u00d763\u00d763) and the only path to large speedup.\n- Fuse the entire pipeline: scatter-add convT \u2192 scale \u2192 maxpool(2) \u2192 global-avg \u2192 clamp into a two-stage design. Stage 1: scatter-add convT into a workspace (with bias + scale folded in). Stage 2: a single program per (N,C) reads the workspace, does max-pool reduction over 2\u00b3 windows, accumulates the mean, and clamps. Avoids materializing the large post-conv tensor twice.\n- Alternative: gather-style direct convT-as-gemm where each output voxel sums over contributing (ic, kd, kh, kw) taps with the stride/padding mask; tile output spatially (BLOCK_M over OC, BLOCK_N over D*H*W tile) and use channels_last. Then chain pool+avg+clamp in a second small kernel. Either way, the convT must be a custom kernel \u2014 the current code leaves PyTorch's convT as the bottleneck.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 7,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.46894253048307527
+    ]
+}

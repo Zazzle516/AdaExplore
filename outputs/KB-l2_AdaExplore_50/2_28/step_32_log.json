@@ -1,0 +1,29 @@
+{
+    "node_id": 32,
+    "parent_node_id": 28,
+    "context_node_ids": [
+        28
+    ],
+    "depth": 6,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.48590768192485834,
+    "max_reward": 0.48590768192485834,
+    "avg_reward": 0.48590768192485834,
+    "score": [
+        1,
+        1,
+        0.8087383758800808
+    ],
+    "small_guidance": "- The norm+residual kernel is memory-bound and likely fine; the 3.39ms vs 2.74ms baseline gap is from the GEMM (1024\u00d78192\u00d78192 \u2248 137 GFLOPs). Try `num_warps=32` or 16 with `num_stages=3` on the norm kernel, but expect <5% gain. Also consider passing `1.0/N` as a constexpr to avoid the division.\n- The dominant cost is `torch.addmm` (cuBLAS). Replace it with a tuned Triton GEMM with the bias fused into the epilogue, then chain into the norm kernel \u2014 eliminates one launch and the bias add.\n- If keeping cuBLAS, at least call `torch.mm` into a preallocated buffer and fuse bias into the norm kernel's load (subtract bias inline) to skip the addmm epilogue write/read.",
+    "large_guidance": "- Rewrite as a fused GEMM\u2192InstanceNorm\u2192residual pipeline. Step 1: a tiled `tl.dot` GEMM (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8, num_warps=8, num_stages=3) producing the full (1024, 8192) output with bias added in-epilogue. Step 2: the existing one-row-per-program normalization kernel that also loads y and writes (xn+y)*y. The current `addmm` is the bottleneck and a custom GEMM has the most headroom.\n- Alternative: a \"split-K reduction free\" approach \u2014 since M=1024 and K=N=8192 are both large, a persistent GEMM with L2-aware swizzle (GROUP_M=8) should match cuBLAS on a 4090. Verify with autotune sweep over {(128,128,32),(128,256,32),(64,128,64),(256,128,32)}.\n- For the norm step, since N=8192 fits in one block at BLOCK_N=8192 with num_warps=16-32, keep one program per row and use a single-pass Welford only if register pressure becomes an issue; otherwise the current two-sum approach is fine. Consider folding the bias add into this kernel (load raw GEMM output, add bias[col] inline) so the GEMM doesn't need an epilogue store-then-reload of bias.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 33,
+    "global_best_node_id": 28,
+    "global_best_score": [
+        1,
+        1,
+        0.8257900886245404
+    ]
+}

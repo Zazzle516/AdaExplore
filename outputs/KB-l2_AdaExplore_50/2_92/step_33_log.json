@@ -1,0 +1,29 @@
+{
+    "node_id": 33,
+    "parent_node_id": 25,
+    "context_node_ids": [
+        25
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5059530811633315,
+    "max_reward": 0.5059530811633315,
+    "avg_reward": 0.5059530811633315,
+    "score": [
+        1,
+        1,
+        0.9741129195974848
+    ],
+    "small_guidance": "- The conv (torch cuDNN) now dominates runtime since the fused stats+LSE kernel is already efficient; tuning BLOCK_HW further has marginal headroom. Try adding configs with `BLOCK_HW=128/64` and `num_warps=2` for the fused kernel, plus `num_stages=4` variants, since per-program work is heavy (loops over 64 channels).\n- In `fused_apply_lse_kernel`, hoist the `mean`/`rstd`/`gamma`/`beta` loads outside the BLOCK_HW vector dimension (they are scalars per c) and precompute `scale = rstd * gamma` and `shift = beta - mean * rstd * gamma` once per channel to save FLOPs in the hot loop.\n- In `gn_stats_kernel`, swap the loop order so the outer loop is over HW tiles and inner is `static_range(C_PER_GROUP)` \u2014 this lets one HW-tile load batch be reused for stats and improves L2 reuse; also reduce to a scalar per iteration via `tl.sum` to avoid the [BLOCK_HW]-shaped accumulator.",
+    "large_guidance": "- The torch Conv2d (8\u219264, k=3, 128\u00d7128, N=128) is now the bottleneck. Replace it with a custom Triton im2col-GEMM conv kernel that fuses the GN-stats reduction directly: have each program compute a tile of conv output, accumulate per-group sum/sumsq on the fly, then a second kernel uses these stats and re-reads x_conv to fuse norm+tanh+hardswish+residual+LSE. Or store x_conv tile and avoid global write by keeping it in shared memory if tile fits.\n- Alternatively, since in_channels=8 is tiny, write a direct (not im2col) conv kernel with one program per (N, OC_tile, H_tile, W_tile) tile, unrolling the 3\u00d73\u00d78 = 72 MACs in registers. This avoids im2col overhead and is well-suited to the 4090.\n- Consider fusing conv + GN-stats into a single kernel pass: each program computes its (N, group, HW-tile) output of conv and accumulates that group's sum/sumsq via atomic adds (or a two-stage tree); then a final kernel applies the affine+activation+residual+LSE. This eliminates one full read/write of the [N,64,126,126] tensor.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 34,
+    "global_best_node_id": 31,
+    "global_best_score": [
+        1,
+        1,
+        0.977100996037968
+    ]
+}

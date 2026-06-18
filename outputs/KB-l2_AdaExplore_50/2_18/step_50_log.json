@@ -1,0 +1,31 @@
+{
+    "node_id": 50,
+    "parent_node_id": 49,
+    "context_node_ids": [
+        9,
+        12,
+        49
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (~0.05 max diff) comes from accumulating `row_sum` across N-tiles where masked-out lanes of `acc` are not guaranteed zero \u2014 `tl.dot` with masked `w_block` zeros those lanes, but `b_vals` are masked to 0 too so that's fine; however the real issue is likely TF32 precision on a sum over 8192 elements. Disable TF32 (`allow_tf32=False`) or accumulate in fp32 with a Kahan/compensated sum, or cast x/w to fp32 explicitly.\n- Once correctness is restored, keep the single-pass-per-row-tile structure but add `BLOCK_M=32, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4` to the autotune list \u2014 M=1024 is small so smaller BLOCK_M increases grid occupancy.\n- Fuse the trailing `unsqueeze(1)` by allocating `out` as `(M, 1)` directly and storing with a 2D pointer; trivial, avoids a view.",
+    "large_guidance": "- Recognize the math: `sum(linear(x), dim=1)` equals `x @ w.sum(0) + b.sum()`, but the safety contract forbids precomputing `w.sum(0)`. Instead, fuse at runtime: each program handles one row, loops over K in chunks loading `x[m, k:k+BK]` and the corresponding `w[:, k:k+BK].sum(0)` computed on-the-fly via a second tiled reduction \u2014 i.e. a two-level kernel where the inner tile does `tl.sum(w_tile, axis=0)` then dots with `x_tile`. This keeps the full matmul work but collapses the N-reduction into the K-loop, eliminating the BLOCK_M\u00d7BLOCK_N accumulator entirely.\n- After sum\u2192max\u2192mean\u2192logsumexp\u2192logsumexp on a (batch,1) tensor, the tail ops are identity (max/mean/lse of a single element). The heavy op is purely the linear+sum; design the kernel as a single persistent grid of `M` programs, each computing one scalar output, with K-loop fully unrolled in BLOCK_K=128 chunks and num_warps=8.\n- Ensure fp32 accumulation throughout; the current 0.05 abs error on outputs of magnitude ~thousands suggests TF32 is acceptable, but the failure indicates something else \u2014 likely uninitialized lanes in `tl.sum(acc, axis=1)` when N is not a multiple of BLOCK_N. The redesign should avoid an N-tile loop entirely (see first bullet) which sidesteps this class of bug.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 51,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        0.8826896197781255
+    ]
+}

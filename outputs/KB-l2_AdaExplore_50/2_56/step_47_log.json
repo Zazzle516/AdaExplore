@@ -1,0 +1,31 @@
+{
+    "node_id": 47,
+    "parent_node_id": 46,
+    "context_node_ids": [
+        8,
+        11,
+        46
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The matmul is huge (M=128, N=K=32768) and BLOCK_M=16/32 wastes tensor-core throughput since each row tile is tiny. Add configs with BLOCK_M=64 and BLOCK_M=128 (e.g. 128/128/32, 128/64/64, 64/128/64) with num_warps=8, num_stages=3-4 \u2014 M=128 means there are very few M tiles so larger BLOCK_M raises arithmetic intensity per program.\n- Drop the two-pass partial buffer + reduce_partials_kernel: add a `tl.atomic_add` (or single-program-per-row split-K with atomic) into a length-M output, so the sigmoid-sum epilogue writes directly into `out[m]`. This removes a full M\u00d7n_tiles write/read round-trip.\n- Add a GROUP_M=1 (or just remove grouping) swizzle since M is tiny relative to N; instead consider swapping grid so pid_n is the outer dim for better L2 reuse of the X rows across N tiles (X row of 32768 floats = 128KB, reused across all N tiles).",
+    "large_guidance": "- Restructure as split-K along N (the hidden dim being reduced after sigmoid): one program per (row, N-chunk), compute the GEMM tile, apply bias+sigmoid, reduce along N inside the program to a scalar, then `tl.atomic_add` into `out[m]`. This fuses everything into one kernel and eliminates the partial matrix entirely.\n- Since K=32768 is the dot-product dim and N=32768 is reduced away, consider a persistent-per-row kernel: BLOCK_M=1 (or 4) rows resident, loop over N tiles of size BLOCK_N=256, each tile does a K-loop GEMV-style accumulation (since BLOCK_M is small this is effectively many GEMVs). With BLOCK_M=8 or 16 you can still use tl.dot. Key insight: each X row is read once and reused across all N \u2014 exploit this by keeping the row's K-chunks in registers/shared across the N loop, instead of re-reading X for every N tile.\n- Alternative: cast weights/inputs to fp16/bf16 for the tl.dot (RTX 4090 has strong fp16 tensor cores, ~2x fp32), accumulating in fp32, since the final sigmoid+sum tolerates 5e-2.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 48,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

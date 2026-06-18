@@ -1,0 +1,29 @@
+{
+    "node_id": 22,
+    "parent_node_id": 2,
+    "context_node_ids": [
+        2
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The kernel references the bare name `spatial` inside the jitted function but it was never passed as a parameter. Either pass `spatial` as a regular int argument (e.g. add `SPATIAL` to the signature and use it) or compute it inline as `OD*OH*OW`. Same for the `out_base` line.\n- Also reorder the launch positional args so that the runtime `spatial` int is actually received by a named kernel parameter before constexprs `OC_C`/`K_TOTAL`.\n- Once compiling, start autotune at `BLOCK_N \u2208 {32,64,128}`, `num_warps=4`, `num_stages=2`.",
+    "large_guidance": "- The current design uses `OC_C` (padded-to-pow2 OC) as a tile dimension and accumulates a full `[OC_C, BLOCK_N]` register tile per program, with a `static_range` over `IC*KD*KH*KW=81` iterations. For OC=16 this is fine, but the gather-style index math (computing valid input positions from output coords) is wasteful for ConvTranspose. Rewrite as scatter-add: one program per `(N, IC tile, input-spatial tile)`, load `x[n, ic, id, ih, iw]` and `w[ic, :, kd, kh, kw]`, compute the outer product, and atomic-add into the output grid at `(od=id*S - P + kd, \u2026)`. This matches the natural ConvTranspose semantics and avoids divmod-validity checks.\n- Alternatively keep the gather form but fuse BN + 4\u00d7 avgpool + 4\u00d7 avgpool directly into the conv epilogue: since pool window is 4\u00d74\u00d74=64 contiguous output positions per `(n, oc, od', oh', ow')`, have one program produce that whole 64-element window, accumulate the BN-scaled conv outputs into a single scalar per output element, and write the final pooled tensor \u2014 eliminating the intermediate full-resolution conv output write.\n- Fold BN (eval-mode running stats) into per-OC scale/shift and apply in the conv kernel epilogue unconditionally; the training branch's `F.batch_norm` path defeats fusion and should be replaced with a small Welford reduction kernel only if training latency matters.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 23,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        0.36042383585251137
+    ]
+}

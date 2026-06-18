@@ -1,0 +1,30 @@
+{
+    "node_id": 26,
+    "parent_node_id": 9,
+    "context_node_ids": [
+        5,
+        15
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4841796156156156,
+    "max_reward": 0.4841796156156156,
+    "avg_reward": 0.4841796156156156,
+    "score": [
+        1,
+        1,
+        0.7944818288288288
+    ],
+    "small_guidance": "- The LN kernel is already light; the bottleneck is `nn.ConvTranspose3d`. Tuning LN tile/warps further (e.g., ROWS_PER_PROG=8, num_warps=2 for C=64) will only yield marginal gains. If staying small, try ROWS_PER_PROG \u2208 {2,4,8,16} with num_warps=2 and num_stages=2 since C=64 fits in one warp easily.\n- Move LN normalization axis fusion into the conv-transpose epilogue once the conv is custom; for now ensure the LN input is contiguous in channels-last so the per-(N,D,H,W) row of 64 channels is contiguous (avoid the reshape copy by writing conv output channels-last).\n- Add `@triton.autotune` over {(ROWS_PER_PROG=4, warps=2), (8,2), (16,4), (32,4)} keyed on N to pick the best for N=32\u00b732\u00b764\u00b764\u22484M rows.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per (N, IC-tile, D_in, H_in, W_in) tile computing the input\u00d7weight outer product and atomically scattering into the (N, OC, D_out, H_out, W_out) output, handling stride=2/padding=1 in the index math. This is where >80% of the runtime sits \u2014 LN tuning cannot close the gap.\n- Alternative: implement ConvTranspose3d as a gather GEMM \u2014 one program per (N, OC-tile, output-spatial tile) iterating over (IC, kD, kH, kW), computing source input coordinate `(d+pad-kd)/stride` with divisibility check; this avoids atomics and fuses LN+GELU+scale into the epilogue (since OC=64 is the LN normalization axis, accumulate full OC per output voxel in registers, then do mean/var across the 64-channel vector and apply GELU\u00b7scale before the store).\n- Use channels-last (NDHWC) layout end-to-end so the 64-channel LN reduction is a contiguous register-resident reduction in the conv epilogue; this single fused kernel removes the intermediate conv-output write/read entirely.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 27,
+    "global_best_node_id": 15,
+    "global_best_score": [
+        1,
+        1,
+        0.7944818288288288
+    ]
+}

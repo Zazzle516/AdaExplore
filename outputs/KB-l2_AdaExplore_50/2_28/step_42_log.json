@@ -1,0 +1,33 @@
+{
+    "node_id": 42,
+    "parent_node_id": 25,
+    "context_node_ids": [
+        1,
+        2,
+        23,
+        24,
+        25
+    ],
+    "depth": 6,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4796793267782848,
+    "max_reward": 0.4796793267782848,
+    "avg_reward": 0.4796793267782848,
+    "score": [
+        1,
+        1,
+        0.7573544459208492
+    ],
+    "small_guidance": "- The matmul (1024\u00d78192 \u00d7 8192\u00d78192) dominates runtime; torch.mm is already cuBLAS so tuning the norm kernel further yields little. Focus tuning on the GEMM: write a tiled tl.dot kernel with BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8, num_warps=4, num_stages=3-4, and fuse bias-add + instance-norm + residual + multiply into the epilogue across N tiles.\n- For the norm kernel itself, N=8192 is power-of-two so the FULL path is hit; try num_warps=16/32 with num_stages=3, and consider splitting the row across multiple programs with a two-pass reduction since 8192 elements per program is heavy for a single block.\n- Pre-transpose `self.bmm.weight` once in __init__ (store W^T contiguous) to avoid the implicit transpose cost in torch.mm and to feed a custom GEMM with contiguous K-major B.",
+    "large_guidance": "- Replace torch.mm with a fused Triton GEMM-epilogue kernel: one program per (BLOCK_M, BLOCK_N) tile of the output, accumulating K=8192 in BLOCK_K=32 chunks via tl.dot. After the K loop, add bias, then perform instance-norm normalization. Since instance-norm here reduces across the full N=out_features dimension per row, the GEMM tile cannot finish norm alone \u2014 use a two-stage scheme: stage-1 GEMM writes (C+bias) plus per-row partial sums/sumsq (atomics or split-K row reductions); stage-2 small kernel computes mean/invstd and applies (xn+y)*y. This keeps the heavy matmul as the dominant fused kernel.\n- Alternatively, since M=1024 is small, consider a persistent split-N GEMM where each program owns a full row-group of M tiles and streams N tiles, then performs the row reduction in registers/shared memory before the epilogue store \u2014 eliminating the need for atomics and a second pass.\n- Ensure the weight matrix is stored transposed (out_features \u00d7 in_features \u2192 in_features \u00d7 out_features contiguous) at init so B loads in the K-loop are coalesced along N.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 43,
+    "global_best_node_id": 28,
+    "global_best_score": [
+        1,
+        1,
+        0.8257900886245404
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 16,
+    "parent_node_id": 11,
+    "context_node_ids": [
+        8,
+        11
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The atomic_add on out is incorrect because multiple programs along the N-axis race to add their partials; this works in principle but the bug is likely that `out` needs to be shape `(M,)` not `(M, 1)` for `tl.atomic_add(out_ptr + offs_m, partial, mask=mask_m)` to index correctly \u2014 though strides are 1 so it should work. The real issue: if the kernel is launched twice (autotune benchmarking runs), `out` is zero-initialized only once but autotune re-runs the kernel multiple times against the same output buffer, accumulating wrong sums. Allocate `out` after autotune warmup or use a different correctness strategy: zero out inside a wrapper that runs autotune on a scratch buffer first.\n- Alternative fix: split into two kernels \u2014 a fused matmul+sigmoid producing a `[M, N]` tensor (or directly reduce per-row with one program per row-tile owning the full K and N), then a reduction. Or use a single program per M-tile that loops over all N tiles internally so no atomics are needed.\n- Add configs with `BLOCK_M=128` and a persistent-M strategy where each program owns BLOCK_M rows and iterates the full N dimension, accumulating the row-sum in registers \u2014 eliminates atomic_add entirely.",
+    "large_guidance": "- Redesign so each program owns a tile of M rows and iterates over **all** N tiles internally, accumulating a per-row scalar sum-of-sigmoids in a register vector of length BLOCK_M. This eliminates the cross-program atomic_add (the current correctness bug) and avoids materializing the [M, N] intermediate. Grid becomes `cdiv(M, BLOCK_M)` only.\n- Inside that program, loop over N in BLOCK_N chunks; for each chunk, run the K-loop tiled GEMM into a `[BLOCK_M, BLOCK_N]` accumulator, add bias, apply `tl.sigmoid`, then `tl.sum(axis=1)` and add into the BLOCK_M row-sum register. Store once at the end \u2014 no atomics, no scratch tensor.\n- Since M=128 is small and N=K=32768, prefer `BLOCK_M=32` or `64`, `BLOCK_N=128`, `BLOCK_K=64`, num_warps=8, num_stages=3-4. With only 2-4 row-tile programs, consider making BLOCK_M=128 (single program covers all rows) and rely on multiple warps; or split-K across the grid with a second-stage reduction if occupancy is too low.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 17,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

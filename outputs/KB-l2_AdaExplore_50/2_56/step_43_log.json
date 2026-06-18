@@ -1,0 +1,29 @@
+{
+    "node_id": 43,
+    "parent_node_id": 42,
+    "context_node_ids": [
+        42
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The atomic_add accumulation is the correctness bug: multiple pid_n programs write to the same `out[offs_m]` via `tl.atomic_add`, but `out` is initialized once \u2014 however the issue is the kernel does an in-place sum across the N-tile dimension via atomics, which is correct in principle, BUT note this is fp32 atomics on a zero-init buffer so it should work. The real issue is likely that `tl.atomic_add` with a 1D mask/vector here is fine, so suspect: the autotune re-runs the kernel multiple times per launch with different configs, and atomics accumulate across those trial runs into the same `out` tensor \u2014 leading to massive over-summation (matches ~2M difference vs expected ~16k). Fix by allocating `out` AFTER autotune warmup, or use a non-atomic 2D output `(M, num_n_tiles)` then sum on host, or set `prune_configs_by` / pre-hook to zero `out`.\n- Alternatively, disable autotune (single config) and verify correctness first, then re-enable. Use `triton.Config` with `pre_hook=lambda nargs: nargs['out_ptr'].zero_()`.\n- After fixing, try BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3 for K=N=32768.",
+    "large_guidance": "- Restructure to eliminate atomics entirely: write a two-stage kernel. Stage 1 is a tiled GEMM that produces a `(M, num_n_tiles)` partial-sum tensor where each program computes its tile's `sum(sigmoid(x@W+b))` along N and writes one scalar per (m_tile_row, n_tile). Stage 2 is a tiny reduction kernel summing across n_tiles to produce `(M, 1)`. This avoids atomic contention and the autotune re-run accumulation bug.\n- Even better: since M=128 is small, make each program own a full row (or row block) and loop over N internally \u2014 one program per `(m_tile)` with persistent N-loop, accumulating `sigmoid(acc+b)` reductions in registers and writing once. Grid becomes `cdiv(M, BLOCK_M)` only, no atomics, no second kernel.\n- Use `tl.dot` with BLOCK_M=32 or 64 (matches batch=128), BLOCK_N=128, BLOCK_K=64, num_warps=8, num_stages=3-4 to overlap the long K=32768 loop. Transpose weight once in `__init__` and cache it as a buffer rather than every forward call.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 44,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

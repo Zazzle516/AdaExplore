@@ -1,0 +1,30 @@
+{
+    "node_id": 33,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        9,
+        5
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.44986749871997955,
+    "max_reward": 0.44986749871997955,
+    "avg_reward": 0.44986749871997955,
+    "score": [
+        1,
+        1,
+        0.511406864439831
+    ],
+    "small_guidance": "- The conv-transpose kernel is the bottleneck (6.1ms vs 3.1ms baseline). Add larger autotune configs targeting the (OH_P*OW_P, OC) GEMM shape: e.g. `BLOCK_M=128, BLOCK_N=128, BLOCK_K=64` with `num_warps=8, num_stages=3`, and `BLOCK_M=256, BLOCK_N=128, BLOCK_K=32`. Also drop the redundant/slow configs that never win.\n- Swap the program-id ordering so `pid_sp` is axis 0 (most parallelism, ~16K tiles) and `pid_n`/`pid_oc` on axes 1/2 \u2014 this improves L2 hit rate on the weight tile across the spatial axis and matches Triton's grid scheduling preference for the largest dim first.\n- Precompute `(oh + PH)` and `(ow + PW)` outside the K-loop; in the inner loop, the divisions by SH/SW can be replaced by `>> 1` (stride=2) and the validity check folded into a single mask. Hoist `ic*(IH*IW)` and `oc_offs*(KH*KW)` index math out of the K-loop.",
+    "large_guidance": "- Restructure as a scatter-add conv-transpose fused directly with the min-over-channels reduction: one program per `(N, oh, ow_tile)` of the output grid; loop over `(ic, kh, kw)`, gather the single input pixel, multiply by the OC-vector of weights (a small GEMV of width OC=128 that fits in registers/shared), maintain a running min across OC in registers, then sum across H inside the same kernel \u2014 eliminating the OC\u00d7OH\u00d7OW intermediate write entirely. This removes the ~16M-element conv_out materialization and read-back.\n- Alternatively, fuse min-over-channel into the conv-transpose epilogue: after the GEMM accumulator holds a `[BLOCK_M_spatial, BLOCK_N_oc]` tile, reduce along BLOCK_N with `tl.min` and atomically update a `[N, OH, OW]` min buffer (init to +inf). Then a tiny second kernel does sum-H + GELU + bias. This avoids the full OC-channel write.\n- Use channels-last (NHWC) layout for input, weight `[IC, KH, KW, OC]`, and output so the GEMM-K (IC) and GEMM-N (OC) axes are both contiguous, enabling vectorized 128-bit loads and better tensor-core utilization on the 64\u00d7128 conv-transpose GEMM.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 34,
+    "global_best_node_id": 26,
+    "global_best_score": [
+        1,
+        1,
+        1.3353401460373366
+    ]
+}

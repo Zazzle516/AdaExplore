@@ -1,0 +1,29 @@
+{
+    "node_id": 11,
+    "parent_node_id": 10,
+    "context_node_ids": [
+        10
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4328278968855219,
+    "max_reward": 0.4328278968855219,
+    "avg_reward": 0.4328278968855219,
+    "score": [
+        1,
+        1,
+        0.3708301493055555
+    ],
+    "small_guidance": "- The fused softmax+sigmoid kernel is already memory-bound on a small (C=64) reduction; current `num_warps=4` with BLOCK_C=64 is fine but loads are strided by S (each thread reads `base + c*S`). Switch to a layout where the channel axis is contiguous (permute to NDHWC before the kernel, or recompute pointers so consecutive threads hit consecutive addresses) to coalesce the C-axis loads.\n- The dominant cost (~14.4 ms vs 5.3 ms baseline) is the `nn.ConvTranspose3d` call, not the epilogue. Further tuning of the softmax/sigmoid kernel cannot close the gap; tune the conv-transpose itself.\n- If keeping the current epilogue, add `triton.autotune` over `(BLOCK_C, num_warps, num_stages) \u2208 {(64,4,2),(128,4,2),(64,8,2)}` and process multiple spatial points per program to amortize launch overhead (grid size is N\u00b7D\u00b7H\u00b7W = 16\u00b732\u00b764\u00b764 \u2248 2M programs which is excessive).",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)` computes the `input \u00d7 weight` outer product and scatters into the output grid handling stride=2/padding=1/output_padding=1 in the index math. This is the heavy op (\u224816\u00b764\u00b732\u00b764\u00b764\u00b732\u00b727 \u2248 18 GFLOPs) and currently dominates runtime \u2014 `fast_p=0.37` confirms the conv tail has all the headroom.\n- Fuse the bias add, softmax (channel reduction), and sigmoid into the conv-transpose epilogue: have each program accumulate one full `(N, :, d, h, w)` output column across all OC, then in-register compute max\u2192exp\u2192sum\u2192divide\u2192sigmoid before storing. This avoids a full output tensor read/write between conv and softmax. Use channels-last (NDHWC) storage so the C reduction is contiguous.\n- Alternative: implement conv-transpose as a gather-style GEMM (im2col on the output side) with one program per `(N, OC tile=64, output-spatial tile)`. With OC=64 fitting in a single tile, the softmax reduction is naturally inside one program and can be fused directly. Use autotune `(BLOCK_M, BLOCK_N, BLOCK_K) \u2208 {(64,32,16),(64,64,16),(32,64,32)}`, num_warps=4, num_stages=2 to stay within SMEM.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 12,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.5287083316831683
+    ]
+}

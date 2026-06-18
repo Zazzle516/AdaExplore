@@ -1,0 +1,30 @@
+{
+    "node_id": 5,
+    "parent_node_id": 2,
+    "context_node_ids": [
+        1,
+        2
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5709876035543404,
+    "max_reward": 0.5709876035543404,
+    "avg_reward": 0.5709876035543404,
+    "score": [
+        1,
+        1,
+        1.510647729323308
+    ],
+    "small_guidance": "- The inner loop currently reloads `w_vals` (shape [BLOCK_OC]) for every spatial lane and every `ic`; hoist the weight load out of the spatial inner work by precomputing all KD*KH*KW*IC*BLOCK_OC weights into registers once per program (small: 3*3*3*3*16=1296 floats), or at minimum load weight once per `(kd,kh,kw,ic)` outside the BLOCK_SP-dependent index math (it already is, but ensure the compiler hoists by moving the IC loop outermost over kd/kh/kw).\n- Add autotune configs with larger BLOCK_SP (e.g. 32, 64) and try BLOCK_OC fixed at 16 (since OC=16 exactly) to drop the oc_mask. Sweep `num_stages=4` for the larger tiles to overlap the IC loop's loads.\n- Switch the spatial tiling to iterate over the *pooled* width directly with stride-2 gather: combine the 8 (dd,hh,ww) sub-positions into a single accumulator using `tl.sum` over a [2,2,2,BLOCK_SP,BLOCK_OC] layout, or just hand-unroll and keep `acc` as [BLOCK_SP,BLOCK_OC] but reuse loaded `x_val` across the OC dimension (already done) \u2014 focus instead on reusing `w_vals` across the 8 pool offsets by lifting the `for dd/hh/ww` loops *inside* the kd/kh/kw/ic loops.",
+    "large_guidance": "- Restructure as scatter-add ConvTranspose3d fused with avg-pool: one program per `(N, OC_tile, pooled-spatial tile)`, but invert the loop nest so the outermost loops are over `(ic, kd, kh, kw)` \u2014 load `w[ic, oc_tile, kd, kh, kw]` once, then for each of the 8 pool sub-positions compute the corresponding input `(id,ih,iw)` and accumulate. This loads each weight element exactly once per program instead of 8\u00d7 (current code) and keeps accumulator in registers.\n- Use a channels-last (NDHWC) layout for the input (permute once in forward) so the IC reduction loop has contiguous loads across BLOCK_IC, then issue `tl.dot` over a (BLOCK_SP, BLOCK_IC) \u00d7 (BLOCK_IC, BLOCK_OC) GEMM per (kd,kh,kw) tap. With OC=16, IC=3 this won't help much, but tiling BLOCK_OC over the GEMM-N dim and using `tl.dot` will let the kernel reach tensor-core throughput on larger problems.\n- Consider an alternative formulation: gather-style direct conv, where each output pooled voxel iterates over the small set of input voxels that contribute (for stride=2, kernel=3, pad=1 each pooled cell aggregates contributions from a fixed ~2\u00d72\u00d72 input window). Precompute the (kd,kh,kw) \u2192 (id_offset, valid) mapping at host time and pass as a small constant table; this eliminates the divmod inside the kernel and the validity-mask logic.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 6,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.510647729323308
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 48,
+    "parent_node_id": 44,
+    "context_node_ids": [
+        43,
+        44
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5818177902097902,
+    "max_reward": 0.5818177902097902,
+    "avg_reward": 0.5818177902097902,
+    "score": [
+        1,
+        1,
+        1.599996769230769
+    ],
+    "small_guidance": "- The ConvTranspose3d now dominates runtime (GAP+BN fusion is already cheap). Tuning the existing GAP kernel further yields diminishing returns; instead consider precomputing a `channels_last_3d` weight cache and warming cuDNN with a dummy forward in `__init__` so the first measured run hits the optimal algorithm.\n- For the GAP kernel itself, try splitting the reduction across multiple programs per `(N,C)` (e.g. grid `(N*C, num_splits)` with atomic-add into a small partial buffer, then a tiny finalize kernel) since each program currently sweeps S=8000+20000 elements alone \u2014 and add `BLOCK_S=2048` with `num_warps=4` to the autotune list for low-occupancy cases.\n- Ensure `out` is allocated once and reused (persistent buffer) and skip the `.view(N,C,1,1,1)` allocation overhead by pre-reshaping.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)` computing the `input \u00d7 weight` outer product and scatter-adding into the output grid, with stride/padding/output_padding handled in index math. The BN-fold scale/bias and global-avg-pool reduction can be fused directly into the scatter epilogue \u2014 accumulate per-output-channel partial sums into a `(N, OC)` buffer via atomics, eliminating the need to ever materialize the (N, OC, 20, 36, 36) intermediate (~13M elements per sample).\n- Alternatively, since output is globally averaged, exploit linearity: each input voxel contributes its `input * weight` outer product to OC output channels, and the GAP just sums all contributions. So the entire pipeline reduces to: for each `(n, oc)`, sum over all `(ic, id, ih, iw, kd, kh, kw)` of `input[n,ic,id,ih,iw] * weight[ic,oc,kd,kh,kw] * valid_mask`, divided by output volume \u2014 but the valid_mask depends on output bounds, so per-input-position the count of valid kernel taps must be tracked. This collapses to a weighted reduction that avoids the huge intermediate entirely. **Only pursue if the per-position valid-tap count truly varies** (it does at borders due to no padding), otherwise this is an algebraic shortcut.\n- If keeping torch's conv_transpose, fuse scale+BN+GAP into a single kernel that reads the conv output exactly once in channels_last_3d layout (already done) but adds vectorized 4-wide loads along the C axis to improve memory throughput.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 49,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        1.599996769230769
+    ]
+}

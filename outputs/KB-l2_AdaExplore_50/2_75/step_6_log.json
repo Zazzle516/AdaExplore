@@ -1,0 +1,29 @@
+{
+    "node_id": 6,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM dominates at M=N=K=8192. Add larger autotune configs (BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3) and (BLOCK_M=256, BLOCK_N=128, BLOCK_K=32) and ensure the inner loop uses `tl.dot(a, b, allow_tf32=True)` to leverage TF32 on the 4090. Also drop the K boundary mask when K % BLOCK_K == 0 (it does here) \u2014 use a fast unmasked path.\n- The gn_min_kernel launches only 1024 programs with C_PER_G=16 each, leaving the GPU under-occupied; have each program process multiple rows or split groups across programs and reduce, and tune num_warps=2 (16-wide reductions are tiny).\n- Fuse the final bias add into the gn_min_kernel epilogue: store `min + bias[c]` directly broadcasted across the C dim of the output (M, out_features, 1, 1) instead of a separate `add_bias` step / view-add.",
+    "large_guidance": "- Replace the standalone GEMM + GN-min + bias with a fused two-stage pipeline: stage 1 is the tuned GEMM writing Y; stage 2 is one kernel that for each row computes all 512 group norms, takes the min across all out_features, then writes `min_row + bias[c]` to the (M, out_features) output in a single pass \u2014 eliminating the M-element intermediate and the final broadcast-add launch.\n- Consider a persistent split-K GEMM since K=8192 is large; with BLOCK_K=64 and 3-4 stages the K loop should overlap loads with `tl.dot` better. Pre-transpose the weight once at init (already done) and keep it in `channels_last`-friendly layout.\n- For the GN+min kernel, since C_PER_G=16 is tiny, use one program per (row, group_tile) where group_tile=8 or 16 groups, compute their stats in registers in parallel, and do an atomic-min or two-pass reduction to obtain the per-row min. This raises occupancy from 1024 programs to 8-16k.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 7,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

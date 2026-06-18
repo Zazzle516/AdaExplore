@@ -1,0 +1,30 @@
+{
+    "node_id": 48,
+    "parent_node_id": 47,
+    "context_node_ids": [
+        46,
+        47
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The post-GEMM reduction kernel is tiny (128 rows, ~32k elements each); the 6.35ms runtime is dominated by the 128\u00d732768\u00d732768 GEMM (~275 GFLOPs). Tuning the pool/sum kernel further won't help meaningfully \u2014 focus must shift to the matmul.\n- If keeping addmm, try `torch.nn.functional.linear` with TF32 enabled (`torch.backends.cuda.matmul.allow_tf32 = True`) or cast to fp16/bf16 for the matmul to drastically cut FLOPs while staying within 5e-2 tolerance.\n- Minor: pool kernel could fuse with GEMM epilogue to avoid materializing the full [128, 32768] output tensor, saving ~16MB of HBM traffic.",
+    "large_guidance": "- Replace the cuBLAS `addmm` with a custom Triton GEMM that fuses the bias add, max-pool over pairs of adjacent N-columns, sum-reduction over N, and scale into the epilogue. Each program computes a (BLOCK_M \u00d7 BLOCK_N) tile; in the epilogue, do pairwise max along N (BLOCK_N \u2192 BLOCK_N/2), then sum across N within the tile, and atomically accumulate into a per-row output of size [batch_size]. This avoids ever writing the [128, 32768] intermediate.\n- Use BLOCK_M=64 or 128 (covering all 128 rows in 1-2 row groups), BLOCK_N=128, BLOCK_K=32 or 64 with num_stages=3-4, num_warps=8. Grid = (cdiv(M, BLOCK_M), cdiv(N, BLOCK_N)); each tile contributes a partial sum-of-maxes per row via `tl.atomic_add` to `out[batch_idx]`. Apply scale once after the kernel (or in the last tile via a separate pass).\n- Alternatively, since K=N=32768 is huge and reduction across N is total, consider a split-K style where the GEMM accumulator already sums across N tiles \u2014 but the maxpool prevents pure summation. Keeping pairwise-max in epilogue per BLOCK_N tile (kernel_size=2 aligns naturally) and atomic-adding the per-row partial sum is the cleanest fusion.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 49,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 5,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        4
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4432620325401668,
+    "max_reward": 0.4432620325401668,
+    "avg_reward": 0.4432620325401668,
+    "score": [
+        1,
+        1,
+        0.4569117684563758
+    ],
+    "small_guidance": "- The accumulator is shaped `(BLOCK_N, BLOCK_M)` and `tl.dot(x_tile[BN,BK], w_tile[BK,BM])` \u2014 verify the M/N orientation; swap to a more conventional `(BLOCK_M, BLOCK_N)` accumulator with x as `[BM,BK]`-equivalent so larger N tiles (e.g. 128\u00d7128\u00d716) become viable. Add configs `(BM=128,BN=128,BK=16,warps=8,stages=2)` and `(BM=64,BN=256,BK=16,warps=8,stages=2)` \u2014 both fit ~96KB SMEM in fp32.\n- Drop `allow_tf32=False`; on Ampere/Ada TF32 is correct to within tolerance and ~2\u00d7 faster on `tl.dot`.\n- Avoid the post-kernel `permute(0,3,1,2).contiguous()` \u2014 write directly into a pre-permuted NCHW output by transposing the store indexing in the kernel, eliminating a full output-sized copy.",
+    "large_guidance": "- Restructure as one program per `(N, OC_tile, OH_tile, OW_tile)` (4D grid) with implicit im2col: load an `[BLOCK_M=OC_tile, BLOCK_K]` weight panel and a `[BLOCK_K, BLOCK_OH*BLOCK_OW]` input panel where K iterates `IC` only and `(KH,KW)` are unrolled as compile-time `constexpr` loops (KH=KW=3 \u2192 9 dot accumulations). This removes the divmod-heavy index math from the K loop and lets the compiler fully unroll the 3\u00d73 taps.\n- Write directly into NCHW output (channels_first) so the final `.permute().contiguous()` round-trip disappears; the input permute can also be avoided by gathering NCHW directly with a strided load pattern, since IC=64 is small enough to be the K dim without channels-last reordering.\n- Fuse the epilogue (min, +bias, *scale) in registers as already done, but also broadcast the per-OC `cb+eb*scale_inv` precombined to a single add, and apply `min` after the add since `(min(x,c)+b)*s = min(x*s + b*s, c*s + b*s)` \u2014 careful, this changes the constant per-channel; precompute `c_eff[oc] = (c + eb[oc]) * s` and `b_pre[oc] = cb[oc]`, do `acc = tl.minimum(acc + b_pre, c+constant)*scale + eb*scale` style fold to save one vector op.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 6,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.686288845766129
+    ]
+}

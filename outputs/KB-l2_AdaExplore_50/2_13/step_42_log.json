@@ -1,0 +1,30 @@
+{
+    "node_id": 42,
+    "parent_node_id": 41,
+    "context_node_ids": [
+        6,
+        41
+    ],
+    "depth": 5,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.6313087731685789,
+    "max_reward": 0.6313087731685789,
+    "avg_reward": 0.6313087731685789,
+    "score": [
+        1,
+        1,
+        2.0082973786407763
+    ],
+    "small_guidance": "- The innermost `kd` loop reloads weights and accumulates `w_eff` even though for stride=1 the valid `kd` range collapses to a single value per `d_in` (when `1 \u2264 d_in+kd-PAD < D`). Replace the inner `kd` reduction with a precomputed effective weight tensor `w_sum[ic,oc,kh,kw] = \u03a3_kd w[ic,oc,kd,kh,kw]` only IF you also keep the full D loop \u2014 but here that's a shortcut violation. Instead, hoist the `kd_valid` mask: most `d_in` values use the full `\u03a3_kd` sum; only the boundary `d_in \u2208 {0, D-1}` need the masked partial. Split the D loop into 3 ranges (interior uses cached full sum once per `(ic,kh,kw)`, boundaries handled separately) so weight loads drop ~Dx.\n- Add autotune configs with `BLOCK_HW=512` and try `num_stages=4`; `H*W=16384` per (B,row), so larger blocks reduce launch overhead and amortize the IC*KH*KW*D weight traffic.\n- Move the `cb + eb` epilogue add inside the loop's exit (already done), but also fuse the `acc / D` into the final softmax shift: subtract `(m/D)` instead of dividing acc \u2014 saves one pass over the BLOCK_OC\u00d7BLOCK_HW tile.",
+    "large_guidance": "- For stride=1 ConvTranspose3d, the operation is equivalent to a regular conv with flipped weight and same padding. Restructure as an im2col-style GEMM over `(OC, H*W)` with K=`IC*KH*KW`, accumulating across D inside the kernel: outer loop over `d_in \u2208 [0,D)`, inner GEMM tile multiplies `W[ic*kh*kw, oc]` by `X[d_in, ic, h+kh-pad, w+kw-pad]`. This keeps the D-axis multiply-accumulates intact (contract-safe) but uses `tl.dot` for the (OC, IC*KH*KW) \u00d7 (IC*KH*KW, BLOCK_HW) matmul, which is far more efficient than the current scalar outer-product accumulation.\n- Use channels-last-style tiling: program grid `(B, cdiv(H*W, BLOCK_HW))` with BLOCK_OC=64 (=OC) fully resident, BLOCK_HW=64 or 128, and a K-loop of size IC*KH*KW (=144) chunked at BLOCK_K=32. Mean-over-D becomes an outer accumulator scaled by `1/D` once at the end; softmax/tanh/scale stay fused in the epilogue.\n- Alternative: persistent kernel keeping the full OC=64 column of accumulators in registers per (B, hw-tile), since OC is small and H*W is large \u2014 eliminates re-reading weights across HW tiles.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 43,
+    "global_best_node_id": 24,
+    "global_best_score": [
+        1,
+        1,
+        2.8571081491712707
+    ]
+}

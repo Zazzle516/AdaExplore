@@ -1,0 +1,29 @@
+{
+    "node_id": 16,
+    "parent_node_id": 5,
+    "context_node_ids": [
+        5
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4302693657365737,
+    "max_reward": 0.4302693657365737,
+    "avg_reward": 0.4302693657365737,
+    "score": [
+        1,
+        1,
+        0.34972226732673267
+    ],
+    "small_guidance": "- The current code calls `nn.ConvTranspose3d` (PyTorch) and only fuses the cheap epilogue; the conv dominates. Tuning the epilogue further won't help. If keeping current structure, at minimum precompute `bias_flat` once in `__init__` and call the gather kernel that's already defined instead of torch's conv.\n- For the gather kernel that exists but is unused: try `BLOCK_OC=64, BLOCK_SP=32` and `BLOCK_OC=32, BLOCK_SP=64` with `num_warps=4, num_stages=2-3`, and add an autotune over these. Loop over `ic` should be a regular `range` with `num_stages` pipelining.\n- Use `channels_last_3d` memory format for input/output and lay weight as `[OC, IC, KD, KH, KW]` contiguous with OC innermost in the GEMM tile to coalesce stores along OC.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)` computing the outer product `inp[n, ic, id, ih, iw] * w[ic, :, kd, kh, kw]` and `tl.atomic_add`-ing into the output grid at `(od = id*STRIDE - PAD + kd, ...)`. This avoids the `STRIDE`-divisibility waste that the gather formulation hits (only 1/8 of (kd,kh,kw) combinations are valid per output voxel for stride=2).\n- Fuse the entire epilogue `(2*y + bias)*y + y` (where `y = conv_transpose(x) + conv_bias`) into the scatter kernel's final write: do the scatter-add into a temp buffer, then a tiny pointwise pass applies bias + epilogue. Or, since output is written exactly once per (oc, od, oh, ow) contribution set, run a second kernel that reads the accumulated output, adds conv bias, applies the epilogue, and writes in place.\n- Tile shape recommendation: `BLOCK_OC=32, BLOCK_KSPATIAL=KD*KH*KW=27` (static), unroll all kd/kh/kw with `tl.static_range`. Persist over IC with an inner loop. With OD=32, OH=64, OW=64, OC=64, this gives ~8M outputs \u2014 memory-bound, so prioritize coalesced stores (channels-last) over recomputation.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 17,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.34972226732673267
+    ]
+}

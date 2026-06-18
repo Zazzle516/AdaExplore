@@ -1,0 +1,30 @@
+{
+    "node_id": 48,
+    "parent_node_id": 45,
+    "context_node_ids": [
+        8,
+        42
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.48010596914215153,
+    "max_reward": 0.48010596914215153,
+    "avg_reward": 0.48010596914215153,
+    "score": [
+        1,
+        1,
+        0.7608742454227501
+    ],
+    "small_guidance": "- The GEMM is M=1024, N=8192, K=8192 \u2014 large K dominates. Add bigger-K configs to the autotune list (BLOCK_K=128 with num_stages=3, BLOCK_M=64/BLOCK_N=128 or 128/128) to better overlap loads with `tl.dot` across the 8192-deep K loop.\n- Pre-transpose the weight once in `_build_fused_params` (store `W^T` contiguous as `[K, N]`) so the inner-K load on B becomes a contiguous row load instead of a strided `stride_wn` gather; drop the bf16 down-cast on `x` (it's already fp32 input \u2014 load as fp32 then `.to(tl.bfloat16)` only on the inner tile, but ensure both operands' contiguous axis is the K axis for the MMA).\n- For softmax with N=8192, the `softmax_kernel_full` path with BLOCK=8192 is correct but heavy on regs; try BLOCK=8192 with num_warps=16 and num_stages=1, or switch to a 2-pass online-softmax persistent kernel with BLOCK=1024 and num_warps=8 to reduce register pressure.",
+    "large_guidance": "- Rewrite the GEMM epilogue to fuse the row-wise softmax max-reduction: use a split-K or persistent-M strategy where each program owns a full row tile of N, accumulates the full row (N=8192 fits if M tile is small), and then performs the softmax in-register before storing \u2014 eliminating the separate softmax kernel launch and the round-trip through HBM of a 1024\u00d78192 fp32 tensor (~32 MB).\n- Alternatively, keep two kernels but store the GEMM output in fp16/bf16 (post-affine values are small) to halve the HBM traffic feeding softmax; the softmax kernel upcasts on load. This roughly halves the softmax-bound bandwidth cost.\n- Consider using cuBLAS (`torch.mm`) for the GEMM portion and only a Triton fused (affine + softmax) epilogue kernel \u2014 cuBLAS on 1024\u00d78192\u00d78192 fp32 with TF32 will likely beat hand-tuned Triton on Ada, and the remaining elementwise+softmax fusion is where Triton wins.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 49,
+    "global_best_node_id": 37,
+    "global_best_score": [
+        1,
+        1,
+        1.5538335493874234
+    ]
+}

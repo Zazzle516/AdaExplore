@@ -1,0 +1,29 @@
+{
+    "node_id": 15,
+    "parent_node_id": 13,
+    "context_node_ids": [
+        12
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4626036880532403,
+    "max_reward": 0.4626036880532403,
+    "avg_reward": 0.4626036880532403,
+    "score": [
+        1,
+        1,
+        0.6164804264392324
+    ],
+    "small_guidance": "- Autotune the conv3d kernel: sweep BLOCK_S in {64, 128, 256, 512} with num_warps in {4, 8} and num_stages in {2, 3, 4}; current fixed BLOCK_S=128 with num_warps=4 is likely suboptimal for the (OD*OH*OW = 14*62*62 \u2248 53k) spatial tile.\n- Tile the output-channel axis as well (BLOCK_OC=16 matches OC exactly here) and keep weight loads in registers; the current `acc[OC_C, BLOCK_S]` is fine but `tl.load(w_ptr + w_off)` happens inside the IC\u00d7KD\u00d7KH\u00d7KW loop \u2014 hoist invariant index math (e.g., precompute `ic*KD*KH*KW` outside the kw loop) and use `tl.static_range` consistently.\n- Fold the conv bias add and (optionally) a first pass of the min/clamp epilogue if combined with reshape so the conv output is written in the layout GroupNorm expects (N, G, CPG, S), saving the view round-trip; also tighten the GroupNorm autotune to include BLOCK_S \u2208 {4096, 8192, 16384} since S = 14*62*62 \u2248 53k per group.",
+    "large_guidance": "- Rewrite conv3d as an implicit-GEMM: one program per (N, OC_tile, output-spatial_tile), with K = IC*KD*KH*KW as the GEMM-K reduction. Use `tl.dot` on BLOCK_M (spatial) \u00d7 BLOCK_K \u00d7 BLOCK_N (OC) tiles instead of the current outer-product accumulation; this gets tensor-core throughput which the current scalar FMA loop misses entirely.\n- Switch input/output to channels_last_3d (NDHWC) so the GEMM-K axis (IC, then kernel taps) is contiguous and loads coalesce; the current NCDHW layout makes the inner `ic` loop strided by ID*IH*IW.\n- Fuse the GroupNorm two-pass into the conv epilogue only at the per-(N,G) granularity that fits: have conv write its output to a (N, G, CPG*S) buffer, then a single persistent GroupNorm kernel does Welford + affine + min/clamp in one pass per (N,G) program. Keep dropout in PyTorch (cheap, RNG-bound) or fuse with a Philox-based mask inside the same epilogue.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 16,
+    "global_best_node_id": 15,
+    "global_best_score": [
+        1,
+        1,
+        0.6164804264392324
+    ]
+}

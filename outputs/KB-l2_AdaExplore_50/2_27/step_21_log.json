@@ -1,0 +1,29 @@
+{
+    "node_id": 21,
+    "parent_node_id": 20,
+    "context_node_ids": [
+        20
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4585241295752751,
+    "max_reward": 0.4585241295752751,
+    "avg_reward": 0.4585241295752751,
+    "score": [
+        1,
+        1,
+        0.5828240689960195
+    ],
+    "small_guidance": "- Conv kernel: increase `BLOCK_S` to 512 or 1024 and sweep `num_warps` \u2208 {4,8} with `num_stages` \u2208 {2,3,4} via `triton.autotune`; output spatial size is OD*OH*OW = 13*29*29 = 10933, so larger tiles reduce program count and weight-load redundancy.\n- Hoist the weight loads: with `IC_C=3, KD=KH=KW=4` the inner loop has 192 `tl.load`s per program. Preload the full weight tile per `pid_oc` once into registers (a single `tl.load` over `tl.arange(0, IC_C*KD*KH*KW)`) and reuse across spatial elements.\n- For `fused_gn_mean_kernel`, the channel-mean is what's actually needed for the final reduction \u2014 write `c_sum/S` directly without re-loading via `tl.store`+`tl.load` round-trip; keep per-channel means in a small register array (CHANNELS_PER_GROUP=4) and apply gamma/beta in one final store.",
+    "large_guidance": "- Replace the direct gather conv with an im2col-style implicit GEMM: one program per `(B, OC_tile, spatial_tile)` doing a `BLOCK_M\u00d7BLOCK_N` matmul where K = IC*KD*KH*KW = 192. With OC=16 the OC dim is tiny \u2014 instead tile as `(B, spatial_tile)` with full OC=16 inside one program and use `tl.dot` over the K=192 reduction; this fuses HardSwish in the epilogue and dramatically improves arithmetic intensity vs. scalar FMA.\n- Fuse HardSwish + GroupNorm + spatial-mean into a single post-conv kernel: since the final output is `(B,C)` and GroupNorm followed by spatial-mean commutes nicely (mean over spatial of `gamma*(x-mu)/sigma + beta` = `gamma*(chan_mean - mu)/sigma + beta`), one program per `(B, group)` can stream the conv output once, accumulating per-channel sum and group sum/sumsq, then emit C outputs. This avoids materializing the full `(B, OC, OD, OH, OW)` post-norm tensor.\n- Consider going further: a single mega-kernel per `(B, group)` that performs conv+hardswish on the fly and reduces \u2014 given B=1024 and small OC=16, spatial gather is cheap and avoids writing 1024*16*10933 fp32 (\u2248716 MB) to DRAM, which is likely the current bottleneck.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 22,
+    "global_best_node_id": 12,
+    "global_best_score": [
+        1,
+        1,
+        0.8509946528898934
+    ]
+}

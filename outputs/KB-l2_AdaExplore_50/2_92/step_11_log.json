@@ -1,0 +1,29 @@
+{
+    "node_id": 11,
+    "parent_node_id": 10,
+    "context_node_ids": [
+        10
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.48464644177363947,
+    "max_reward": 0.48464644177363947,
+    "avg_reward": 0.48464644177363947,
+    "score": [
+        1,
+        1,
+        0.798333144632525
+    ],
+    "small_guidance": "- The conv (128\u00d764\u00d7126\u00d7126 with k=3) almost certainly dominates the 4ms runtime; tuning the post kernel further is low-leverage. If keeping the current structure, try `BLOCK_S=128` with `num_warps=4` and `num_stages=2` for `fused_post_kernel`, and fuse the stats pass with the post pass via a single persistent kernel per `(N, group_tile)` keeping conv tiles resident \u2014 currently `x_flat` is read twice from HBM.\n- Replace the `(exp(2x)-1)/(exp(2x)+1)` tanh with the more stable `tl.libdevice.tanh` (or `2*sigmoid(2x)-1` using `tl.sigmoid`) \u2014 fewer ops and avoids overflow when normed is large.\n- Drop the `.contiguous().view` on `x_conv` (already contiguous out of conv) to save a copy, and store `out` directly without the intermediate `view`.",
+    "large_guidance": "- The torch `nn.Conv2d` (8\u219264, k=3, 128\u00d7128\u00d7128 input) is the dominant cost. Replace it with a custom Triton im2col-style GEMM kernel: one program per `(N, OC_tile, out_spatial_tile)`, with `BLOCK_M=64` (OC), `BLOCK_N=64-128` (spatial), `BLOCK_K=IC*kh*kw=72` (full reduction in one pass since it's tiny). Fold the conv bias into the epilogue.\n- Fuse the entire pipeline into a single kernel: conv-GEMM produces an OC\u00d7spatial tile in registers; immediately compute group stats via a second pass over the same tile (or do a two-stage scheme where the first kernel writes conv output + group stats, second kernel does norm/tanh/hardswish/residual/LSE). The key is that conv output (128\u00d764\u00d7126\u00d7126 \u2248 130MB) should not be written and re-read three times.\n- For LSE across only 64 channels, make BLOCK_C cover all channels (next_pow2=64) so the channel reduction is in-register without an online update loop \u2014 this is already the case but the design should keep conv outputs in shared/registers across the C dimension so the post-conv full read is eliminated.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 12,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.9741129195974848
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 33,
+    "parent_node_id": 27,
+    "context_node_ids": [
+        32
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.6055077444459666,
+    "max_reward": 0.6055077444459666,
+    "avg_reward": 0.6055077444459666,
+    "score": [
+        1,
+        1,
+        1.7954388916792234
+    ],
+    "small_guidance": "- The GEMM dominates (M=N=K=8192) \u2014 focus autotune on tiles like BLOCK_M=128, BLOCK_N=256, BLOCK_K=64 with num_warps=8, num_stages=3-4, and also try BLOCK_M=256/BLOCK_N=128. Drop tiny configs that won't be picked to reduce autotune overhead.\n- Transpose the weight once in `__init__` to (K, N) contiguous so the inner-K load on B is contiguous along K (currently `stride_wn` is the row stride of weight which is K \u2014 already contiguous K \u2014 but reordering avoids strided N access in tl.dot's B operand and may simplify swizzling). Cache the transposed weight as a buffer.\n- For the rowmax path, atomic_max on global fp32 is serializing across N-tiles. Replace with a two-stage reduction: write each tile's partial row-max into a (num_pid_n, M) scratch tensor, then a small kernel reduces across the N-tile dimension \u2014 eliminates atomic contention.",
+    "large_guidance": "- Since max_dim=1 reduces over N, fuse the row-max directly into the GEMM with a persistent/split-K-free design where each program owns a full row tile (BLOCK_M rows \u00d7 all of N): loop over N tiles inside the kernel, accumulating an in-register running max. This removes the need for atomics or a second reduction pass entirely, and lets the subtract+GELU happen in the same kernel writing a (M,1) output.\n- Alternatively, since the reference output is (M,1) and only the row-max matters, structure the kernel as one program per row-block that streams K once into shared memory / registers and iterates over all N output columns producing only row-maxes \u2014 this is a fused matmul-then-rowmax that avoids ever materializing the full (M,N) GEMM output (saving 256MB of writes).\n- Use TF32 (`tl.dot(..., allow_tf32=True)` or input cast) on Ada \u2014 fp32 matmul on RTX 4090 is much slower than TF32, and the downstream tolerance (5e-2) accommodates it. Current kernel uses fp32 accumulate which is fine, but inputs should ride the TF32 tensor cores.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 34,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        1.7954388916792234
+    ]
+}

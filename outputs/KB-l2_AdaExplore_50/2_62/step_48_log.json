@@ -1,0 +1,29 @@
+{
+    "node_id": 48,
+    "parent_node_id": 41,
+    "context_node_ids": [
+        41
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM dominates at M=N=K=8192; drop `input_precision=\"ieee\"` (use default TF32) and add larger tile configs like `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64` and `BLOCK_M=256, BLOCK_N=128, BLOCK_K=64` with `num_warps=8, num_stages=3-4` to the autotune list \u2014 IEEE fp32 dot is several times slower than TF32 on RTX 4090.\n- Pre-transpose `fc.weight` once in `__init__` (store `weight.T.contiguous()`) so the B operand has `stride_bk=N, stride_bn=1`, giving fully coalesced contiguous N-direction loads in the inner loop instead of the current strided access.\n- Fold the `+ x` (doubling) into a constant `2.0` multiply in the GN kernel epilogue already done; also try `num_warps=2` for the GN kernel since CH_PER_G=16 (BLOCK=16) is tiny \u2014 one warp is already enough, but bumping grid occupancy via `num_warps=1` and ensuring `num_stages=2` keeps it light.",
+    "large_guidance": "- The matmul is 8192\u00d78192\u00d78192 fp32 \u2014 ~1.1 TFLOPs. RTX 4090 fp32 peak is ~82 TFLOPs but TF32 tensor cores reach ~165 TFLOPs. A from-scratch GEMM should explicitly use TF32 (`tl.dot` default, not \"ieee\") and target ~13ms; current 4.6s indicates fp32-CUDA-core path. Rewrite with TF32, transposed B, BLOCK_M=128/BLOCK_N=256/BLOCK_K=64, GROUP_M=8.\n- Consider fusing the GroupNorm+LeakyReLU+double directly into the GEMM epilogue along the N dimension by choosing `BLOCK_N` equal to (or a multiple of) `channels_per_group=16` and computing per-group stats inside the GEMM tile \u2014 but since groups span only 16 channels and tiles are far larger, a cleaner alternative is a persistent epilogue kernel that consumes the GEMM output already in shared memory. At minimum keep GN as a separate, well-tuned kernel since it's <2% of runtime.\n- If TF32 still falls short, fall back to `torch.matmul` (cuBLAS) for the linear and keep only the fused GN+LeakyReLU+double Triton kernel \u2014 cuBLAS will hit >100 TFLOPs TF32 on this shape without effort.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 49,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

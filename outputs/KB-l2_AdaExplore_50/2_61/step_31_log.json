@@ -1,0 +1,29 @@
+{
+    "node_id": 31,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.406440137620749,
+    "max_reward": 0.406440137620749,
+    "avg_reward": 0.406440137620749,
+    "score": [
+        1,
+        1,
+        0.15313113537117903
+    ],
+    "small_guidance": "- Swap the inner-loop ordering in `conv_transpose3d_relu_kernel`: put the `ic` reduction as the outermost loop and hoist `kd/kh/kw` inside \u2014 better, treat `IC*KD*KH*KW` as a single GEMM-K and use `tl.dot` with `BLOCK_K=16` or 32 to leverage tensor cores instead of the current scalar `w_val[:, None] * x_val[None, :]` outer product per K step.\n- Autotune over `BLOCK_OC \u2208 {32, 64, 128}`, `BLOCK_SP \u2208 {64, 128, 256}`, `num_warps \u2208 {4, 8}`, `num_stages \u2208 {2, 3, 4}`; current 32\u00d7128 with num_warps=4 likely under-utilizes the SM for OC=128, OSP=34\u00b3\u224839304.\n- In `fused_groupnorm_kernel`, S=34\u00b3=39304 and C_PER_GROUP=16 \u2192 reduction is ~628k elements per program; raise `BLOCK_S` to 2048/4096 with `num_warps=8`, and combine `sum_x`/`sum_x2` into one pass using `tl.sum` on a 2D tile of shape `[C_PER_GROUP_TILE, BLOCK_S]` to cut loop overhead.",
+    "large_guidance": "- Reformulate the ConvTranspose3d as an explicit GEMM: per program tile, compute `acc[BLOCK_OC, BLOCK_SP] = W[OC, IC*KD*KH*KW] @ Xcol[IC*KD*KH*KW, BLOCK_SP]` using `tl.dot`. The Xcol gather is implicit \u2014 compute `(id, ih, iw)` from `(od-kd, oh-kh, ow-kw)` with bounds masking, but stage `BLOCK_K` contiguous K elements into shared memory so the dot can use tensor cores. This is the single largest headroom item: current kernel is doing IC*KD*KH*KW=1728 scalar FMAs per output without tensor cores.\n- Fuse ReLU + GroupNorm's first-pass reduction into the conv epilogue: after computing `acc`, apply ReLU and atomically/cooperatively accumulate per-(n, group) partial sum and sum-of-squares into a small `[N, G]` workspace, then a second small kernel finalizes mean/rstd and applies the affine. This eliminates one full read of the 16\u00d7128\u00d734\u00b3 tensor (\u2248315 MB) between conv and groupnorm.\n- Use channels-last (`NDHWC`) layout for the conv output so the GroupNorm reduction (over `C_PER_GROUP * S`) walks contiguous memory and the conv's OC tile stores are coalesced across the channel axis.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 32,
+    "global_best_node_id": 22,
+    "global_best_score": [
+        1,
+        1,
+        1.3618264077669902
+    ]
+}

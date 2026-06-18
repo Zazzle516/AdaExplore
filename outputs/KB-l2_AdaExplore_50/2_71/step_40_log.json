@@ -1,0 +1,30 @@
+{
+    "node_id": 40,
+    "parent_node_id": 37,
+    "context_node_ids": [
+        28,
+        34
+    ],
+    "depth": 5,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.6295984592834987,
+    "max_reward": 0.6295984592834987,
+    "avg_reward": 0.6295984592834987,
+    "score": [
+        1,
+        1,
+        1.994187289088864
+    ],
+    "small_guidance": "- Add larger-tile autotune configs targeting the dominant shape (M=H_OUT*W_OUT=15876, OC=64, K=72\u2192K_PAD=128): try `BLOCK_M=256, BLOCK_N=64, num_warps=8, num_stages=4` and `BLOCK_M=128, BLOCK_N=32, num_warps=4, num_stages=4`. With OC=64, BLOCK_N=64 covers the entire OC dim in one program \u2014 drop BLOCK_N=128 configs.\n- Replace the per-iteration `tl.where(acc>=0, acc, acc*neg_slope)` with `tl.maximum(acc, acc*neg_slope)` (one fused FMA+max) and write the output in NHWC then reshape, so the store is a single contiguous tile rather than the strided `offs_n*M + offs_m` pattern (currently scatters across OC*M).\n- Since K_PAD=128 is small, fold the K loop fully (already done) but precompute `x_off` as `int32` and hoist `out_h * W_IN * IC` outside the K-broadcast \u2014 the current `in_h * (W_IN*IC)` recomputes a 2D tensor; split into a 1D base + KH-only delta to reduce index-math pressure.",
+    "large_guidance": "- Switch the output layout to NHWC so stores are coalesced: have program (pid_b, pid_m, pid_n) write a contiguous `[BLOCK_M, BLOCK_N]` tile of `(N, H_OUT, W_OUT, OC)` and do a final `permute` to NCHW (or fuse the permute into a tiny copy kernel). The current NCHW store with `offs_n*M + offs_m` is strided and likely the bottleneck at 0.89ms.\n- For 3\u00d73 stride-1 conv with IC=8, K=72, consider a direct (non-im2col) kernel: load each input row once into registers/SRAM and reuse across 3 output rows, eliminating the redundant gathers from im2col where adjacent output pixels reload 6/9 of the same input values. A persistent kernel iterating over output rows per (N, OC-tile, W-tile) would amortize weight loads (weights fit in ~18KB).\n- Alternatively, fuse weights into shared memory once per program (weight tensor is only 72\u00d764\u00d74B = 18KB, fits easily) and tile only over (N, spatial); with OC=64 fully covered, the kernel becomes a pure spatial sweep with one weight load per program \u2014 should approach memory-bandwidth-bound on input.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 41,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        2.642075260804769
+    ]
+}

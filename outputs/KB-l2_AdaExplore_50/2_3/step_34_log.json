@@ -1,0 +1,27 @@
+{
+    "node_id": 34,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4272100167197311,
+    "max_reward": 0.4272100167197311,
+    "avg_reward": 0.4272100167197311,
+    "score": [
+        1,
+        1,
+        0.32448263793778126
+    ],
+    "small_guidance": "- The current kernel never actually runs \u2014 `ModelNew.forward` falls through to the eager path. The \"fused\" Triton kernel is dead code, so runtime \u2248 pure PyTorch and `fast_p \u2248 0.32`. First fix: actually launch `fused_post_kernel` and return its output when the fast-path conditions hold; allocate `out` shape `(N, C, Dp, Hp, Wp)` and grid `= N*Dp*Hp*Wp`, `BLOCK_C = next_pow2(C)`, `num_warps=4`, `num_stages=2`.\n- The biggest cost is still the `ConvTranspose3d` itself (huge upsample 16\u00d732\u00d732 \u2192 32\u00d764\u00d764). Tuning the post-conv epilogue alone caps speedup; once the launch is wired, the conv dominates.\n- For the epilogue kernel, fuse `+sum_weight`, LayerNorm-over-C, 2\u00d72\u00d72 avg-pool, and GELU in one program-per-output-voxel as written \u2014 but load the 8 input voxels with a single 2D `[8, BLOCK_C]` tile so the LN reduction is amortized; current code redoes mean/var 8\u00d7 per output.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, D_in, H_in, W_in tile)`, computing the outer product `input \u00d7 weight[ic, oc, kd, kh, kw]` and `atomic_add`-ing into the output grid with `stride=2`, `padding=1`, `output_padding=1` index math. This is where the 8 ms of headroom lives; the epilogue is a few percent.\n- Alternatively, formulate ConvTranspose3d as a gather/GEMM: for each output voxel `(od, oh, ow)`, sum over `(ic, kd, kh, kw)` with the standard transposed-conv inverse index map (`id = (od + pad - kd) / stride` valid only when divisible). Tile as GEMM with `BLOCK_M = OC`, `BLOCK_N = output-spatial tile`, `BLOCK_K = IC * KD * KH * KW = 32*27 = 864`; `(64,32,16)` at `num_warps=4`, `num_stages=2` fits SMEM.\n- Fuse `+sum_weight` and the LN affine's contribution that's data-independent into the conv epilogue; keep the LN reduction (needs all C) and avg-pool/GELU in a second small kernel that reads channels-contiguous output. Use `channels_last_3d` layout end-to-end so the LN reduction over C is contiguous.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 35,
+    "global_best_node_id": 26,
+    "global_best_score": [
+        1,
+        1,
+        1.0415970119959803
+    ]
+}

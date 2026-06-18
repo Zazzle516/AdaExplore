@@ -1,0 +1,29 @@
+{
+    "node_id": 7,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.44979747724595787,
+    "max_reward": 0.44979747724595787,
+    "avg_reward": 0.44979747724595787,
+    "score": [
+        1,
+        1,
+        0.5108291872791519
+    ],
+    "small_guidance": "- Autotune conv3d_kernel over BLOCK_M \u2208 {16,32,64}, BLOCK_N \u2208 {64,128,256}, num_warps \u2208 {4,8}, num_stages \u2208 {2,3,4}; current 16\u00d7128 likely under-tiles OC=16 and leaves the inner K=81 loop launch-bound.\n- Hoist the k\u2192(ic,kd,kh,kw) decomposition by unrolling KD/KH/KW as nested `tl.static_range` loops so the divisions are constant-folded; also precompute `od*IH*IW + oh*IW + ow` once outside the K loop and only add `(kd*IH*IW + kh*IW + kw)` inside.\n- In fused_gn_min_clamp_kernel drop the redundant `y = tl.minimum(y, min_value); y = tl.maximum(y, min_value)` (it just clamps to exactly min_value) \u2014 replace with a single `tl.maximum(tl.minimum(y, max_value), min_value)` after recognizing min(x,0)+clamp(.,0,1)=clamp(x,0,0)\u2026 actually it's clamp to [min,min] then min(max): keep semantics but fuse to two ops. Also raise BLOCK_SIZE to 2048 and num_warps to 8 for the 8192-element groups.",
+    "large_guidance": "- Rewrite conv3d as an im2col-style GEMM: one program per (N, OC_tile, spatial_tile) with BLOCK_K tiling over IC*KD*KH*KW using `tl.dot`. With OC=16, pad the M tile to 16 and make BLOCK_N=128\u2013256, BLOCK_K=27 or 32; this turns the current scalar outer-product loop into tensor-core matmul and should be 5\u201310\u00d7 faster on the conv (which dominates the 5.66 ms).\n- Fuse the GroupNorm reduction's first pass into the conv epilogue: have the conv kernel accumulate per-(N,group) sum and sum_sq into a small auxiliary tensor via atomics (or a second small kernel reading the conv output), so the GN kernel only needs one pass for normalize+min+clamp instead of two passes over the full NCHW volume.\n- Note: with min_value=0, max_value=1 the sequence min(x,0)\u2192clamp(0,1) collapses to a constant 0 output mathematically \u2014 but per the safety contract we must still execute the operators; keep them as a fused `tl.maximum(tl.minimum(tl.minimum(y, 0.0), 1.0), 0.0)` epilogue and do not exploit the algebraic collapse.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 8,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.5528285277246654
+    ]
+}

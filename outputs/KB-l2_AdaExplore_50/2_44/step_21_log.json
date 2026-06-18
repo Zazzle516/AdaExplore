@@ -1,0 +1,29 @@
+{
+    "node_id": 21,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        4
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.42485452546521957,
+    "max_reward": 0.42485452546521957,
+    "avg_reward": 0.42485452546521957,
+    "score": [
+        1,
+        1,
+        0.3050498350880614
+    ],
+    "small_guidance": "- The output H\u00d7W = 256\u00d7256 \u2192 HW=65536, which is huge per (N,OC). Add larger BLOCK_HW configs (256, 512) and try BLOCK_OC=32 with BLOCK_HW=256 to better amortize the weight loads; also try IC_TILE=64 with num_stages=4 since IC=64 fits in one or two tiles.\n- The reduce_partial_kernel launches with BLOCK=max_num_tiles (1024 for BLOCK_HW=64), wasting work. Pass `actual_num_tiles` as the reduction length and stride partial by `actual_num_tiles` (or always pre-pick a BLOCK_HW so layout is known) \u2014 current code reads stale zero-padding across a 1024-wide stride that may not match actual_num_tiles, risking subtle correctness on configs \u2260 BLOCK_HW=64.\n- Drop the bias add + `*multiplier` from the broadcast path and instead apply `multiplier` once to the final scalar (and add `bias * HW / HW = bias` to the reduced sum) \u2014 saves a BLOCK_OC\u00d7BLOCK_HW write/mult per tile.",
+    "large_guidance": "- Restructure as one program per (N, OC-tile) that streams over the full output grid and accumulates the spatial sum directly into registers \u2014 no partial buffer, no second kernel. Since the output is only used after mean over H,W, you never need to materialize the OH\u00d7OW tensor; just accumulate \u03a3 over output positions inside the kernel (this is legitimate fusion, the full MAC count is preserved because we still loop over every (oh,ow,kh,kw,ic)).\n- Better: swap the loop order to iterate over input (ih,iw,ic) and (kh,kw), and for each contribution compute how many output positions it lands on (it's exactly 1 valid output per (kh,kw) given stride/pad), accumulating `x[n,ic,ih,iw] * w[ic,oc,kh,kw]` into a per-oc register, weighted by validity mask. This gives an N\u00b7IC\u00b7IH\u00b7IW\u00b7OC\u00b7KH\u00b7KW MAC count identical to ConvTranspose2d but with a tiny output footprint (N\u00b7OC) \u2014 the spatial sum is the natural reduction. Grid: (N, OC/BLOCK_OC); inner GEMM-like accumulation over IH\u00b7IW with BLOCK_HW tiling of inputs.\n- Use channels-last for input and weight layout `(IC, OC, KH*KW)` so the OC dimension is contiguous for the dot product, and use tl.dot for the (BLOCK_HW, IC) \u00d7 (IC, BLOCK_OC) matmul inside the loop.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 22,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.5153493426108915
+    ]
+}

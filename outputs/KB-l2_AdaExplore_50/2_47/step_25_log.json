@@ -1,0 +1,29 @@
+{
+    "node_id": 25,
+    "parent_node_id": 13,
+    "context_node_ids": [
+        10
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.44705856313131315,
+    "max_reward": 0.44705856313131315,
+    "avg_reward": 0.44705856313131315,
+    "score": [
+        1,
+        1,
+        0.4882331458333333
+    ],
+    "small_guidance": "- Add a `triton.autotune` sweep over `BLOCK_M \u2208 {32,64,128}`, `BLOCK_N \u2208 {32,64,128}`, `BLOCK_K \u2208 {32,64}`, `num_warps \u2208 {4,8}`, `num_stages \u2208 {2,3,4}`. The current 64/64/32 with 4 warps is likely suboptimal for OC=64 and OUT_SPATIAL=30\u00b762\u00b762.\n- Replace the mish/tanh epilogue's `tl.exp(2*sp)` / `(e2-1)/(e2+1)` with `tl.math.tanh` (available on Ampere/Triton); the current two extra `exp` per element are wasted flops and may even underflow/overflow. Also use `tl.where(acc>20, acc, tl.log1p(tl.exp(-tl.abs(acc))) + tl.maximum(acc,0))` for a stable softplus.\n- Hoist the per-k decode (kt/kh/kw/ic) outside the K loop when possible by iterating IC in the innermost block (so kt,kh,kw vary slowly) \u2014 or restructure to loop over (kt,kh,kw) explicitly with an inner IC GEMM-K tile to remove integer division/modulo from the hot path.",
+    "large_guidance": "- Switch the K-loop structure from \"flat K_TOTAL with div/mod decode\" to explicit nested loops over `kt, kh, kw` with the GEMM-K dimension being only IC (=32). This removes all integer div/mod from the inner loop and makes input offsets a simple add of precomputed per-(kt,kh,kw) base offsets; with IC=32 the K-block matches one `tl.dot` exactly.\n- Re-tile so each program produces a larger `(BLOCK_M, BLOCK_N)` output tile (e.g. 128\u00d764 with 8 warps) and persist across the OC tile dim, since OC=64 is small \u2014 one program per (batch, spatial tile) computing all 64 output channels eliminates the pid_n dimension and lets the weight tile (27\u00b732\u00d764 = 27KB) be reused fully.\n- Consider a channels-last NHWC output written directly in NCDHW-friendly order, or skip the final `.contiguous()` permute by having the kernel store in NCDHW directly (one program per (n, oc_tile, spatial_tile) writing strided). The trailing permute+contiguous after the kernel currently costs a full extra tensor copy.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 26,
+    "global_best_node_id": 19,
+    "global_best_score": [
+        1,
+        1,
+        1.2681380411255412
+    ]
+}

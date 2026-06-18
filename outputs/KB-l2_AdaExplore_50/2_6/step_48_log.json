@@ -1,0 +1,30 @@
+{
+    "node_id": 48,
+    "parent_node_id": 47,
+    "context_node_ids": [
+        44,
+        47
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.45280400354939526,
+    "max_reward": 0.45280400354939526,
+    "avg_reward": 0.45280400354939526,
+    "score": [
+        1,
+        1,
+        0.5356330292825106
+    ],
+    "small_guidance": "- The current kernel keeps the Conv3d in PyTorch (which dominates) and only fuses softmax+pool. To extract more headroom, fuse the two MaxPool3d layers into a single window of size (pool*pool)\u00b3 over the conv output and combine with softmax in one pass \u2014 already done; now try BLOCK_C=16 (exact C) with num_warps=1 and explore num_stages=4, plus a grid swap so `ow` is the fastest-varying program id mapped to a 2D grid `(N*OD, OH*OW)` for better L2 reuse across adjacent output tiles.\n- The store is strided by `OD*OH*OW` across channels \u2014 switch output to channels_last too (write `(N, OD, OH, OW, C)` then permute outside), so the channel store is contiguous; this halves store-side traffic stalls.\n- Replace `tl.static_range` triple-nested 4\u00d74\u00d74=64 loop with a single flattened `tl.arange(0, 64)` gather of 64 vectors of length BLOCK_C and a single max-reduce: precompute the 64 offsets at host time and pass as a small constexpr table, or compute via integer math in-kernel; this lets the compiler schedule loads in parallel rather than sequentially.",
+    "large_guidance": "- Conv3d is the dominant cost (output 128\u00d716\u00d714\u00d730\u00d730 \u2248 24M points with 3\u00b727 MACs each). Replace it with a custom Triton im2col-GEMM kernel: one program per (N, OC tile, output-spatial tile), implicit im2col gather of the (IC\u00b7kd\u00b7kh\u00b7kw)=81 K-dim, BLOCK_M=64 (OC=16 padded), BLOCK_N=64\u2013128 over flattened spatial, BLOCK_K=32 or 81 (single K-block since 81 is tiny). Use channels_last_3d input so K-dim loads coalesce.\n- Fuse the entire pipeline into one (or two) kernels: conv epilogue writes directly into a softmax+pool reducer. Because pool window after fusion is 4\u00b3=64 and softmax is over C=16, one program per (N, od, oh, ow) can: (a) compute the 64 conv outputs for all 16 channels on-the-fly via the im2col GEMM, (b) take softmax over C per spatial point, (c) reduce-max over the 64 window. This eliminates the 24M-element conv-output materialization entirely.\n- Alternatively, if full fusion is too complex, keep conv as a standalone custom Triton kernel and leave the existing softmax+pool kernel \u2014 the conv replacement alone should yield most of the remaining speedup since softmax+pool is already a small fraction of the 1.15 ms.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 49,
+    "global_best_node_id": 22,
+    "global_best_score": [
+        1,
+        1,
+        2.689860190720031
+    ]
+}

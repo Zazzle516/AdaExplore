@@ -1,0 +1,30 @@
+{
+    "node_id": 9,
+    "parent_node_id": 7,
+    "context_node_ids": [
+        1,
+        7
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4447203067252213,
+    "max_reward": 0.4447203067252213,
+    "avg_reward": 0.4447203067252213,
+    "score": [
+        1,
+        1,
+        0.46894253048307527
+    ],
+    "small_guidance": "- The conv_transpose3d is the dominant cost (~19ms vs 9ms baseline); tuning the maxpool/avg kernel cannot close the gap. If staying small, at least move BN-style scale folding into a conv epilogue and add configs with BLOCK=4096, num_warps=16 \u2014 but this won't help much.\n- The current pool kernel uses one program per (N,C); with N*C=128*16=2048 programs each reducing D*H*W/8 elements, it's already cheap. Don't over-tune it.\n- Pre-multiply scale into conv weight/bias at eval time instead of folding into inv_count_scale (numerically equivalent, no perf change) \u2014 only useful once conv is replaced.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile) computing the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and scatter-adding into `output[n, oc, d*stride+kd-pad, ...]` using `tl.atomic_add`. Stride=2, pad=1, kernel=3 over a 16\u00d732\u00d732 input \u2192 31\u00d763\u00d763 output; total scatter volume is modest.\n- Fuse the scale multiply, maxpool reduction, global-avg reduction, and clamp directly into the conv_transpose epilogue path \u2014 but since scatter-add ordering makes per-output fusion hard, a cleaner split is: (a) custom convT3d writing the full output, (b) keep the existing fused maxpool\u2192mean\u2192clamp kernel. The win comes from (a).\n- Alternatively, since output of convT is large (128\u00b716\u00b731\u00b763\u00b763 \u2248 250M elements) and immediately maxpooled by 2 then globally averaged, consider a gather-style direct convT formulation: one program per (N, OC, output-pool-tile) that computes only the maxpool-reduced values by iterating over the 2\u00d72\u00d72 maxpool window and the kd,kh,kw kernel taps, avoiding ever materializing the full convT output. This collapses three kernels into one and skips ~250M-element write/read traffic.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 10,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.46894253048307527
+    ]
+}

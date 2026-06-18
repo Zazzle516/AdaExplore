@@ -1,0 +1,29 @@
+{
+    "node_id": 6,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        4
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness bug: the per-row sum collapses H, but the final `tl.where(mask_h, tile_acc, 0.0)` is applied only on the last H tile inside the loop \u2014 that's actually fine, but the real issue is likely that `tile_acc` is reset per h_start yet `row_acc += tl.sum(tile_acc, axis=1)` only captures the last summed contribution properly only if BLOCK_H divides H; verify H=8192 is divisible by all BLOCK_H choices (it is), but double-check that `mask_h` masking happens *every* iteration (it does). The actual bug: `tl.dot(x_tile, tl.trans(w_tile))` requires BLOCK_B, BLOCK_H \u2265 16 \u2014 the config with BLOCK_B=16 is fine but ensure no config drops below 16. More importantly, verify dtype \u2014 accumulating fp32 from fp32 inputs of `torch.rand` with K=8192 can accumulate ~8192 values per output, max diff ~4.7 suggests not roundoff but a real miscompute.\n- Trace the indexing: `w_ptrs = w_ptr + offs_h[:, None] * stride_wh + k_idx[None, :] * stride_wk` \u2014 weight is `(H, K)` row-major so stride_wh=K, stride_wk=1; that's correct. But `tl.trans(w_tile)` makes it `(BLOCK_K, BLOCK_H)`, then `tl.dot((BLOCK_B,BLOCK_K),(BLOCK_K,BLOCK_H))` \u2192 (BLOCK_B, BLOCK_H). Correct. Suspect: configs with BLOCK_K=32 may force tl.dot into an unsupported shape on RTX 4090 with fp32 inputs \u2014 explicitly cast x_tile/w_tile to tl.float32 and pass `allow_tf32=False` to `tl.dot` to ensure deterministic accumulation.\n- Once correct, drop the inner H loop entirely: since we only need the row-sum, fuse `sum_h(W) \u2192 w_colsum[K]` is forbidden (algebraic shortcut). Instead, keep the structure but pick BLOCK_H large (e.g. 256) and BLOCK_K=32 with num_stages=4, num_warps=8 \u2014 this is a tall-skinny GEMM reduced along H, so larger BLOCK_H reduces redundant K-loop work.",
+    "large_guidance": "- Redesign as a two-stage kernel: stage 1 is a standard tiled GEMM producing the full (B, H) matmul output tile-by-tile into a scratch buffer with the (\u00b7/2) folded in; stage 2 is a row-reduction kernel over H that multiplies by scaling_factor. This separates the GEMM (which dominates ~134 GFLOPs) from the cheap reduction and lets each kernel use its optimal tile shape.\n- Alternatively, a single persistent fused kernel: one program per row-block of B, iterate H tiles in the outer loop and K tiles in the inner loop, accumulating `tile_acc` (BLOCK_B, BLOCK_H) via `tl.dot`, then immediately reducing along H into `row_acc` and discarding. This is what the current kernel attempts \u2014 the bug is likely the inner K loop reusing `offs_k` across iterations; ensure k_idx is recomputed and the mask is applied to both loads. Also consider splitting B across `program_id(0)` and H across `program_id(1)` with an atomic_add into row_acc \u2014 gives much better parallelism since current grid is only cdiv(1024, BLOCK_B) \u2248 16-64 programs, severely under-occupying the 4090.\n- Use split-K / split-H with atomic adds: grid = (cdiv(B, BLOCK_B), cdiv(H, BLOCK_H)), each program computes its (B_tile, H_tile) GEMM block, row-reduces along its H slice, then `tl.atomic_add` into `out[b]`. This gives ~16\u00d7128 = 2048 programs, fully saturating the GPU.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 7,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

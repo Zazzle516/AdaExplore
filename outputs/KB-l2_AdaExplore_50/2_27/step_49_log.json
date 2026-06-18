@@ -1,0 +1,29 @@
+{
+    "node_id": 49,
+    "parent_node_id": 48,
+    "context_node_ids": [
+        48
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4562267200892105,
+    "max_reward": 0.4562267200892105,
+    "avg_reward": 0.4562267200892105,
+    "score": [
+        1,
+        1,
+        0.5638704407359862
+    ],
+    "small_guidance": "- Expand the conv3d autotune sweep: try `BLOCK_S in {128, 256, 512}` with `num_warps in {2, 4, 8}` and `num_stages in {2, 3, 4}` keyed on `(B, OC, S)`; current fixed launch (BLOCK_S=1024, num_warps=4) is likely suboptimal for S=2535 with B*OC=16384 programs.\n- Promote `IC` to a `tl.constexpr` (it is only 3) so the outer `for ic` loop fully unrolls along with the KD/KH/KW static_range, collapsing the inner body into 192 FMAs per output element with constant indexing.\n- In `fused_post_conv_kernel`, drop the `tl.where(mask, hs, 0.0)` (the masked load already zeroed the tail) and consider a single-pass Welford or summing in fp32 accumulators per channel \u2014 also try `BLOCK_S=2535` (next-pow2 = 4096) as a persistent single-iteration reduction since S is small.",
+    "large_guidance": "- Rewrite conv3d as an implicit-GEMM: one program per `(B tile, OC tile, output-spatial tile)`, doing a `BLOCK_M x BLOCK_N = (OC) x (S_tile)` matmul with K = `IC*KD*KH*KW = 192`. Use `tl.dot` on the gather-formed `[BLOCK_K, BLOCK_N]` input patch tile against `[BLOCK_M, BLOCK_K]` weight tile \u2014 this gets tensor-core throughput vs. the current scalar FMA loop.\n- Fuse hardswish + GroupNorm reductions into the conv epilogue: have each conv program accumulate per-(b, group) partial sum and sumsq into a global scratch via `atomic_add` (only `B*groups = 4096` slots), then a tiny second kernel computes mean/rstd and the final per-channel mean output. This avoids the full `(B, OC, S)=16k*2535` materialization between kernels \u2014 currently the dominant bandwidth cost.\n- Alternatively, since output is just `(B, OC)` after spatial mean, fuse conv + hardswish + spatial-mean into one kernel (one program per `(B, OC)`) that streams over the spatial domain accumulating `sum(hs)` and `sum(hs^2)` per channel, then a second kernel does the cross-channel group reduction and affine \u2014 eliminates writing the 165MB conv_out tensor entirely.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 50,
+    "global_best_node_id": 30,
+    "global_best_score": [
+        1,
+        1,
+        0.8530881206706803
+    ]
+}

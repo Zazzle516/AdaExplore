@@ -1,0 +1,29 @@
+{
+    "node_id": 13,
+    "parent_node_id": 8,
+    "context_node_ids": [
+        9
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness bug is the SPLIT_K path: each program writes `row_sum * SCALE` and atomically adds, so the scale is applied SPLIT_K times. Apply `SCALE` only once (e.g. multiply after the atomic accumulation in a tiny epilogue kernel, or only scale when `pid_k == 0` and accumulate unscaled partials \u2014 better: atomic_add unscaled `row_sum`, then launch a 1-line scale kernel, or set `SCALE=1.0` for split path and multiply `out` by `scale_factor` in Python after the launch).\n- After fixing SPLIT_K scaling, also guard against `N_per_split` not being a multiple of `BLOCK_N` \u2014 currently the autotuner can pick `BLOCK_N=256` while a split slice is 128. Either restrict configs to `BLOCK_N <= N_per_split` or mask the N tail with `offs_n < N`.\n- Once correct, re-sweep autotune configs focused on this `(M=128, N=K=32768)` shape: try `BLOCK_M=64/128, BLOCK_N=128/256, BLOCK_K=64`, `num_warps=8`, `num_stages=4`; with M=128 you likely want SPLIT_K=2-4 to saturate the 128 SMs of the 4090 even though the heuristic currently picks 1.",
+    "large_guidance": "- Keep the fused linear\u2192pool(k=2)\u2192sum\u2192scale structure but redesign as a 2D-persistent GEMM: grid over `(BLOCK_M rows, SPLIT_K)`, each program streams a contiguous strip of N, accumulates `(BLOCK_M, BLOCK_N)` tiles via `tl.dot`, immediately reduces each tile to a `(BLOCK_M,)` partial (max over pairs then sum), and never materializes the full `(M, N)` activation. Final scale applied once after atomic accumulation.\n- Pre-transpose W to `(K, N)` contiguous in the wrapper (once, cached on the module) so the inner load of W is fully coalesced along N; the current `stride_wn, stride_wk` load pattern with weight as `(N, K)` is strided on the hot axis.\n- Consider a two-kernel design if fusing hurts occupancy: kernel-1 computes the GEMM tile, kernel-2 does pool+sum+scale; but given N=32768 the memory traffic of materializing `(128, 32768)` is large (~16 MB) \u2014 full fusion is the right call, just make sure the reduction happens per-tile, not after a global accumulator.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 14,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

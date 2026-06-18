@@ -1,0 +1,30 @@
+{
+    "node_id": 42,
+    "parent_node_id": 41,
+    "context_node_ids": [
+        40,
+        41
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The compile error is at `sp_offs = pid_sp * BLOCK_SP + tl.arange(0, BLOCK_SP)` \u2014 `BLOCK_SP` must be a `tl.constexpr` known at compile time. It already is declared as constexpr, but `pid_sp * BLOCK_SP` may be the issue if autotune key collisions occur. More likely the issue: the `acc` tensor `tl.zeros([OC, BLOCK_SP], dtype=tl.float32)` is huge (e.g. 16\u00d71024 = 16K fp32 registers); reduce max BLOCK_SP in autotune configs to \u2264256, drop the 384/512/1024 configs.\n- Use `BLOCK_SP` values 64/128/256 only, with `num_warps` 4/8 and `num_stages` 2/3 \u2014 the per-program working set is `OC * BLOCK_SP` floats which blows out registers/shared mem at 1024.\n- Replace `tl.static_range` over `IC*KD*KH*KW = 81` iterations with a flattened single loop to reduce compile-time unrolling pressure that may also be causing the cryptic compile failure.",
+    "large_guidance": "- Restructure conv3d as an im2col-style GEMM: one program per `(N, OC_tile, output-spatial tile)` with `BLOCK_M=OC` (16, padded to 32), `BLOCK_N=64..128` over output spatial, `BLOCK_K=32` over `IC*KD*KH*KW` (=81). Use `tl.dot` for the inner matmul instead of an outer-product accumulation over fully unrolled `static_range` loops \u2014 the current design forces a `[OC, BLOCK_SP]` register tile and unrolls 81 iterations, which both bloats registers and triggers fragile compile paths.\n- Fuse the conv epilogue with `* multiplier` and store conv output in `channels_last` (`[N, OD, OH, OW, OC]`) so the downstream norm+max kernel reads `OC` contiguously per spatial location and reduces over `C` cheaply with `tl.max(axis=-1)`.\n- For the second kernel, since `OC=16` is tiny, persist the entire `[C, S]` slab per program with one program per N: load once, compute mean/var via `tl.sum`, then normalize+clamp+max in registers without re-loading from HBM. With S = 14\u00b730\u00b730 = 12600, tile S in chunks of 512\u20131024 across two passes but keep mean/invstd in registers between passes.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 43,
+    "global_best_node_id": 40,
+    "global_best_score": [
+        1,
+        1,
+        1.7549107831398192
+    ]
+}

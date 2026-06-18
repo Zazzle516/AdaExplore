@@ -1,0 +1,29 @@
+{
+    "node_id": 20,
+    "parent_node_id": 9,
+    "context_node_ids": [
+        17
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5264402528121273,
+    "max_reward": 0.5264402528121273,
+    "avg_reward": 0.5264402528121273,
+    "score": [
+        1,
+        1,
+        1.1431320857000498
+    ],
+    "small_guidance": "- The current bottleneck is `F.conv3d` (the GN+mean kernel is tiny by comparison). Tuning the GN/mean kernel further has minimal headroom \u2014 instead, fuse the conv bias add into the GN kernel as already done, and try `BLOCK_S=2048` with `num_warps=4` to reduce launch overhead on the small per-(N,group) workload.\n- Consider folding the conv bias-add into the conv epilogue by skipping the second pass: cache per-channel `per_ch_sum` and `sum_v` from phase 1 (sum without bias) into registers/shared so phase 2 doesn't re-read `y`. This halves global memory traffic on the GN kernel.\n- Add a `triton.autotune` decorator sweeping `(BLOCK_S \u2208 {512,1024,2048}, num_warps \u2208 {4,8}, num_stages \u2208 {2,3,4})` keyed on `SPATIAL`.",
+    "large_guidance": "- Replace `F.conv3d` with a custom Triton im2col-style GEMM kernel: one program per `(N, OC_tile, output-spatial tile)`, with K=`IC*kd*kh*kw=81` (tiny), so a single-K-iteration kernel with `BLOCK_M=OC=24`, `BLOCK_N=128` spatial works well. This is the dominant cost (~1.2ms of 1.25ms) and has the largest headroom.\n- Fuse the conv epilogue directly with the GN reduction: write conv outputs to `y` and *simultaneously* accumulate per-(N,group) sum and sum_sq via `tl.atomic_add` into small scratch tensors. Then a tiny second kernel computes mean/inv_std and the final scalar mean \u2014 eliminating the two extra passes over `y` entirely.\n- Better: skip materializing `y` for the final mean. The end result is a scalar per batch; with conv+GN+mean fused, the conv kernel can accumulate `sum(scale_c * v + shift_c)` directly into `out[n]` after computing mean/var in a first pass. Two-kernel design: (1) conv + per-group sum/sum_sq accumulator, (2) conv recompute + apply normalization + reduce to scalar (or cache y to global and re-read).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 21,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        1.1431320857000498
+    ]
+}

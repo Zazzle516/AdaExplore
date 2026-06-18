@@ -1,0 +1,29 @@
+{
+    "node_id": 46,
+    "parent_node_id": 39,
+    "context_node_ids": [
+        31
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4066570701754386,
+    "max_reward": 0.4066570701754386,
+    "avg_reward": 0.4066570701754386,
+    "score": [
+        1,
+        1,
+        0.15492082894736842
+    ],
+    "small_guidance": "- Swap the loop order so IC is the inner-most accumulation and use `tl.dot`: load an `[BLOCK_SP, BLOCK_IC]` tile of x and `[BLOCK_IC, BLOCK_OC]` tile of w per (kd,kh,kw), then `acc += tl.dot(x_tile, w_tile)`. Current code does scalar outer products of shape [128,1]\u00d7[1,32] which leaves tensor cores unused.\n- Add a `triton.autotune` sweep over `BLOCK_OC\u2208{32,64}`, `BLOCK_SP\u2208{64,128,256}`, `BLOCK_IC\u2208{16,32}`, `num_warps\u2208{4,8}`, `num_stages\u2208{2,3,4}`; current 32/128/4w/2s is almost certainly suboptimal for this 16\u00d764\u00d732\u00d764\u00d764 output.\n- Hoist `IH*IW`, `OD*OHW`, `OC*KD*KH*KW`, `ID*IH*IW` into local constants once before the kd/kh/kw loops, and precompute per-tile spatial-mask once outside the IC loop so the inner loop is purely loads + dot.",
+    "large_guidance": "- Re-cast as a scatter-add (input-stationary) kernel: parallelize over `(N, IC tile, input-spatial tile)`, load one `[BLOCK_SP, BLOCK_IC]` x tile and the full `[BLOCK_IC, OC, KD*KH*KW]` weight slab, compute the `input \u00d7 weight` outer product, and atomically scatter into output positions `(id*stride - pad + kd, ...)`. This is the canonical fast ConvTranspose3d formulation and turns the current per-output gather (which does `IC * KD*KH*KW` redundant valid-position checks per output element) into a dense matmul with one scatter per kernel tap.\n- Alternatively, do gemm-based im2col but tile over `(N, OC tile=64, OutSpatial tile=128)` with `BLOCK_K=IC=32` as a single `tl.dot`, with the KD*KH*KW loop on the outside writing into the same accumulator; channels-last (NDHWC) input + weight layout will make the K-dim contiguous and let one `tl.dot` per kernel tap saturate the tensor cores.\n- Fold the conv bias and the `(2y+b)*y + y` epilogue into the same kernel's store path (already done) but also fuse the bias load once per program rather than re-broadcasting; persist the OC tile across the spatial loop so bias and weight stay in registers/shared memory.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 47,
+    "global_best_node_id": 43,
+    "global_best_score": [
+        1,
+        1,
+        1.6277395852534562
+    ]
+}

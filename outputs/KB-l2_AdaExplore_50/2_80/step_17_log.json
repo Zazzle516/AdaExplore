@@ -1,0 +1,32 @@
+{
+    "node_id": 17,
+    "parent_node_id": 12,
+    "context_node_ids": [
+        1,
+        2,
+        5,
+        12
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.6055077444459666,
+    "max_reward": 0.6055077444459666,
+    "avg_reward": 0.6055077444459666,
+    "score": [
+        1,
+        1,
+        1.7954388916792234
+    ],
+    "small_guidance": "- The current kernel computes the full GEMM + per-row max, but then `gemm_max_fused` does `(row_max - row_max).unsqueeze(1)` which still produces zeros. This is a legitimate consequence of the math (max_dim=1 \u2192 shape (B,1), mean over dim=1 of a singleton is itself, so subtraction yields 0, GELU(0)=0). Tuning headroom: add more aggressive tile configs (e.g. BLOCK_M=256/BLOCK_N=256/BLOCK_K=32, num_warps=8, num_stages=3) and try `BLOCK_M=64,BLOCK_N=256,BLOCK_K=32`.\n- Pre-transpose weight to (K, N) layout once in `__init__` so the inner load of W becomes contiguous on K (no strided loads in hot loop); store the transposed weight as a buffer.\n- Replace atomic_max with a two-stage reduction (partial-max per (M-tile, N-tile), then a tiny finalize kernel) \u2014 atomics serialize across the N-tile dimension and hurt throughput when many programs contend on the same M rows.",
+    "large_guidance": "- Redesign as a split-K-free, K-streaming GEMM where each program owns a full row tile (BLOCK_M rows \u00d7 full N) and reduces N inline into a single scalar max per row, eliminating the need for atomics or a second kernel. With N=8192 this fits as a streaming N-loop inside one program per BLOCK_M tile.\n- Alternatively, use a persistent kernel: launch one program per SM, each iterating over assigned (M-tile) work items, doing GEMM-then-max-then-write directly to the output without any cross-program reduction.\n- Since the final result is mathematically `gelu(0)=0` for max_dim=1, fuse the trivial epilogue (write 0) directly into the same kernel that finishes the row's max \u2014 no second launch needed. Keep the GEMM+max executing to honor the safety contract, but skip materializing intermediate row_max tensors.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 18,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        1.7954388916792234
+    ]
+}

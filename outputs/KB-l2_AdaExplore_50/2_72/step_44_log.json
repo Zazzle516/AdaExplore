@@ -1,0 +1,29 @@
+{
+    "node_id": 44,
+    "parent_node_id": 28,
+    "context_node_ids": [
+        28
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.42974620315458467,
+    "max_reward": 0.42974620315458467,
+    "avg_reward": 0.42974620315458467,
+    "score": [
+        1,
+        1,
+        0.3454061760253234
+    ],
+    "small_guidance": "- The gather kernel currently re-loads weights inside the `ic` loop for each `(kd,kh,kw)`; hoist the weight load into a single `[IC, BLOCK_OC]` tile per `(kd,kh,kw)` and load `x` as a `[BLOCK_HW, IC]` tile, then use `tl.dot` to compute the `[BLOCK_HW, BLOCK_OC]` partial. Add autotune over `(BLOCK_HW, BLOCK_OC) \u2208 {(32,16),(64,16),(32,32),(64,32),(16,16)}` \u00d7 `num_warps \u2208 {4,8}` \u00d7 `num_stages \u2208 {2,3}`.\n- Fuse BN scale/shift into the conv-transpose kernel epilogue (eval path) so the intermediate `conv_out` does not have to be stored as fp32 to global memory and reloaded by the pool kernel.\n- For `bn_avgpool4_kernel`, tile over `(N*C, OD2*OH2*OW2)` with each program handling one channel's contiguous output chunk so `scale`/`shift` are loaded once per program (scalar broadcast) instead of gathered with a per-element mask; bump `BLOCK` to 512 and `num_warps=8`.",
+    "large_guidance": "- Rewrite the ConvTranspose3d as an im2col-style GEMM in `channels_last` layout: one program per `(N, output-spatial tile, OC tile)` where the K dimension is `IC*KD*KH*KW`. Each program gathers the (stride/padding-aware) input slice for its output tile and does a single `tl.dot` accumulation \u2014 this replaces the current 27-way nested static loop with `IC` scalar muls and exposes tensor-core throughput. Use tiles like `BLOCK_M=64 (spatial), BLOCK_N=16 (OC), BLOCK_K=16` to fit SMEM.\n- Fuse the entire tail (BN affine + two 2\u00d7 avg-pools = one 4\u00d7 avg-pool, divide-by-64) directly into the conv-transpose epilogue. Have each program write the *pooled* output: accumulate the 4\u00d74\u00d74 contributions of each conv-transpose output element into a `[N, OC, OD/4, OH/4, OW/4]` buffer via either (a) a scatter-add formulation where input\u00d7weight contributions are atomically added into the pooled grid (since each input voxel only touches a small set of pooled outputs), or (b) a gather where one program owns one pooled output cell and loops over the 64 internal positions \u00d7 the valid input voxels. This removes the large intermediate `conv_out` tensor entirely and changes the memory traffic from O(N\u00b7OC\u00b7OD\u00b7OH\u00b7OW) to O(N\u00b7OC\u00b7OD\u00b7OH\u00b7OW/64).\n- The pooled-output gather is especially attractive here: pooled output is only `N\u00b7OC\u00b78\u00b716\u00b716 = 64\u00b716\u00b78\u00b716\u00b716 \u2248 2M` elements vs the 128M-element conv_out, so one program per pooled cell with an inner reduction over the 4\u00b3 window \u00d7 `IC*KD*KH*KW` gives a clean GEMM-shaped workload with no atomics.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 45,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        0.36042383585251137
+    ]
+}

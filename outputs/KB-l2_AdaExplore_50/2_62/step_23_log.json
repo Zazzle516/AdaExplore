@@ -1,0 +1,29 @@
+{
+    "node_id": 23,
+    "parent_node_id": 15,
+    "context_node_ids": [
+        15
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM is M=N=K=8192 with bias only \u2014 drop `input_precision=\"ieee\"` (use default tf32) and add larger tile configs like `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64` and `BLOCK_M=256, BLOCK_N=128, BLOCK_K=64` with `num_stages=3, num_warps=8` to the autotune list; ieee f32 dot is roughly 2x slower than tf32 on Ada and is the main bottleneck.\n- For the GN+LeakyReLU+double kernel, CH_PER_G = 16 (8192/512), so BLOCK=16 with num_warps=1 wastes a warp on a 16-lane reduction \u2014 pack multiple groups per program (e.g. process 8 or 16 groups per block) to amortize launch overhead and improve occupancy across the 1024*512 = 524288 groups.\n- Consider fusing the `y + y` (i.e. `2*y`) into the affine scale: precompute `gamma_eff = 2*gamma`, `beta_eff = 2*beta` (still applied at runtime in the kernel epilogue) \u2014 saves one add but the bigger win is fewer instructions per element.",
+    "large_guidance": "- The GEMM dominates runtime; rewrite it to use tf32 (`tl.dot` default `input_precision=\"tf32\"`) instead of ieee \u2014 that alone should roughly halve GEMM time. Also load B transposed (i.e. compute against `weight` with B = W^T) via a contiguous K-inner load by reordering loops so the inner contiguous axis of `weight` (which is K) aligns with BLOCK_K loads.\n- Make the GN kernel persistent across multiple groups per program: with 524288 groups and only 16 channels each, one-program-per-group is launch-bound. Have each program handle a row (all 512 groups of one batch) or a tile of groups, keeping x resident in registers/SRAM and doing per-group reductions with `tl.reshape` to (NUM_GROUPS_PER_PROG, CH_PER_G).\n- Consider fusing the entire epilogue (GN + LeakyReLU + \u00d72) directly into the GEMM kernel's store path when feasible \u2014 but since GN reduces across channels within a group, the GEMM tile would need to align BLOCK_N with a multiple of CH_PER_G (=16) and reduce per-group within the tile. Alternatively, write GEMM output to a buffer and only launch one fused norm kernel (current approach), but eliminate ieee precision first.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 24,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

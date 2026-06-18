@@ -1,0 +1,27 @@
+{
+    "node_id": 9,
+    "parent_node_id": 8,
+    "context_node_ids": [],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM (1024\u00d78192\u00d78192) dominates runtime here \u2014 the fused GN+Swish kernel is already memory-bound and small. Tuning the GN kernel further (warps/stages/GROUPS_PER_BLOCK) will not move the 3.36ms number meaningfully; focus tuning on a tiled `tl.dot` GEMM with autotune over `BLOCK_M\u2208{64,128}`, `BLOCK_N\u2208{128,256}`, `BLOCK_K\u2208{32,64}`, `GROUP_M=8`, `num_warps\u2208{4,8}`, `num_stages\u2208{3,4}`.\n- For the existing GN kernel, GROUP_SIZE=32 with GROUPS_PER_BLOCK=8 gives 256-element tiles \u2014 try GROUPS_PER_BLOCK=16 (512 elems, num_warps=8) to cut launch count in half on M=1024.\n- Pre-transpose `gemm.weight` once in `__init__` (store `weight.t().contiguous()`) so the GEMM's B operand has the contiguous K-axis inner.",
+    "large_guidance": "- Replace `F.linear` with a custom Triton GEMM kernel that fuses bias-add, GroupNorm, Swish, multiply, Swish into the epilogue. The Linear is ~137 GFLOP and currently the bottleneck; the elementwise tail is <1% of the work. Structure: tiled GEMM with `BLOCK_M=128, BLOCK_N=128, BLOCK_K=32`, GROUP_M swizzle. Since `out_features=8192` and `num_groups=256` \u2192 `GROUP_SIZE=32`, choose `BLOCK_N` as a multiple of 32 so each N-tile holds an integer number of full groups \u2192 GN reduction can happen inside the GEMM epilogue per N-tile without cross-tile communication.\n- Alternative design: split into two kernels but make the GEMM the heavy one with bias+swish-of-precomputed-stats fused. Compute GN mean/var in a separate small reduction over the GEMM output (one program per row, reducing across N=8192 / 256 groups), then a fused epilogue kernel applies norm+affine+swish+mul+swish. This is simpler than full GEMM-GN fusion and still wins.\n- Consider TF32 / allowing `tl.dot(..., allow_tf32=True)` since inputs are fp32 on Ada \u2014 large GEMM throughput roughly doubles vs strict fp32.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 10,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

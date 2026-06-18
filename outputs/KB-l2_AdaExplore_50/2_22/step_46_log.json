@@ -1,0 +1,29 @@
+{
+    "node_id": 46,
+    "parent_node_id": 45,
+    "context_node_ids": [
+        45
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness bug: the reference computes `x = x * scale; x = x + x` which doubles after scaling, i.e. effective scale = `2*scale_factor = 4.0`, but then clamp is applied to that doubled value. The current kernel uses `SCALE2 = scale_factor * 2.0 = 4.0` which is correct, so check the partial-LSE combine: the `max_scratch` is initialized to `-inf` but tiles whose `pid_n` index never runs (when N is not divisible) won't be written \u2014 actually with N=8192 and BLOCK_N varying, T_max is sized for BLOCK_N=64 (T_max=128) but the kernel writes only `num_pid_n = cdiv(N, BLOCK_N)` entries (e.g. 32 for BLOCK_N=256). The unwritten slots remain at `-inf`/0 which is fine for max, but `global_max` then equals real max \u2014 OK. However the issue is the final `x * mish(x)` \u2014 reference applies mish to the post-LSE scalar, so output = `lse * (lse * tanh(softplus(lse)))` = `lse^2 * tanh(softplus(lse))`. That matches. Re-examine: the bug is that `T_max` is sized for BLOCK_N=64 but autotune may pick BLOCK_N=256, giving only 32 valid tiles out of 128 slots \u2014 the remainder are `-inf`/`0` which is safe. So the real correctness issue is likely the residual: `x + x` after scale means clamp input = `2*scale*x`, but if reference is `(x*scale) + (x*scale) = 2*scale*x`, that's what SCALE2=4.0 gives. \u2713\n- Actual likely bug: `mask_n` masking to `-inf` happens before reduction, but `tl.exp(-inf - row_max)` = 0 which is correct. However when an **entire tile column-range is fully masked out** (impossible here since N=8192 divides), row_max could be -inf and `exp(-inf - (-inf)) = NaN`. Guard by initializing scratch and only writing valid `pid_n` tiles \u2014 already done. Suggest: in combine kernel, replace `tl.exp(maxs - global_max)` with `tl.where(maxs == neg_inf, 0.0, tl.exp(maxs - global_max))` to avoid NaN from `-inf - -inf` when a row has all `-inf` in unused slots.\n- Add autotune configs with larger BLOCK_M (e.g. 128/256/64 num_warps=8 stages=3) since M=1024 and N=8192 are both large; current best may be undersized. Also try `BLOCK_N=128, BLOCK_M=128, BLOCK_K=64, num_warps=4, stages=3`.",
+    "large_guidance": "- The current two-stage split-K-over-N LSE is sound but the combine kernel's NaN handling for unwritten scratch slots (BLOCK_N varies with autotune, T_max fixed at smallest BLOCK_N) is the root cause of the 14.8 max-diff. Redesign: size scratch dynamically from the chosen `BLOCK_N` (compute T after autotune picks a config via `meta['BLOCK_N']` in the grid lambda, then allocate scratch and launch combine), or use a fixed `BLOCK_N=128` non-autotuned for the GEMM so T is deterministic.\n- Alternatively, since hidden_size=8192 fits in one row-pass with a persistent per-row kernel using online softmax across N tiles in a single program, eliminate the two-kernel design entirely: one program per row-tile (BLOCK_M rows), iterate N tiles inside the kernel maintaining `(running_max, running_sumexp)` via the standard online-LSE merge, then apply `mish` epilogue and store directly. This removes scratch + combine kernel.\n- For RTX 4090 with M=1024, N=K=8192, the GEMM is ~137 GFLOP \u2014 heavily compute-bound. Prioritize tile shapes that maximize `tl.dot` throughput (128\u00d7128\u00d732 or 128\u00d7256\u00d732 with num_warps=8, num_stages=3) and ensure the weight is pre-transposed once (already done). The LSE epilogue cost is negligible vs. the GEMM.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 47,
+    "global_best_node_id": 28,
+    "global_best_score": [
+        1,
+        1,
+        3.627338205272988
+    ]
+}

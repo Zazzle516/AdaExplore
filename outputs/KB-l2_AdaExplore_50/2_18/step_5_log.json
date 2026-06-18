@@ -1,0 +1,30 @@
+{
+    "node_id": 5,
+    "parent_node_id": 2,
+    "context_node_ids": [
+        1,
+        2
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (~0.05 abs diff, ~0.013 avg) on sums over K=8192 looks like fp32 accumulator precision loss from accumulating BLOCK_N partial sums into row_acc with reduced precision; ensure `tl.dot` uses `allow_tf32=False` (or pass `out_dtype=tl.float32`) since TF32 on Ampere/Ada gives ~1e-3 relative error per dot, and across N=8192 this compounds beyond the 5e-2 tolerance.\n- Also verify mask handling: when M is not divisible by BLOCK_M, x_vals is masked on rows but w_vals still loaded \u2014 that's fine, but the row_acc store mask should match. Add `allow_tf32=False` to `tl.dot` as the primary fix.\n- Once correct, retune with larger BLOCK_M (256) since only the M dimension grids \u2014 currently grid is only M/BLOCK_M programs (8 with BLOCK_M=128), severely under-occupying the GPU.",
+    "large_guidance": "- The current kernel uses only `ceil(M / BLOCK_M)` programs (8-16 CTAs) which massively under-utilizes the 4090's 128 SMs. Redesign with a 2D grid over (M tile, N tile) doing standard GEMM tiles, then do a second small kernel (or atomic add) to reduce the N dimension into a per-row scalar. Alternatively, split-K style: grid over (M tile, N tile chunks), each writes a partial row-sum, then a tiny reduction kernel sums across N chunks.\n- Since the final output is just `sum_m_n (x @ W^T + b)` reduced to a scalar per row, consider a persistent-K kernel: one program per row-tile, parallelize N across programs and atomic_add into out[m]. This gives ~64x more parallelism.\n- Use fp32 accumulation explicitly (`allow_tf32=False` on `tl.dot`) to meet the 5e-2 tolerance reliably given K=8192 accumulations.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 6,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

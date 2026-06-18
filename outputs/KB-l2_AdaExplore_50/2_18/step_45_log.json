@@ -1,0 +1,29 @@
+{
+    "node_id": 45,
+    "parent_node_id": 43,
+    "context_node_ids": [
+        43
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The kernel is numerically wrong: `acc = tl.where(n_mask[None, :], acc, 0.0)` masks invalid N, but the bias `b_vals` was loaded with `other=0.0` while the accumulator already has garbage from masked-K loads being fine \u2014 actual issue is that `row_sum` accumulates over all N tiles including the tail with masked-out columns correctly, but the `m_mask` is not applied to x loads' K dimension. More importantly, since output is fp32 sum of 8192 products per row, accumulation order/precision may exceed atol \u2014 try accumulating bias separately (precompute `bias_sum = B.sum()` once on host? No \u2014 that's an algebraic shortcut). Instead double-check by using `tl.float32` accumulation (already is) and verify weight stride: `nn.Linear.weight` is `(N, K)` row-major so `stride_wn=K, stride_wk=1` \u2014 the load `w_base + k_idx[:, None] * stride_wk` produces a (BLOCK_K, BLOCK_N) tile, which is correct for `tl.dot(x[M,K], w[K,N])`. The bug is likely the `m_mask` not being applied as a column mask on `x_vals` for the K dimension when K isn't a multiple of BLOCK_K (here K=8192 is, so fine) \u2014 but `m_mask[:, None]` doesn't mask K out-of-range. K=8192 divides evenly so OK.\n- Real bug suspect: numerical tolerance. Summing 8192*8192 \u2248 6.7e7 fp32 products per row with TF32 (`allow_tf32=True`) gives ~1e-3 relative error per dot, accumulating to ~0.05 absolute \u2014 matches the observed `max_difference\u22480.05`. Set `allow_tf32=False` in `tl.dot` to fix correctness.\n- After correctness, prune autotune configs to the 2-3 winners for (M=1024,N=8192,K=8192), e.g. BLOCK_M=64/BLOCK_N=128/BLOCK_K=64 num_warps=8 num_stages=4.",
+    "large_guidance": "- Restructure as a two-stage approach: stage 1 is a standard tiled GEMM producing the full (M,N) linear output (or a partial row-sum via split-K with atomics), stage 2 reduces along N. Keeping the row-sum fused inside one program per BLOCK_M rows means each program reads the entire weight matrix (N*K = 256MB) \u2014 terrible L2 behavior. Instead, parallelize over (M_tile, N_tile) programs each producing partial row sums into a `(num_n_tiles, M)` scratch buffer, then a tiny second kernel reduces N tiles \u2192 (M,1). This exposes far more parallelism on a 4090 (128 SMs).\n- Alternative: since the final answer is `sum_n(x @ W.T + b)` per row, recognize that `sum_n(x @ W.T) = x @ (W.T.sum(dim=1))` mathematically \u2014 but this IS the algebraic shortcut forbidden by the safety contract. Do NOT do this. Keep the full GEMM materialized or computed tile-by-tile at runtime.\n- Use fp32 (no TF32) in `tl.dot` to meet the 5e-2 tolerance, or accumulate in fp64 chunks. Consider splitting K reduction across programs with `tl.atomic_add` to scratch, freeing register pressure and allowing larger BLOCK_M.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 46,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        0.8826896197781255
+    ]
+}

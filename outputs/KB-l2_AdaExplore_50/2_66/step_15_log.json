@@ -1,0 +1,31 @@
+{
+    "node_id": 15,
+    "parent_node_id": 7,
+    "context_node_ids": [
+        3,
+        6,
+        7
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM is M=128, N=16384, K=16384 \u2014 very tall-skinny. BLOCK_M=128 wastes tiles since M is exactly 128; try BLOCK_M=64 with BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4 and also BLOCK_M=32/BLOCK_N=256/BLOCK_K=128 to get more N-parallelism and deeper K pipelining. Drop the BLOCK_M=128 configs from the autotune list.\n- Softmax: N=16384 fits easily in a single persistent program per row. Increase BLOCK_SIZE to 4096 or 8192 (or single-pass with BLOCK_SIZE=16384) with num_warps=16, num_stages=3 to halve the load traffic from two passes to one fused pass when the row fits.\n- Cache the bias on the host side too (`self.matmul.bias` moved to CUDA once in `__init__`) and avoid the per-forward `.contiguous().cuda()` calls on weight/bias to eliminate stream sync overhead.",
+    "large_guidance": "- Fuse the softmax's first pass into the GEMM epilogue: each `(BLOCK_M, BLOCK_N)` tile already holds a full row slice; if you make BLOCK_N span the full N (or use a split-N then combine), you can compute row max + sum_exp inside the GEMM kernel and store pre-exp values plus per-row stats, then a tiny second kernel does the normalize-and-write. This removes one full read of the 128\u00d716384 activation tensor between matmul and softmax.\n- Alternatively, use a split-K GEMM (since K=16384 is huge and M=128 is tiny, the current single-program-over-K underutilizes the SMs): launch grid over (M_tiles, N_tiles, SPLIT_K) with atomic-add or a small reduction kernel. With M=128 there are only 128 row-tiles \u00d7 64 col-tiles = a few hundred CTAs without split-K \u2014 adding SPLIT_K=4\u20138 should saturate the 4090's 128 SMs.\n- Consider switching weights to fp16/bf16 for the matmul (cast once at init) to roughly 2\u00d7 the tensor-core throughput; accumulate in fp32 and write fp32 for softmax. This is the single biggest lever for a 16384\u00d716384 GEMM on Ada.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 16,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

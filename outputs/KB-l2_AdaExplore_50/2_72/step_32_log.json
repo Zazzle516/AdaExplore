@@ -1,0 +1,30 @@
+{
+    "node_id": 32,
+    "parent_node_id": 24,
+    "context_node_ids": [
+        11,
+        24
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.41442114926117984,
+    "max_reward": 0.41442114926117984,
+    "avg_reward": 0.41442114926117984,
+    "score": [
+        1,
+        1,
+        0.21897448140473333
+    ],
+    "small_guidance": "- The current kernel computes one `(n, oc, pd, ph, pw_blk)` program but loops over 4\u00d74\u00d74 sub-positions inside \u2014 try shrinking the per-program work (e.g. one program per `(n, oc, pd, ph)` with BLOCK_PW covering all PD_OW, or fuse `oc` tiling) and raising `num_warps` to 4\u20138 so more output points run in parallel; the grid is currently large but each program is heavy and serialized.\n- Reorder loops so `ic` is the innermost contiguous load with vectorization across `pw` (current `pw_offs*4+ww` makes `iw_q` strided by SW=2, hurting coalescing) \u2014 consider laying out input/weight as channels-last or precomputing per-`(kd,kh,kw)` validity masks once outside the `ic` loop.\n- Add autotune configs with `BLOCK_PW \u2208 {16, 32}` and `num_warps \u2208 {4, 8}`, and tile across `OC` (e.g. BLOCK_OC=4 or 8) so the weight load for a given `(kd,kh,kw,ic)` is reused across multiple output channels.",
+    "large_guidance": "- Restructure as a scatter-add ConvTranspose3d: one program per `(n, ic_tile, id, ih, iw_tile)` reads input once, computes the outer product with the weight slice across `(oc, kd, kh, kw)`, and atomically scatters into the conv-transpose output grid. This matches the natural data flow of transposed conv and avoids the awkward \"for each output, search valid inputs\" gather with strided modulo arithmetic.\n- Better: fuse the 4\u00d7 spatial reduction directly into the GEMM epilogue by accumulating into a `(N, OC, OD/4, OH/4, OW/4)` buffer \u2014 each input element contributes to a 3\u00d73\u00d73 neighborhood of conv-transpose outputs, all of which fall into a small set of pooled cells, so compute the pooled-cell index per `(oc, kd, kh, kw)` and atomic-add the scaled contribution. Apply `scale*x + shift/64` at write time.\n- Alternative im2col-GEMM design: materialize the (N\u00b7OD\u00b7OH\u00b7OW, IC\u00b7KD\u00b7KH\u00b7KW) gather implicitly and run a tiled GEMM with BLOCK_M over pooled output positions, BLOCK_N over OC, BLOCK_K over IC\u00b7kd\u00b7kh\u00b7kw, accumulating 64 conv-output positions per pooled cell directly in registers. Autotune `(BLOCK_M, BLOCK_N, BLOCK_K) \u2208 {(32,32,16),(64,32,16),(32,64,16)}` at `num_warps=4, num_stages=2`.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 33,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        0.36042383585251137
+    ]
+}

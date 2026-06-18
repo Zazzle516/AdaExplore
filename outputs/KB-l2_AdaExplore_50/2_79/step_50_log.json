@@ -1,0 +1,29 @@
+{
+    "node_id": 50,
+    "parent_node_id": 45,
+    "context_node_ids": [
+        44
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (max diff ~0.005) suggests the InstanceNorm uses biased variance (divide by S), which matches the kernel, so the issue is likely numerical: compute `sum1`/`sum2` in fp32 and use `var = max(var, 0)` before `rsqrt`; also ensure `conv_out` is written/read in fp32 and the multiplier is applied consistently (current code matches reference, so the diff is likely just tolerance-borderline noise from one-pass variance \u2014 switch to two-pass mean-then-variance for stability).\n- In `apply_max_kernel`, drop the `if c_i < C` branch by setting `C_CONST = OC` exactly (OC=16 is already a power of two) so the static loop has no runtime guard; this also lets the compiler keep per-channel mults/means in registers.\n- Add `triton.autotune` over `BLOCK_S \u2208 {64,128,256}` and `num_warps \u2208 {4,8}` for the conv kernel; current `BLOCK_S=128, num_warps=4` is likely suboptimal for OS=14*30*30=12600.",
+    "large_guidance": "- Fuse stats + clamp + second-multiply + channel-max into a single persistent kernel per `(N)` that keeps all 16 channels' conv outputs resident (or streams them once): pass 1 computes mean/var per channel, pass 2 re-reads, normalizes, clamps, multiplies, and reduces max over C \u2014 eliminating the intermediate `mean`/`invstd` tensors and one full pass over `conv_out`.\n- Restructure the conv as an explicit im2col-style GEMM with `BLOCK_M=OC(=16)`, `BLOCK_N=64-128` over output spatial, `BLOCK_K=IC*KD*KH*KW=81` fully unrolled; one program per `(N, spatial tile)` writing directly into a channels-last `[N, OS, OC]` layout so the downstream per-(N,spatial) reduction over C is contiguous.\n- Consider fusing conv epilogue (\u00d7multiplier) directly into the conv kernel and writing `conv_out` in `[N, OS, OC]` layout; then the norm+max kernel becomes one program per `(N, spatial tile)` loading a `[BLOCK_S, OC]` tile with coalesced reads \u2014 no separate stats tensor needed if OC fits in registers.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 51,
+    "global_best_node_id": 40,
+    "global_best_score": [
+        1,
+        1,
+        1.7549107831398192
+    ]
+}

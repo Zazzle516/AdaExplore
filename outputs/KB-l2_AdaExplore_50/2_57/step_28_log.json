@@ -1,0 +1,30 @@
+{
+    "node_id": 28,
+    "parent_node_id": 27,
+    "context_node_ids": [
+        10,
+        27
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4963506703397613,
+    "max_reward": 0.4963506703397613,
+    "avg_reward": 0.4963506703397613,
+    "score": [
+        1,
+        1,
+        0.8948930303030304
+    ],
+    "small_guidance": "- The output is stored in NCHW with channel-stride OH*OW (large), so the per-pixel store stride for OC is huge \u2014 try writing to a channels-last buffer (acc shape [BLOCK_OH*BLOCK_OW, BLOCK_OC] stores contiguously across OC) and `.permute` back, or at minimum reorder the store so OC is the innermost dim with stride 1; this also lets the GEMM-K loop accumulate into a register tile that matches the store layout.\n- Add autotune configs that exploit IC=8, KH=KW=3 (K=72): try BLOCK_OC=128 with BLOCK_OH=2, BLOCK_OW=64 (num_warps=8) and BLOCK_OC=64 BLOCK_OW=128 BLOCK_OH=1 to increase per-program work and reduce launch count (B=128 already gives 128 programs in the batch dim \u2014 plenty of parallelism).\n- Replace the `IC \u00d7 KH \u00d7 KW` triple loop with a single `tl.static_range` over the 72 (ic,kh,kw) triples and load the weight as a [BLOCK_OC] vector per step; also hoist `ih = offs_oh + kh` out of the kw loop (already done) and precompute `b_off + ic*stride_xc + kh*stride_xh` once per (ic,kh).",
+    "large_guidance": "- Switch to an explicit im2col-style GEMM with the K dimension (IC*KH*KW = 72) as the inner reduction in a single loop over `BLOCK_K=72` (constexpr, fully unrolled), and tile output as [BLOCK_M = BLOCK_OH*BLOCK_OW, BLOCK_N = BLOCK_OC]. Use `tl.dot` on a [BLOCK_M, BLOCK_K] \u00d7 [BLOCK_K, BLOCK_N] tile so the 4090 tensor cores are actually engaged \u2014 the current kernel does outer-product FMAs in CUDA cores, which is the main reason it loses to cuDNN.\n- Lay the weight out once at init time as a contiguous [OC, IC*KH*KW] = [64, 72] matrix (and pad K to 128 if needed for `tl.dot`), so the K-loop is a clean matmul load; keep input gathered via im2col-on-the-fly (no materialization) but produce a [BLOCK_M, BLOCK_K] register tile per step.\n- Write output in channels-last (NHWC) and have the model `permute` to NCHW only at the boundary \u2014 fused conv+ReLU+HardSwish epilogue stays in registers, and the store becomes a coalesced contiguous write along OC.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 29,
+    "global_best_node_id": 22,
+    "global_best_score": [
+        1,
+        1,
+        2.06996285046729
+    ]
+}

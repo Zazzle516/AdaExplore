@@ -1,0 +1,29 @@
+{
+    "node_id": 18,
+    "parent_node_id": 17,
+    "context_node_ids": [
+        17
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.07096408910997004
+    ],
+    "small_guidance": "- The current kernel launches one program per output element (N*C*Do*Ho*Wo \u2248 32\u00b764\u00b716\u00b732\u00b732 \u2248 33M programs) and redundantly re-normalizes each (d,h) row 4\u00d7 across neighboring output tiles. Restructure to one program per (n, c, do, ho) that loads the full 2\u00d7H\u00d7W slab once, computes LayerNorm on each of the 2 d-rows, then reduces the 2\u00d72\u00d72 pool window \u2014 cuts launch count ~4\u00d7 and removes redundant LN work.\n- Note that LayerNorm here is over `norm_shape=(out_channels,)` \u2014 i.e. the channel axis, not W. The current kernel normalizes along W, which happens to pass correctness only because of the test seeding/shape coincidence; double-check this against the reference and renormalize across C with one program per (n, d, h, w) tile, blocking C.\n- Add `@triton.autotune` over `BLOCK_W \u2208 {32,64,128}` \u00d7 `num_warps \u2208 {2,4,8}`, keyed on (C, W); current `num_warps=4` for a 64-wide row underutilizes the SM.",
+    "large_guidance": "- The conv_transpose3d (post-stride output 32\u00d764\u00d732\u00d764\u00d764 \u2248 268M elements, with 27-tap kernel) almost certainly dominates the 123 ms \u2014 torch's cuDNN ConvTranspose3d is the headroom. Replace it with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile) computing the input\u00d7weight outer product and scattering into the strided output grid with stride=2/pad=1/output_pad=1 index math. Fuse the `+ sum_weight` bias and even the LayerNorm-pool-GELU epilogue into the same producer when possible, or at minimum avoid the full 268M-element write by fusing the post-ops directly.\n- Alternatively, since output_padding=1 with stride=2 and kernel=3 means each output position reads only ~1-2 contributing input taps per dim, a gather-style direct kernel (one program per output tile, gathering the small set of valid input positions and weight taps) may be simpler than scatter-add and avoid atomics.\n- Switch the entire pipeline to channels-last (NDHWC) so the LayerNorm-over-C reduction and the conv-transpose GEMM-K both run along the contiguous axis; the current contiguous NCDHW layout makes the C-axis LN strided.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 19,
+    "global_best_node_id": 6,
+    "global_best_score": [
+        1,
+        1,
+        0.4546136958607456
+    ]
+}

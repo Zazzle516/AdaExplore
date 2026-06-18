@@ -1,0 +1,29 @@
+{
+    "node_id": 10,
+    "parent_node_id": 9,
+    "context_node_ids": [
+        9
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (avg_diff ~5e-5, max ~4e-3) looks like the GroupNorm path is OK but the GEMM tile masking may be reading OOB on K: `(offs_k[None, :] < k_remain)` is computed against unmasked `offs_k` that's already advanced by pointer arithmetic \u2014 instead, use a running `k_offset = k * BLOCK_K + offs_k` and mask against `K`, or simply ensure K is a multiple of BLOCK_K (8192 is). Verify the bias dtype/load and accumulator precision; also ensure `weight_t` is refreshed (the buffer is captured at init and never refreshed in eval if weights change). For tuning, add configs with BLOCK_M=128/BLOCK_N=64 and try num_stages=4 for K=8192.\n- For the fused GN+Swish+Mul+Swish kernel with GROUP_SIZE=32 (out_features=8192, num_groups=256), bump GROUPS_PER_BLOCK to 32 or 64 to amortize launch overhead (M=1024 rows \u00d7 256/16=16 blocks today \u2192 make it 4-8 blocks per row), and use num_warps=4-8 with num_stages=2.\n- Add an autotune decorator on the fused kernel over (GROUPS_PER_BLOCK, num_warps) keyed on (N, GROUP_SIZE).",
+    "large_guidance": "- Consider a persistent split-K or stream-K GEMM since M=1024, N=8192, K=8192 is large and square \u2014 a tiled GEMM with BLOCK_M=128, BLOCK_N=256, BLOCK_K=32, GROUP_M=8, num_warps=8, num_stages=3-4 should reach ~80% of cuBLAS; alternatively, just call `torch.addmm` / `F.linear` (cuBLAS) for the GEMM and keep Triton only for the fused epilogue \u2014 cuBLAS will almost certainly beat a hand-rolled Triton GEMM on a 4090 for this shape.\n- For the fused post-GEMM kernel, since GROUP_SIZE=32 is tiny, dispatch one program per row (M=1024 programs) that loads the whole row (N=8192 fits in registers/SMEM with tiling) and does all 256 group reductions in-kernel via a reshape `[G, GROUP_SIZE]` \u2014 this halves launch overhead vs. per-(row,group-chunk) grid.\n- Ensure correctness: re-derive the GroupNorm math carefully (PyTorch uses biased variance with `1/GROUP_SIZE`, which matches), and double-check the GEMM K-masking bug above before redesigning.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 11,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

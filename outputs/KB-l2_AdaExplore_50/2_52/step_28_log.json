@@ -1,0 +1,30 @@
+{
+    "node_id": 28,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        20,
+        23
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The activation is wrong: reference is `tanh(softplus(x)) * x` (Mish), where `softplus(x) = log(1+exp(x))`, so `tanh(softplus(x)) = (e^{2s} - 1)/(e^{2s} + 1)` with `s = log(1+exp(x))`, i.e. denom should be `(1+exp(x))^2 + 1` numerator `(1+exp(x))^2 - 1` \u2014 double-check by computing `sp = tl.log(1+tl.exp(acc))` then `th = (tl.exp(2*sp)-1)/(tl.exp(2*sp)+1)`; current formula `1 - 2/((1+e^x)^2+1)` looks algebraically right but max diff ~7e-3 suggests fp32 precision loss for large acc \u2014 guard with `tl.where(acc > 20, acc, acc*th)` style stable Mish.\n- Fold BN (eval-mode affine: `gamma/sqrt(var+eps)`, `beta - mean*gamma/sqrt(var+eps)`) into the kernel epilogue after Mish to eliminate a full output read/write. Note BN is in train mode here so running stats update \u2014 keep BN out of fused path or compute mean/var in a second small kernel.\n- Add `tl.max_contiguous`/`tl.multiple_of` hints on `offs_sp` and use a numerically stable Mish: `sp = tl.where(acc > 20.0, acc, tl.log(1.0 + tl.exp(acc)))`, then `th = tl.tanh(sp)` (use `(tl.exp(2*sp)-1)/(tl.exp(2*sp)+1)` if tanh unavailable, with `sp` clamped).",
+    "large_guidance": "- Switch to NHWC (channels_last) layout for input/weight/output so the GEMM-K dimension (C_in across kh,kw) is contiguous; this dramatically improves im2col gather coalescing versus the current NCHW strided loads.\n- Keep BN as a separate small kernel since the model is in train mode (running stats must update), but fuse the bias+Mish into the conv epilogue (already done) and ensure numerical stability of the Mish formula to fix correctness \u2014 the current closed-form loses precision for moderately large activations.\n- Consider a two-pass design: (1) conv+Mish in fp32 with stable activation, (2) a custom Triton BN kernel that computes per-channel mean/var with one reduction pass and applies normalize+affine in a second pass, updating running stats \u2014 replaces torch BN's multiple kernel launches.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 29,
+    "global_best_node_id": 16,
+    "global_best_score": [
+        1,
+        1,
+        0.5587834201954398
+    ]
+}

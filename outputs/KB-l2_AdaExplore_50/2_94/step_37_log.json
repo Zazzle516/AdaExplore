@@ -1,0 +1,29 @@
+{
+    "node_id": 37,
+    "parent_node_id": 8,
+    "context_node_ids": [
+        8
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (max diff ~0.003, avg ~0.0002) suggests a numerical issue in the Mish epilogue. Likely cause: `tl.sigmoid(2.0 * sp)` accumulates fp32 rounding error; try computing tanh directly via `(exp(2*sp) - 1) / (exp(2*sp) + 1)` with clamped argument, or compute in higher precision by ensuring the accumulator stays fp32 through the activation (currently fine). Also verify that the linear bias + extra bias fused tensor is created in fp32 and not affected by autograd graph; call `.detach()` or wrap creation under `torch.no_grad()`.\n- The autotune key includes M/N/K but configs may pick BLOCK_N=256 which would store wrong masking; double-check `mask_n` is enforced on the bias load and store. Add a config with BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, num_warps=4, num_stages=3 which is typically best for 1024x8192x8192 on 4090.\n- For GroupNorm, channels_per_group = 8192/256 = 32, so BLOCK_C=32 with num_warps=1 is sufficient; specify num_warps=1 and num_stages=2 to reduce launch overhead across 1024*256=262144 programs. Consider batching multiple groups per program (e.g., 4 groups/program) to cut grid size 4x.",
+    "large_guidance": "- Rewrite the GroupNorm to use one program per row handling all 256 groups in a 2D tile (BLOCK_G groups \u00d7 BLOCK_C=32 channels), doing reductions along the channel axis only \u2014 this slashes the grid from 262k to ~1k launches and reuses the loaded row data.\n- Consider a split-K GEMM since K=8192 is large; current single-program-per-tile may underutilize SMs given M=N=1024 tiles. Alternatively use a persistent GEMM with stream-K decomposition to better fill the 4090's 128 SMs.\n- For Mish numerical stability, prefer the closed form `x * tanh(log1p(exp(x)))` with a branch threshold: if x > 20, softplus \u2248 x; if x < -20, softplus \u2248 0; otherwise compute log1p(exp(x)). Implement log1p as `log(1+exp(x))` directly since clamped Hardtanh keeps inputs in [-1,1], so softplus is in a narrow numerically-safe range \u2014 the current bug may be elsewhere (e.g., bias fused tensor dtype or stride).",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 38,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

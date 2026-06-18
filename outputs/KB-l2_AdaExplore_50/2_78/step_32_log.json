@@ -1,0 +1,29 @@
+{
+    "node_id": 32,
+    "parent_node_id": 31,
+    "context_node_ids": [
+        30
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4062796548079026,
+    "max_reward": 0.4062796548079026,
+    "avg_reward": 0.4062796548079026,
+    "score": [
+        1,
+        1,
+        0.15180715216519647
+    ],
+    "small_guidance": "- The current gather kernel redundantly recomputes the convT value for every spatial position in the 6\u00b3 pool window even though stride=2 means only ~half the positions have valid taps per axis; precompute per-(dd,hh,ww) which (kd,kh,kw) taps are valid (parity + bounds) outside the IC loop and skip whole spatial points with no contributing taps to cut work by ~8\u00d7.\n- Autotune over `BLOCK_OC` \u2208 {32, 64}, `num_warps` \u2208 {4, 8}, `num_stages` \u2208 {2, 3, 4}; with OC=64 a single `BLOCK_OC=64` tile per program is fine but raising warps to 8 may better hide the 32-deep IC loop.\n- Replace the inner `for ic in static_range(0,32)` scalar loads with a vectorized load over IC (load `[IC]` xv and `[IC, BLOCK_OC]` wv tile, then `tl.sum(xv[:,None]*wv, axis=0)`) so the IC reduction becomes a small dot-product instead of 32 sequential loads.",
+    "large_guidance": "- Switch the ConvTranspose3d from a gather to a scatter-add implementation: one program per (n, ic-tile, di, hi, wi) computes `input[n,ic,di,hi,wi] * weight[ic,:,:,:,:]` and atomically adds into the convT output. This matches the natural data flow of transposed conv, eliminates the parity/bounds branching in the hot loop, and lets the GEMM be `IC_tile \u00d7 (OC * KD*KH*KW)` per input voxel. Then run the fused pool+sum as a second kernel (already implemented and cheap).\n- Alternatively, reformulate as an im2col-style GEMM where the input is gathered into a `(N*Do*Ho*Wo, IC*KD*KH*KW)` virtual matrix (implicit, indices computed in-kernel) times weight `(IC*KD*KH*KW, OC)`, with tile sizes BLOCK_M=64 (spatial), BLOCK_N=64 (OC), BLOCK_K=32; write the result directly into a pooled accumulator by having each program own a 6\u00b3 output region and reducing max-over-OC then sum-over-OC in the epilogue \u2014 single kernel, no convT materialization.\n- Use channels-last (NDHWC) layout for x and the convT intermediate so the IC and OC axes are contiguous, enabling coalesced vector loads on the GEMM-K dimension; the current NCDHW layout forces strided loads across IC inside the innermost loop.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 33,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.9494847335423198
+    ]
+}

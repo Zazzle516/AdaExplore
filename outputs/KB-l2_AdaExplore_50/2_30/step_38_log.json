@@ -1,0 +1,30 @@
+{
+    "node_id": 38,
+    "parent_node_id": 19,
+    "context_node_ids": [
+        8,
+        19
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (avg_diff ~2e-4, max ~1.7e-3) suggests the GroupNorm reduction is being done in fp32 but the input `x` may be loaded with `mask=mask, other=0.0` where unmasked lanes still contribute via the `tl.where`. Actually the bug is likely in the GEMM: `b_ptrs` indexing treats W as (K,N) via swapped strides, but W is stored as (N,K) row-major so `stride(1)=1, stride(0)=K`; passing `w.stride(1)` as `stride_bk` and `w.stride(0)` as `stride_bn` means K-stride=1, N-stride=K \u2014 verify this maps `b[k,n] = W[n,k]` correctly (it does). Re-examine numerical accuracy: ensure accumulator stays fp32 and consider casting `a`/`b` to fp32 before `tl.dot` only if needed; check that `BLOCK` in GN is `next_power_of_2(CG)=512` for CG=512 \u2014 fine.\n- Add an autotune decorator on the GroupNorm kernel sweeping `num_warps \u2208 {4, 8, 16}` and `num_stages \u2208 {2, 3}` keyed on `CG`.\n- Tighten correctness by using `tl.load(..., other=0.0)` then explicit `tl.where(mask, x, 0.0)` only once, and use `var = tl.maximum(var, 0.0)` before `rsqrt` to avoid negative-from-roundoff.",
+    "large_guidance": "- The current correctness gap is suspicious given avg_diff \u2248 2e-4 uniformly \u2014 this looks like a tolerance miss, not a structural bug. A redesign should keep the two-kernel structure (GEMM+bias, then fused GN+HardTanh) but cast GN reduction inputs through fp32 explicitly and compute mean/var with a numerically stable two-pass (subtract a running estimate) since CG=512 sums of ~O(1) values can lose precision.\n- Consider fusing the GEMM epilogue's bias-add directly with a partial group-norm pre-reduction: since each program writes a BLOCK_N tile that may align with group boundaries (CG=512, BLOCK_N\u2264256), it's not trivially fusable \u2014 keep them separate but persist the GN kernel with one program per (row, group) and a single-pass Welford for better fp32 stability.\n- For M=1024, N=8192, K=8192 the GEMM is the dominant cost (~137 GFLOPs); ensure tile shape 128\u00d7256\u00d732 or 256\u00d7128\u00d764 with num_warps=8, num_stages=4 is in the autotune list (it is). A split-K is unnecessary here.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 39,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

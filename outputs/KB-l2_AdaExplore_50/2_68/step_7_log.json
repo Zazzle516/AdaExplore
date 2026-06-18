@@ -1,0 +1,30 @@
+{
+    "node_id": 7,
+    "parent_node_id": 5,
+    "context_node_ids": [
+        3,
+        5
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The split-k path uses `tl.atomic_add` on uninitialized-then-zeroed memory but has a correctness bug: the epilogue applies bias+min+sub even when SPLIT_K==1 (it's already applied in the kernel), but more critically, when SPLIT_K>1 the kernel writes via atomic_add without masking and without bias/min/sub, then the epilogue applies them \u2014 this should work but FP16 A\u00d7B accumulation across split-k tiles plus the K-loop not being masked when K is not divisible by `BLOCK_K * SPLIT_K` causes OOB reads. K=16384 is divisible by all configs, so the real issue is likely the FP16 inputs combined with `out = torch.zeros` shared by atomic_add across blocks racing on the same tile when grid M/N tiles overlap \u2014 actually it's that `tl.dot(a_fp16, b_fp16)` with fp32 accumulator is fine, but `acc` written via `atomic_add` to fp32 `out` is correct. Investigate the max_diff=2301 \u2014 likely the epilogue runs over tiles that don't align with M=128 (BLOCK_M_E=32 \u2192 4 tiles \u00d7 128 rows OK), so check whether SPLIT_K>1 path is actually selected and double-applies bias/min.\n- Add bounds masking on A/B loads (`mask=offs_m<M`, `offs_n<N`, `offs_k<K`) and use `other=0.0` to be safe across all autotune configs.\n- Force `allow_tf32=True` in `tl.dot` and consider keeping inputs in fp32 (M=128 is small; the GEMM is N=K=16384 dominated, fp16 helps but correctness comes first).",
+    "large_guidance": "- Drop split-k entirely. M=128, N=16384, K=16384 \u2014 there are already 128/BLOCK_M \u00d7 16384/BLOCK_N = plenty of tiles to fill the SM grid (e.g. 1\u00d7128 = 128 programs with BLOCK_M=128, BLOCK_N=128). Split-k just adds atomics and a second epilogue pass. Use a single-pass persistent or simple 2D-grid GEMM with fused bias+min+sub in the epilogue \u2014 one kernel, one launch, no atomics, no zero-init.\n- Since M=128 is tiny, pick `BLOCK_M=128` (covers the whole batch in one program-row) and sweep `BLOCK_N \u2208 {128,256}`, `BLOCK_K \u2208 {32,64,128}`, `num_warps \u2208 {4,8}`, `num_stages \u2208 {3,4}`. Add a `GROUP_M=1` (only one M group anyway) and let pid_n stride across N tiles for L2 reuse.\n- Keep weights pre-transposed and contiguous (already done) but consider fp32 weights to avoid fp16 rounding causing the 2301 max-diff; with K=16384 fp16 accumulation error can exceed the 5e-2 tolerance. If fp16 is desired, ensure `tl.dot` uses `out_dtype=tl.float32` (default) and verify the bias/constant are applied exactly once.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 8,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

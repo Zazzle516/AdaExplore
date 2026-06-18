@@ -1,0 +1,29 @@
+{
+    "node_id": 48,
+    "parent_node_id": 46,
+    "context_node_ids": [
+        46
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.42946582060606064,
+    "max_reward": 0.42946582060606064,
+    "avg_reward": 0.42946582060606064,
+    "score": [
+        1,
+        1,
+        0.34309302
+    ],
+    "small_guidance": "- The current kernel recomputes `(oh_idx + kh) * WIC + (ow_idx + kw) * IC + ic` per K-step; hoist `base_n + oh*WIC + ow*IC` outside the K-loop and only add `kh*WIC + kw*IC + ic` inside to reduce inner-loop integer ops. Also try iterating K as an outer kh,kw loop with an inner IC loop so `BLOCK_K` aligns to IC (e.g. BLOCK_K=64 with IC=64 means one IC sweep per (kh,kw)), making `x_idx` strictly contiguous along K and enabling vectorized loads.\n- Add larger autotune tiles now that the SMEM budget allows it (e.g. `(128,128,32, nw=8, ns=2)` = 96KB, `(64,128,32, nw=4, ns=4)`, `(128,256,16, nw=8, ns=2)`) and key autotune on `(OC, N_HW, IC)` \u2014 current best may be a small tile that is bandwidth-bound.\n- Swap the M-ordering: use `pid_m` over OC tiles and `pid_n` over N_HW so OC (contiguous in W layout) is the fast-varying store axis; also try a swizzled program ID (`tl.program_id` group-along-N) to improve L2 reuse of the weight tile across N_HW tiles.",
+    "large_guidance": "- The kernel is doing an im2col-gather GEMM but the gather pattern for KH\u00b7KW\u00b7IC=576 K-elements with arbitrary (kh,kw) is hurting load efficiency. Restructure as an explicit nested loop over (kh, kw) outside, and a `BLOCK_K`-tiled IC reduction inside: this turns each inner load into a pure NHWC strided-IC gather (fully coalesced along channel) and lets the compiler reuse `x` row pointers across kh,kw with simple offset adds.\n- Consider a persistent / split-K-free design where each program owns a `(BLOCK_M=spatial tile, BLOCK_N=OC tile)` and streams the 9 kernel positions; with OC=128 a single program can cover all OC (BLOCK_N=128) and only tile along spatial, eliminating one grid dim and improving weight reuse (weight tile of 9\u00b7IC\u00b7128 = 288KB total, loaded once per spatial tile, well-amortized).\n- Keep the fused softplus\u00b7tanh\u00b7BN epilogue exactly as-is, but write the output back in NHWC and skip the final `.permute(...).contiguous()` by allocating the BN-consumer's expected layout directly \u2014 currently the trailing permute+contiguous is a full extra read/write of the 64\u00b7128\u00b7126\u00b7126 tensor (~520MB), likely a large chunk of the 10ms.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 49,
+    "global_best_node_id": 16,
+    "global_best_score": [
+        1,
+        1,
+        0.5587834201954398
+    ]
+}

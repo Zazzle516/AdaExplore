@@ -1,0 +1,29 @@
+{
+    "node_id": 47,
+    "parent_node_id": 46,
+    "context_node_ids": [
+        46
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4057834322908227,
+    "max_reward": 0.4057834322908227,
+    "avg_reward": 0.4057834322908227,
+    "score": [
+        1,
+        1,
+        0.14771331639928698
+    ],
+    "small_guidance": "- The pool reduction via masked tl.where + 5D reshape repeats the full BLOCK_SP work PK*PK times \u2014 replace with a single reshape `v -> [BLOCK_OC, BLOCK_POH, PK, BLOCK_POW, PK]` followed by two `tl.sum` calls (no masking, no loop). This alone should remove most of the tail overhead.\n- Sweep `BLOCK_OC \u2208 {32,64,128}`, `BLOCK_POH/BLOCK_POW \u2208 {4,8}` with `num_warps \u2208 {4,8}`, `num_stages \u2208 {2,3}` via `triton.autotune`; current 32/4/4 likely under-utilizes the SMs given OC=128 and POH=POW=63.\n- Hoist the weight load out of the spatial accumulator: load the `[BLOCK_OC, IC, KH, KW]` weight tile once per program (or per IC chunk with `BLOCK_IC=8/16`) and reuse across the spatial tile; currently weights are reloaded inside the IC loop with no spatial reuse benefit but the per-(kh,kw) reload kills BW.",
+    "large_guidance": "- Recast as an explicit im2col-GEMM: program tiles `(N, BLOCK_OC, BLOCK_SP_pooled*PK*PK)` with an inner K-loop over `IC*KH*KW` doing `tl.dot` on `[BLOCK_OC, BLOCK_K] x [BLOCK_K, BLOCK_SP]`. This exploits tensor cores (current code uses scalar FMA via `w[:,None]*x[None,:]`) and is the dominant lever \u2014 conv at this size on a 4090 should be sub-2 ms with tensor cores.\n- Fuse the epilogue (sub1, tanh, sub2, 2x2 avgpool) by laying out `BLOCK_SP = BLOCK_POH*PK * BLOCK_POW*PK` and reducing in registers with two `tl.sum` axes before the store \u2014 one store per pooled element, no intermediate writeback.\n- Consider `channels_last` (NHWC) input/weight layout so the GEMM-K (IC) dimension is contiguous and loads coalesce; permute once outside the kernel.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 48,
+    "global_best_node_id": 24,
+    "global_best_score": [
+        1,
+        1,
+        1.6507404482071715
+    ]
+}

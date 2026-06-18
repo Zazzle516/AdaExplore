@@ -1,0 +1,126 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import triton
+import triton.language as tl
+import math
+
+
+@triton.jit
+def fused_post_kernel(
+    x_ptr,        # input from conv_transpose: [N, C, D, H, W]
+    out_ptr,      # output: [N, C, Do, Ho, Wo]
+    gamma_ptr,    # LayerNorm gamma [W]
+    beta_ptr,     # LayerNorm beta  [W]
+    sum_w,        # scalar sum_weight
+    eps,          # LN epsilon
+    N, C, D, H, W,
+    Do, Ho, Wo,   # output spatial after pool
+    BLOCK_W: tl.constexpr,
+):
+    # one program per (n, c, do, ho); processes Wo outputs along W.
+    pid = tl.program_id(0)
+    ho = pid % Ho
+    tmp = pid // Ho
+    do = tmp % Do
+    tmp = tmp // Do
+    c = tmp % C
+    n = tmp // C
+
+    d0 = do * 2
+    h0 = ho * 2
+
+    w_off = tl.arange(0, BLOCK_W)
+    w_mask = w_off < W
+
+    gamma = tl.load(gamma_ptr + w_off, mask=w_mask, other=0.0).to(tl.float32)
+    beta = tl.load(beta_ptr + w_off, mask=w_mask, other=0.0).to(tl.float32)
+
+    DHW = D * H * W
+    HW = H * W
+    base_nc = n * C * DHW + c * DHW
+    inv_W = 1.0 / W
+
+    # 4 rows: (d0,h0), (d0,h0+1), (d0+1,h0), (d0+1,h0+1)
+    # We'll accumulate normalized rows and then do pool over the W dim.
+    norm_rows = tl.zeros([4, BLOCK_W], dtype=tl.float32)
+
+    for i in tl.static_range(0, 4):
+        dd = d0 + (i // 2)
+        hh = h0 + (i % 2)
+        row_base = base_nc + dd * HW + hh * W
+        x = tl.load(x_ptr + row_base + w_off, mask=w_mask, other=0.0).to(tl.float32) + sum_w
+        x_zero = tl.where(w_mask, x, 0.0)
+        mean = tl.sum(x_zero, axis=0) * inv_W
+        diff = tl.where(w_mask, x - mean, 0.0)
+        var = tl.sum(diff * diff, axis=0) * inv_W
+        rstd = 1.0 / tl.sqrt(var + eps)
+        y = (x - mean) * rstd * gamma + beta
+        # write into the i-th slot
+        mask_i = tl.arange(0, 4)[:, None] == i
+        norm_rows = tl.where(mask_i, y[None, :], norm_rows)
+
+    # Sum the 4 rows together
+    summed = tl.sum(norm_rows, axis=0)  # [BLOCK_W]
+
+    # Now pool along W: for each wo, sum positions 2*wo and 2*wo+1, divide by 8.
+    # We can do this by viewing summed as pairs. Use even/odd masks.
+    wo_off = tl.arange(0, BLOCK_W // 2)
+    wo_mask = wo_off < Wo
+
+    summed2 = tl.reshape(summed, (BLOCK_W // 2, 2))
+    pooled = tl.sum(summed2, axis=1) * 0.125  # divide by 8
+
+    inv_sqrt2 = 0.7071067811865475
+    gelu = 0.5 * pooled * (1.0 + tl.math.erf(pooled * inv_sqrt2))
+
+    DHWo = Do * Ho * Wo
+    HWo = Ho * Wo
+    out_base = n * C * DHWo + c * DHWo + do * HWo + ho * Wo
+    tl.store(out_ptr + out_base + wo_off, gelu, mask=wo_mask)
+
+
+def _next_pow2(x):
+    p = 1
+    while p < x:
+        p *= 2
+    return p
+
+
+class ModelNew(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride, padding, output_padding, sum_weight, norm_shape, pool_kernel_size):
+        super().__init__()
+        self.conv_transpose = nn.ConvTranspose3d(in_channels, out_channels, kernel_size, stride=stride, padding=padding, output_padding=output_padding)
+        self.sum_weight = nn.Parameter(torch.tensor(sum_weight))
+        self.norm = nn.LayerNorm(norm_shape)
+        self.pool_kernel_size = pool_kernel_size
+        self.out_channels = out_channels
+
+    def forward(self, x):
+        x = self.conv_transpose(x)
+        N, C, D, H, W = x.shape
+        pk = self.pool_kernel_size
+        # ensure even-divisible by pool kernel and pool = 2,2,2
+        assert pk == (2, 2, 2) or list(pk) == [2, 2, 2]
+        Do, Ho, Wo = D // 2, H // 2, W // 2
+
+        out = torch.empty((N, C, Do, Ho, Wo), device=x.device, dtype=x.dtype)
+
+        x_c = x.contiguous()
+        gamma = self.norm.weight.contiguous()
+        beta = self.norm.bias.contiguous()
+        eps = self.norm.eps
+        sum_w = float(self.sum_weight.item())
+
+        BLOCK_W = _next_pow2(W)
+        grid = (N * C * Do * Ho,)
+        fused_post_kernel[grid](
+            x_c, out, gamma, beta,
+            sum_w, eps,
+            N, C, D, H, W,
+            Do, Ho, Wo,
+            BLOCK_W=BLOCK_W,
+            num_warps=4,
+            num_stages=2,
+        )
+        return out

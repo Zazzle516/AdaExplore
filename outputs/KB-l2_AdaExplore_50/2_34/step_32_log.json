@@ -1,0 +1,29 @@
+{
+    "node_id": 32,
+    "parent_node_id": 29,
+    "context_node_ids": [
+        30
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.41571574589646465,
+    "max_reward": 0.41571574589646465,
+    "avg_reward": 0.41571574589646465,
+    "score": [
+        1,
+        1,
+        0.22965490364583332
+    ],
+    "small_guidance": "- The current kernel operates on the channel-last layout but the input from `conv_transpose` is channel-first (N, C, D, H, W); reading C=64 elements that are strided by D*H*W is non-coalesced. Either permute to channels_last before the kernel, or change the kernel to load C contiguously by doing the permute as part of the kernel's index math. With C=64 a single program per (N,D,H,W) location with BLOCK_C=64, num_warps=2, num_stages=2 should be fine once layout is fixed.\n- The conv_transpose is the dominant cost (>30 ms of 38 ms); further tuning of the LN-GELU-scale tail will not move fast_p meaningfully. Tuning bullets here have low ceiling.\n- If staying with this structure, fuse the bias add of conv_transpose (currently inside torch) by setting `bias=False` on conv and adding bias inside the LN epilogue \u2014 but again, marginal.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, D, H, W)` input tile, computing the outer product `input[n,ic,d,h,w] * weight[ic,oc,kd,kh,kw]` and scatter-adding into the output grid at `(d*stride - padding + kd, ...)`. Handle stride=2, padding=1, kernel=4 in the index math. Add bias in the same epilogue.\n- Better: since LayerNorm is over the channel (OC=64) axis, structure the conv-transpose as a gather-style GEMM producing one full output spatial position's OC vector per program, then immediately do LN+GELU+scale in the epilogue without a roundtrip to global memory. Tile shape: BLOCK_OC=64 (full), BLOCK_K=IC*kd*kh*kw chunked, one program per (N, d_out, h_out, w_out). This fuses the entire forward into one kernel.\n- Use channels_last_3d memory layout for both input and weight so the GEMM-K dimension (IC) is contiguous; precompute the valid (kd,kh,kw) \u2192 input (d_in,h_in,w_in) mapping with stride/padding folded in, and mask invalid taps. Autotune starting tiles: BLOCK_OC=64, BLOCK_SPATIAL\u2208{4,8,16}, num_warps=4, num_stages=2.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 33,
+    "global_best_node_id": 15,
+    "global_best_score": [
+        1,
+        1,
+        0.7944818288288288
+    ]
+}

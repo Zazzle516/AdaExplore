@@ -1,0 +1,29 @@
+{
+    "node_id": 34,
+    "parent_node_id": 33,
+    "context_node_ids": [
+        33
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.43983604435261714,
+    "max_reward": 0.43983604435261714,
+    "avg_reward": 0.43983604435261714,
+    "score": [
+        1,
+        1,
+        0.4286473659090909
+    ],
+    "small_guidance": "- The softmax tail is fine; the bottleneck is `self.conv_transpose` (cuDNN). Tuning the existing softmax kernel won't move fast_p. If staying small, try increasing softmax BLOCK to 8192 with num_warps=16 and num_stages=3 to fully saturate the row, but expected gain is <5%.\n- Ensure the conv_transpose output is `channels_last_3d` before the softmax kernel so the per-row reads are coalesced; currently softmax reads contiguous spatial which is already coalesced, so leave layout alone \u2014 focus elsewhere.\n- Consider fusing the bias add of conv_transpose into the softmax kernel by setting conv_transpose.bias=None and adding bias inside the clamp/softmax kernel epilogue (saves one elementwise pass).",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile); compute the `input \u00d7 weight` outer product and scatter-add into the output grid using `od = id*stride - pad + kd`, handling output_padding in index math. Fuse the avg_pool (2\u00d72\u00d72 mean) at the input gather step so the pooled tensor is never materialized. Output layout channels_last_3d so the OC axis is contiguous for the softmax that follows.\n- Alternatively, since stride=2/pad=1/kernel=3 yields exactly 27 fixed (kd,kh,kw) contributions per output where only 1-8 are non-zero per output element, implement as a gather-based im2col-style GEMM: one program per (N, OC tile, output-spatial tile), accumulating only the valid kernel taps. This is friendlier to fusion with the downstream clamp+softmax+scale, since each output element is produced exactly once.\n- Fuse the entire tail: conv_transpose epilogue (bias + clamp) into the conv kernel's store, then run a single persistent softmax kernel per (B, C) row over the D*H*W=64*128*128=... spatial elements. With out_channels=64 and B=32, grid=(32,64)=2048 programs each reducing ~S elements \u2014 make it a two-pass online softmax with BLOCK=2048, num_warps=8.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 35,
+    "global_best_node_id": 29,
+    "global_best_score": [
+        1,
+        1,
+        0.8572947318181818
+    ]
+}

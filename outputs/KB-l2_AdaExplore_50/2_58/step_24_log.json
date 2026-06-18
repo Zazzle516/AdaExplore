@@ -1,0 +1,30 @@
+{
+    "node_id": 24,
+    "parent_node_id": 16,
+    "context_node_ids": [
+        14,
+        16
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.43192592456118806,
+    "max_reward": 0.43192592456118806,
+    "avg_reward": 0.43192592456118806,
+    "score": [
+        1,
+        1,
+        0.36338887762980127
+    ],
+    "small_guidance": "- The fused_post kernel is fine; focus tuning on conv_transpose. Try larger BLOCK_S (512/1024) and num_warps=8 in fused_post to reduce launch count.\n- Fuse the bias add from conv_transpose.bias into fused_post (skip adding bias inside conv) \u2014 irrelevant here since torch conv is used; instead, fuse bias subtract + clamp directly on cuDNN output without materializing the LSE intermediate (already done).\n- Currently the forward uses F.conv_transpose3d (cuDNN), not the custom scatter kernel. cuDNN dominates runtime (~14ms of 15.7ms). Tuning fused_post further yields <10% gain.",
+    "large_guidance": "- Replace cuDNN conv_transpose3d with a custom Triton kernel. The scatter approach in the file is unused; redesign as a **gather/im2col-style GEMM**: one program per (N, OD tile, OH*OW tile) accumulating over (IC, KD, KH, KW). Use channels-last-style layout (or transpose weight to [OC, IC, KD, KH, KW] and tile OC as BLOCK_N, spatial as BLOCK_M, IC*KD*KH*KW as K).\n- Fuse the entire post-pipeline (LSE over OC + HardSwish + bias sub + clamp) into the conv epilogue: each program computes a full OC vector per output voxel in registers, then performs the LSE reduction across the OC tile (since OC=16 fits in one tile), applies HardSwish/bias/clamp, and writes a single scalar to output[N,1,OD,OH,OW]. This eliminates the OC-sized intermediate tensor entirely (~16\u00d7 memory savings).\n- Use autotune over BLOCK_SPATIAL \u2208 {16,32,64}, num_warps \u2208 {4,8}, num_stages \u2208 {2,3}. The stride=2 transposed conv has sparse contribution patterns (only 1/8 of (kd,kh,kw) positions hit a given output); a gather formulation handles this cleanly with static_range over kernel positions and a divisibility-by-stride mask.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 25,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.3267919485553208
+    ]
+}

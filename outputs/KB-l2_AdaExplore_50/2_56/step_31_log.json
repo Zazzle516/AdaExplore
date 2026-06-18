@@ -1,0 +1,32 @@
+{
+    "node_id": 31,
+    "parent_node_id": 29,
+    "context_node_ids": [
+        8,
+        19,
+        28,
+        29
+    ],
+    "depth": 5,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The runtime (122ms) is enormous vs the GEMM workload (128\u00d732768\u00d732768 \u2248 2.7e11 FLOPs \u2248 1-2ms on a 4090). The kernel is launching with M=128 only \u2014 only `cdiv(128, BLOCK_M)` programs (1-4 SMs used) while the 4090 has 128 SMs. Add Split-K or split-N parallelism: split the N loop across program_id(1) and atomic-add (or write partial then reduce) the row_sum to scale grid to ~128 programs.\n- Add smaller BLOCK_M configs (16) and much larger grids: e.g. configs with `BLOCK_N=64/128` and a `SPLIT_N` constexpr factor of 32-64 so grid = (cdiv(M,BLOCK_M), SPLIT_N) \u2248 128-256 programs.\n- For the existing structure, drop `tl.where(mask_n[None,:], sig, 0.0)` \u2014 instead set bias load `other=-inf` so sigmoid(-inf)=0 cleanly, or add `mask_n` as `other=large_neg` already; this saves an extra masked op.",
+    "large_guidance": "- Redesign as a 2D-tiled GEMM-with-row-reduction where the grid is `(cdiv(M, BLOCK_M), num_n_tiles)` with each program computing one (BLOCK_M, BLOCK_N) output tile, applying sigmoid in-register, summing along N within the tile, and `tl.atomic_add` into a (M,) output buffer. This exposes ~256 programs across SMs vs the current \u22644, which is the dominant bottleneck.\n- Alternatively make it persistent + split-K: each program handles a (BLOCK_M, BLOCK_N) tile but loops over K with BLOCK_K=32-64, num_stages=4. With M=128, target BLOCK_M=32 and BLOCK_N=128, giving grid = (4, 256) = 1024 tiles distributed across SMs.\n- Cache the bias load outside the K loop and fuse `sigmoid` + partial row-sum in the epilogue before atomic_add; ensure W is loaded with K contiguous (transpose-free) \u2014 `nn.Linear` weight is (N, K) row-major so `stride_wk=1`, which is already the inner load axis, good.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 32,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

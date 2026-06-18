@@ -1,0 +1,29 @@
+{
+    "node_id": 12,
+    "parent_node_id": 9,
+    "context_node_ids": [
+        9
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (~0.05 max diff on a `rand` input that's averaged over 8192 elements) likely stems from masking bugs: when N is not a multiple of BLOCK_N, the `acc = tl.where(valid, acc, 0.0)` correctly zeros invalid columns, but bias is still loaded with mask \u2014 verify. More importantly, `tl.dot` accumulation precision: try forcing `tl.dot(x_block, w_block, allow_tf32=False)` or `acc = tl.dot(..., out_dtype=tl.float32)` since TF32 on 4090 loses ~3 bits which can show up at rtol=5e-2 only over very large K=8192 reductions.\n- Switch to `tl.dot(x, w, allow_tf32=False)` first; if speed regresses too much, cast inputs to fp32 explicitly and keep TF32 but compensate with Kahan-style or split-K. Given K=8192 fp32 sum, expected fp32 error is well under 5e-2, so this is the prime suspect.\n- Once correct, sweep larger BLOCK_M (128, 256) since M=1024 is small and the grid is only `M/BLOCK_M` programs \u2014 currently 32 programs for BLOCK_M=32 is good but BLOCK_M=128 gives 8 programs which underutilizes 4090's 128 SMs. Add split-K (atomic-add into row_sum) with grid `(M/BLOCK_M, num_k_splits)` to get more parallelism.",
+    "large_guidance": "- The whole pipeline collapses to: `out[m] = logsumexp(logsumexp(mean(max(sum_n(linear(x)[m,n]))))) = sum over n of (W\u00b7x+b)[m,n]`. After the linear, sum/max/mean/logsumexp/logsumexp over a single-element dim are all identities on a (M,1) tensor. So the only real work is the GEMM + row reduction. Current design is correct in concept; redesign should focus on making the GEMM faster, not on the trivial tail.\n- Use a 2D grid `(pid_m, pid_n_split)` with split-K-style atomic accumulation into a `[M]` output, or a two-stage kernel: stage 1 computes partial `(M, num_splits)` row sums via standard GEMM tiles, stage 2 does a tiny `[M]` reduction. This exposes far more parallelism than the current 32-program launch.\n- Alternatively, since the reduction is `sum_n (W[n,:] @ x[m,:] + b[n]) = (sum_n W[n,:]) @ x[m,:] + sum_n b[n]`, this is mathematically a matvec \u2014 BUT per the safety contract this is exactly the forbidden algebraic shortcut. The redesign must keep the full GEMM materialized in registers and reduce it there; do not precompute `W.sum(0)`.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 13,
+    "global_best_node_id": 11,
+    "global_best_score": [
+        1,
+        1,
+        0.6167747552424558
+    ]
+}

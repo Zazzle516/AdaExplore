@@ -1,0 +1,29 @@
+{
+    "node_id": 34,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4378346288733489,
+    "max_reward": 0.4378346288733489,
+    "avg_reward": 0.4378346288733489,
+    "score": [
+        1,
+        1,
+        0.4121356882051282
+    ],
+    "small_guidance": "- The pool/bias/scale kernel is already memory-bound and tiny; further tuning here won't help since the F.conv_transpose3d call dominates runtime (~19.5ms vs baseline 8ms). Don't focus tuning effort on the epilogue.\n- If keeping torch's conv_transpose3d, at least avoid the `.item()` host syncs on scale1/scale2 \u2014 pass them as 0-d tensors or pre-extract once into Python scalars cached on a forward-state, and consider channels_last_3d memory format for the conv output.\n- Add larger BLOCK configs (4096) with num_warps=8 and num_stages=3 to the autotune grid for the epilogue, though gains will be marginal.",
+    "large_guidance": "- The heavy operator is ConvTranspose3d and it is still being executed by torch \u2014 that's why fast_p=0.41. Write a custom Triton ConvTranspose3d kernel: scatter-add formulation, one program per (N, OC tile, output-spatial tile), iterating over input (id, ih, iw, ic) and the kernel (kd, kh, kw) and accumulating `input * weight` into the output grid with stride/padding index math. Fuse scale1, the 2\u00d72\u00d72 avg pool, bias add, and scale2 directly into the epilogue so the full conv-transpose output is never materialized to global memory.\n- Alternative (likely better on 4090): gather formulation indexed by output position. For each output element (n, oc, od, oh, ow), loop over ic and the kernel positions that map back to valid input indices: `id = (od + pad - kd) / stride` etc., with the divisibility check. Tile across the pooled output grid (2\u00d72\u00d72 outputs per program) so each program reduces 8 conv-transpose outputs into one pooled value in registers \u2014 this fuses pool with conv-transpose and cuts output writes by 8\u00d7.\n- Use channels_last layout for weight (OC contiguous) and reorganize the inner reduction over (ic, kd, kh, kw) as a GEMM-K loop with BLOCK_K=32, BLOCK_OC=32, BLOCK_SPATIAL=64; autotune num_warps in {4,8} and num_stages in {2,3}. Bias and both scales fold into the epilogue with zero extra launches.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 35,
+    "global_best_node_id": 27,
+    "global_best_score": [
+        1,
+        1,
+        13.28371226446281
+    ]
+}

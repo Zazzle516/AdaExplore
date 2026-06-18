@@ -1,0 +1,30 @@
+{
+    "node_id": 39,
+    "parent_node_id": 35,
+    "context_node_ids": [
+        34,
+        35
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.44025552331548945,
+    "max_reward": 0.44025552331548945,
+    "avg_reward": 0.44025552331548945,
+    "score": [
+        1,
+        1,
+        0.4321080673527879
+    ],
+    "small_guidance": "- The current kernel is bottlenecked by the ConvTranspose3d (torch op) at ~20ms while the post-fused kernel is fast; tuning the post kernel further (block sizes, warps) won't close the gap. If staying small, try `num_warps=2` since W=64 is tiny, and increase `ROWS_PER_PROG` to 8 to amortize launch overhead, but expect minimal impact.\n- Combine the two kernel variants into one with `tl.cdiv` masking on `hp` so you don't branch on `Hp % ROWS_PER_PROG`, and add `@triton.autotune` over `(BLOCK_W, ROWS_PER_PROG, num_warps) \u2208 {(64,4,2),(64,8,4),(64,2,4)}`.\n- Fuse the per-`(d,h)` LayerNorm passes by loading all 4 (dd,hh) rows once into a `[4, BLOCK_W]` tile and doing 4 independent normalizations in registers, saving redundant address math.",
+    "large_guidance": "- Replace the `nn.ConvTranspose3d` with a custom Triton kernel \u2014 it dominates runtime (~20ms vs baseline 8.7ms). Implement as a scatter-add of input \u00d7 weight outer product, or equivalently a gather-style GEMM where each output position computes `\u03a3_{ic,kd,kh,kw} x[n,ic,(d+pad-kd)/stride, ...] * w[ic,oc,kd,kh,kw]` with stride/padding/output_padding index math. Use one program per `(N, OC tile, output-spatial tile)` with `BLOCK_M=32, BLOCK_N=32, BLOCK_K=16, num_warps=4, num_stages=2` and autotune.\n- Fuse the entire epilogue (sum_weight add \u2192 LayerNorm over W \u2192 2x2x2 avg pool \u2192 GELU) into the conv-transpose kernel's output store, so the conv writes directly to the pooled output. Since LayerNorm is over the W axis only (size 64), keep the W-row resident in registers after computing it from the conv accumulator.\n- Use `channels_last_3d` layout so the conv-transpose K-dim (in_channels \u00d7 kd \u00d7 kh \u00d7 kw) is contiguous and W is the innermost spatial axis, making the LayerNorm reduction natural. Fold conv bias + sum_weight into a single bias add in the epilogue.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 40,
+    "global_best_node_id": 26,
+    "global_best_score": [
+        1,
+        1,
+        1.0415970119959803
+    ]
+}

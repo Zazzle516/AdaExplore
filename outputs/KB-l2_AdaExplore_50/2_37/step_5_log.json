@@ -1,0 +1,30 @@
+{
+    "node_id": 5,
+    "parent_node_id": 4,
+    "context_node_ids": [
+        3,
+        4
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness failure with avg_diff ~9e-5 and max_diff ~1.6e-3 suggests the GroupNorm mean/var are being computed over padded lanes incorrectly when CPG (=64) equals BLOCK_CPG \u2014 actually the bigger risk is the `valid` mask: when `valid=False` for tail rows, `tl.load` returns 0 but the sum still divides by CPG, which is fine; however the store with `mask_c & valid` is fine too. The real bug is likely the `xc = tl.where(mask_c, x - mean, 0.0)` is okay, but check whether `tl.sum(x, axis=0)` includes only mask_c lanes \u2014 since other=0.0 it does. Try reducing tolerance issue by computing in fp32 throughout and ensure gamma/beta are loaded as fp32.\n- Try ROWS_PER_PROG=1 to eliminate static_range complications and confirm correctness first, then re-tune. Also bump num_warps to 4 for BLOCK_CPG=64.\n- For GEMM, add configs with BLOCK_M=64, BLOCK_N=64 for better occupancy on M=32768, N=4096; current configs may be over-tiled.",
+    "large_guidance": "- Fuse GroupNorm directly into the GEMM epilogue is hard (cross-tile reduction over N), but consider a persistent GEMM that produces a full row tile (BLOCK_N covers a whole group's CPG=64 contiguous channels) so the group-norm reduction can happen in-kernel per row-group without writing/reading y. With CPG=64, set BLOCK_N as a multiple of 64 and have the kernel emit per-group partial sums to a scratch buffer, then a second small kernel finalizes \u2014 or use a single-pass kernel that materializes the full row of N=4096 in shared memory (small enough).\n- Alternative: split into (1) fused GEMM+swish+bias writing y, (2) a GroupNorm kernel that uses one program per (row, group) with BLOCK=64 and num_warps=1 \u2014 currently num_warps=2 with BLOCK_CPG=64 wastes a warp. Group multiple groups per program to amortize launch overhead (e.g. 8 groups per program, one row at a time).\n- Investigate the correctness bug: gamma/beta indexing uses `grp * CPG + offs` which is correct only if group_norm.weight is laid out per-channel (it is, shape (C,)). The mean/var path looks right. The most likely issue is that `tl.sum(x, axis=0) / cnt` where cnt is a Python int \u2014 ensure division is fp32 by writing `/ float(CPG)` as a constexpr or `1.0/CPG`.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 6,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

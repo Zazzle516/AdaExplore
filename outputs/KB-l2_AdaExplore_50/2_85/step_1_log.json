@@ -1,0 +1,27 @@
+{
+    "node_id": 1,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.019614299460577547
+    ],
+    "small_guidance": "- The kernel does the conv work twice (once for GN stats, once for the pooled output). Drop pass 1 by computing the conv output once into a scratch tensor `(N, OC, OH, OW)`, then run a separate small kernel for GN stats + the fused scale/maxpool/clamp epilogue \u2014 eliminating the duplicated compute should ~halve runtime immediately.\n- Increase `BLOCK_PIX` to 64 or 128 and try `num_warps=8`, `num_stages=3` so the per-program GEMM-like accumulation amortizes the weight/bias loads better; current `BLOCK_PIX=32` underutilizes the SM.\n- Hoist the bias load out of the static_range pkh/pkw loops in pass 2 (currently reloaded `pool_k*pool_k` times) and reuse a single `b_val` / `gn_w` / `gn_b` / `sc` across the pool window.",
+    "large_guidance": "- Restructure as two kernels: (1) an im2col-style implicit-GEMM conv that writes `(N, OC, OH, OW)` in `channels_last` with the bias fused in, tiled `BLOCK_M=64, BLOCK_N=64, BLOCK_K=32` over `(OC, output-spatial, IC*KH*KW)`; (2) a fused per-(N, group) kernel that computes GN mean/var via Welford over the group's `OH*OW*CH_PER_GROUP` elements, then applies `(x-mean)*rstd*gn_w+gn_b`, multiplies scale, runs the 4\u00d74 maxpool, and clamps \u2014 all in one program with the conv output resident.\n- Alternatively, use a single-pass persistent kernel only if the entire group's conv output fits in registers/SMEM: with OH=OW=126 and 4 channels/group, that's 4\u00b7126\u00b7126\u00b74B \u2248 254 KB \u2014 too large, so the two-kernel split is the right boundary. Don't try to do conv+GN+pool in one kernel by recomputing conv twice.\n- For the conv kernel, switch to `channels_last` (`x.to(memory_format=torch.channels_last)` and weight `(OC, KH, KW, IC)`) so the K-axis (`IC*KH*KW`) loads are contiguous; this is the standard high-throughput layout on Ampere/Ada and should bring the conv close to cuDNN.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 2,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.019614299460577547
+    ]
+}

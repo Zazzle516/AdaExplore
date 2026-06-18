@@ -1,0 +1,27 @@
+{
+    "node_id": 19,
+    "parent_node_id": 18,
+    "context_node_ids": [],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The BN apply kernel re-reads `sum_ptr`/`sumsq_ptr` (the raw sums) but treats them as already-reduced stats \u2014 fix by either passing precomputed `mean`/`invstd` tensors or dividing by `M` consistently; current code does `mean = s/M` correctly but the atomic_add path may have race/precision issues with fp32 sumsq for M=16384, N=4096. Switch to a separate two-pass: kernel 1 writes `out` only, then a dedicated column-reduction kernel computes mean/var in fp32 with Welford or pairwise reduction over rows.\n- For the GEMM, M=16384, N=4096, K=4096 favors larger tiles: add `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3` and `BLOCK_M=256, BLOCK_N=128, BLOCK_K=32` to the autotune list; drop the small 64x128 config.\n- Avoid the `Wt = W.t().contiguous()` transpose on every forward \u2014 either keep weight pre-transposed as a buffer or load B with transposed strides directly in the kernel.",
+    "large_guidance": "- Restructure as three kernels: (1) tiled GEMM with bias+scale fused into epilogue, writing `out` to global memory; (2) a column-reduction kernel that computes `mean` and `invstd` per-column by iterating rows in blocks (one program per N-tile, accumulating in fp32, no atomics); (3) an elementwise BN-apply kernel that consumes `out`, `mean`, `invstd`, `bn.weight`, `bn.bias`. This removes atomic contention and the numerical drift from atomic-add fp32 sums of squares (likely cause of the 0.002 max diff).\n- Alternatively, use a persistent split-K-style reduction: have the GEMM kernel write `out` plus per-tile partial sums into a `[num_tiles_m, N]` workspace, then a small reduction kernel sums tiles along M without atomics. This keeps full GEMM arithmetic intact (safety contract) while giving deterministic, accurate stats.\n- Update running_mean/running_var update to use `detach()` properly and make sure the BN-apply uses the *batch* mean/var (training path) \u2014 verify the current code path is exercised by the correctness harness; if eval mode is being tested, the eval branch's `out * scale_b + shift_b` is a separate elementwise op that should also be a fused Triton kernel.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 20,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.7791481785714286
+    ]
+}

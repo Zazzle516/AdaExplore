@@ -1,0 +1,29 @@
+{
+    "node_id": 19,
+    "parent_node_id": 18,
+    "context_node_ids": [
+        9
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The split-K partial accumulator is allocated with `torch.empty` and only written for tiles where `mask_m & mask_n` holds, but the reduction reads the full `(M, N, SPLIT_K)` buffer \u2014 switch to `torch.zeros` (or always store, since M=N=32768 are multiples of all tile sizes this is fine, but the bigger bug is likely the partials race / NaNs). Verify correctness with `SPLIT_K=1` first to isolate the reduction bug.\n- The accuracy delta (~0.68 avg) suggests the partials are not being summed correctly or bias/scale ordering is wrong. Double-check that `reduce_epilogue` reads `stride_ps` matching `partial.stride(2)` and that the partial layout `(M, N, SPLIT_K)` is contiguous as expected; consider laying it out as `(SPLIT_K, M, N)` for coalesced reduction reads.\n- Once correct, raise `SPLIT_K` autotune (try 4/8/16), bump `BLOCK_K` to 64-128 for K=32768, and consider `num_stages=4` to overlap the long K loop.",
+    "large_guidance": "- Drop the split-K + separate reduction kernel design. With M=128, N=32768, K=32768, a single persistent GEMM with `BLOCK_M=128, BLOCK_N=128/256, BLOCK_K=32/64` and the swish+scale+bias fused directly into the epilogue is simpler and avoids the extra `M*N*SPLIT_K` fp32 partial buffer (which is 128\u00b732768\u00b78\u00b74B = 128MB of extra traffic \u2014 likely dominating runtime).\n- Since M=128 is small, prefer a \"tall-skinny\" layout: one program per N-tile only, looping over the full K inside a single kernel, accumulating in registers, then bias + `x*sigmoid(x)*scale` in the epilogue before the single store. Grid = `(cdiv(N, BLOCK_N),)` with `BLOCK_M=128` covering all rows. This eliminates the reduction kernel entirely.\n- Pre-transpose weight to `(K, N)` contiguous once in `__init__` so the inner-K loads on B are contiguous along N, enabling vectorized 128-bit loads in `tl.dot`.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 20,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

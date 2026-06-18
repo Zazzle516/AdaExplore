@@ -1,0 +1,29 @@
+{
+    "node_id": 4,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.40230923682476943,
+    "max_reward": 0.40230923682476943,
+    "avg_reward": 0.40230923682476943,
+    "score": [
+        1,
+        1,
+        0.11905120380434783
+    ],
+    "small_guidance": "- The kernel currently launches one program per (N, OH, OW-tile) with BLOCK_M = next_pow2(OC) = 64 \u2014 that's fine, but BLOCK_N tiles only along OW (width=126). Add configs that fuse OH*OW into a single spatial axis so each program covers a larger contiguous chunk and the grid (N*OH = 128*126 = 16128) isn't so skewed; also try BLOCK_M=32 with two OC tiles to relax register pressure and unlock BLOCK_N=128/256 with num_stages=3.\n- K_FLAT = 8*3*3 = 72 gets rounded to 128, wasting 43% of the inner-product work. Pad weight/x along IC to IC=16 (so K_FLAT=144 \u2192 pad to 256? no \u2014 just compute exact K_FLAT=72 with masked loads on `offs_k < K_FLAT`), or special-case K_FLAT as the literal compile-time constant 72 via a constexpr that's not next_pow2 \u2014 tl.dot can accept BLOCK_K=16 with an inner Python loop of cdiv(72,16)=5 iterations, removing wasted FMAs.\n- Add an autotune config with BLOCK_N=32, num_warps=2 to cover the OW-tail edge case and one with num_stages=4 for the large BLOCK_N=256 case to hide global-load latency on the per-pixel x gather.",
+    "large_guidance": "- Restructure as an im2col-style GEMM with one program per (N, OC_tile, OHW_tile) where OHW = OH*OW is flattened. Loop over K = IC*KH*KW with BLOCK_K=16 or 32, accumulating with tl.dot \u2014 this gives a real M=OC(64) \u00d7 N=OHW_tile(64-128) \u00d7 K=72 GEMM per program and a much flatter, larger grid (N * cdiv(OHW,BN) = 128 * ~250 \u2248 32k programs) than the current N*OH*cdiv(OW,BN) layout, improving SM occupancy.\n- Switch the input layout to NHWC (channels_last) so the K-dimension reduction loads contiguous IC values per (h,w); the current NCHW gather strides by IH*IW across IC and hurts L1 throughput. Keep weight as (OC, KH*KW*IC) to match.\n- Fuse the bias+scale epilogue (already done) and drop the runtime padding-to-next-pow2 of OC/IC \u2014 since OC=64 and IC=8 are constants at eval, hard-code BLOCK_M=64 and use a small inner K-loop with BLOCK_K=16 over the true K_FLAT=72 with a mask on the last iteration. This eliminates the ~78% wasted K-work (72/128) the current kernel performs.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 5,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.11905120380434783
+    ]
+}

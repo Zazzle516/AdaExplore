@@ -1,0 +1,27 @@
+{
+    "node_id": 46,
+    "parent_node_id": 45,
+    "context_node_ids": [],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The instance norm correctness gap (~1e-3) likely comes from numerical drift in `var = E[x\u00b2] - E[x]\u00b2` for large N=8192; switch to a two-pass mean-then-centered-variance formulation (load x, subtract mean, accumulate (x-mean)\u00b2) inside the kernel, which is what `InstanceNorm2d` effectively does.\n- Tighten the GEMM autotune set for M=N=K large (1024\u00d78192\u00d78192): try `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3` and `BLOCK_M=256, BLOCK_N=128, BLOCK_K=32`; also include a `BLOCK_K=64` variant since K=8192 is huge.\n- Pre-transpose `w` to a (K,N) contiguous buffer once in `__init__` so the inner B loads are along the contiguous axis instead of strided via swapped strides.",
+    "large_guidance": "- Fuse the GEMM epilogue with the instance-norm reduction: have the GEMM write tiles to a temp, then a separate one-program-per-row norm kernel does mean/var with a single pass using shared memory if the row fits, otherwise two-pass with re-load. Keep GEMM and norm separate kernels (current design) but ensure the norm pass uses the centered variance formula for numerical stability.\n- For the post-GEMM stage, since N=8192 fits in registers across 8 warps with BLOCK_N=1024\u00d78 tiles, consider a persistent per-row kernel that loads the full row once into registers, computes mean/var, then writes `(x-mean)*rstd + y) * y` \u2014 eliminating the second global reload of x.\n- Consider channels-last layout: the reference InstanceNorm2d on (N,C,1,1) reduces over a single element per (n,c), which means it's effectively a no-op normalization per-channel-per-sample (variance of a single scalar is 0). **Verify this**: `instance_norm` on a (B, C, 1, 1) tensor normalizes over H\u00d7W=1, so output is always 0 (or a constant). The reference may be producing zeros; the current kernel reduces over the wrong axis. Re-examine: the unsqueeze makes shape (B,1,1,C)? No \u2014 `x.unsqueeze(1).unsqueeze(1)` on (B, out_features) gives (B,1,1,out_features), then InstanceNorm2d expects (N,C,H,W) with C=out_features, but here C=1. So it normalizes over H=1,W=out_features per (batch, channel=1). That matches current kernel's per-row reduction over N=out_features. So the design is correct; fix is purely numerical.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 47,
+    "global_best_node_id": 28,
+    "global_best_score": [
+        1,
+        1,
+        0.8257900886245404
+    ]
+}

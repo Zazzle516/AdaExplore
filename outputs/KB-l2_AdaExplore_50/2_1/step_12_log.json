@@ -1,0 +1,29 @@
+{
+    "node_id": 12,
+    "parent_node_id": 9,
+    "context_node_ids": [
+        9
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.48191639058774755,
+    "max_reward": 0.48191639058774755,
+    "avg_reward": 0.48191639058774755,
+    "score": [
+        1,
+        1,
+        0.7758102223489168
+    ],
+    "small_guidance": "- Add larger autotune tiles now that the small ones compile, e.g. `(BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, num_warps=8, num_stages=2)` and `(BLOCK_M=256, BLOCK_N=64, BLOCK_K=32, num_warps=8, num_stages=2)`; check `(BM\u00b7BK + BK\u00b7BN)\u00b74\u00b7stages \u2272 132KB`. With IC=64, KH=KW=3, M=128\u00b7126\u00b7126\u22482M, OC=128, larger M-tiles should help.\n- Since `IC=64` is small and a multiple of 32/64, drop the inner `for k_start in range(0, IC, BLOCK_K)` loop and the `k_mask` by setting `BLOCK_K = IC` (or specializing on `IC % BLOCK_K == 0`); this removes mask overhead and lets `tl.dot` run unmasked. Hoist the `kh, kw` static loops with this single-K-tile form.\n- Cache the NHWC input layout across calls (the `permute(0,2,3,1).contiguous()` and final `permute(0,3,1,2).contiguous()` are pure memory traffic on a 128\u00d764\u00d7128\u00d7128 tensor and are likely a meaningful fraction of the 8.77 ms); consider writing the kernel to read NCHW directly with strided index math, or fuse the output transpose by storing in NCHW order from the kernel.",
+    "large_guidance": "- Restructure as a true implicit-GEMM with `M = N*OH*OW`, `K = IC*KH*KW`, `N = OC`, single K-loop unrolled over `(kh, kw, ic_tile)` rather than nested `kh/kw` loops with an inner `ic` loop. This gives the compiler a single contiguous reduction and better pipelining via `num_stages=3-4` with modest tiles.\n- Eliminate the NHWC pre/post permutes: have the kernel consume NCHW input directly (each program computes a tile of `(N, OC, OH*OW)` by gathering from NCHW with stride math) and write NCHW output. The two `contiguous()` calls on a 128MB tensor are pure overhead and bound the achievable speedup.\n- Consider a persistent / split-K-free design where each program owns an `(n, oh_tile, oc_tile)` block and streams the K=576 reduction in registers; with OC=128 a single `BLOCK_N=128` covers all output channels, removing the `pid_n` dimension and improving L2 reuse of weights across the whole grid.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 13,
+    "global_best_node_id": 6,
+    "global_best_score": [
+        1,
+        1,
+        1.328878056640625
+    ]
+}

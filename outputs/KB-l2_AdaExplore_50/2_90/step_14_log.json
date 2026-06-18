@@ -1,0 +1,31 @@
+{
+    "node_id": 14,
+    "parent_node_id": 12,
+    "context_node_ids": [
+        10,
+        11,
+        12
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4474721998001998,
+    "max_reward": 0.4474721998001998,
+    "avg_reward": 0.4474721998001998,
+    "score": [
+        1,
+        1,
+        0.4916456483516483
+    ],
+    "small_guidance": "- The epilogue is already memory-bound and tiny relative to the conv; further tuning of BLOCK/num_warps will not move the needle. If keeping the structure, add configs with BLOCK=32768 num_warps=8 and BLOCK=2048 num_warps=4 to the autotune sweep, and try `eviction_policy='evict_last'` on the sum_tensor load (broadcast reuse).\n- Verify channels_last_3d actually engages cuDNN's fast NHWC path \u2014 print the conv output's stride once; if it falls back to NCDHW, force `torch.backends.cudnn.benchmark=True` warmup and ensure weight is `channels_last_3d` too.\n- Consider precomputing `c_idx` once per program by tiling the kernel as (N*spatial, C) instead of flat \u2014 but expected gain is <5%.",
+    "large_guidance": "- The Conv3d dominates (~17ms of 18.2ms; baseline 8.9ms means cuDNN does it in ~8ms). Replace `nn.Conv3d` with a custom Triton implicit-GEMM kernel: one program per (N, OC_tile, D*H*W_tile), tile over K = IC*kD*kH*kW, compute input gather offsets inline (im2col implicit), and fuse the entire epilogue (LeakyReLU + bias-broadcast add of sum_tensor + clamp + GELU) into the accumulator before the store. This eliminates the separate epilogue pass entirely (one extra read+write of a 128\u00d764\u00d714\u00d762\u00d762 \u2248 1.6GB tensor saved).\n- Use channels-last layout (NDHWC) for both input and output so the GEMM-K dimension (IC\u00d7kD\u00d7kH\u00d7kW) is contiguous on loads; tile BLOCK_M=64 (output spatial), BLOCK_N=64 (OC), BLOCK_K=32, num_warps=4, num_stages=3. Fold conv bias and `sum_tensor` (both per-OC) into a single per-OC bias vector loaded once per program.\n- Hoist all stride/pad index math out of the K-loop; precompute the (kd,kh,kw)\u2192input-offset table as constexpr-driven arithmetic. Mask the spatial tail rather than branching. With kernel_size=3, no padding, output spatial = 14\u00d762\u00d762, this fits comfortably in a single-pass implicit GEMM.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 15,
+    "global_best_node_id": 11,
+    "global_best_score": [
+        1,
+        1,
+        0.5965300533333333
+    ]
+}

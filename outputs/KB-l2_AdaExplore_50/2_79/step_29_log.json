@@ -1,0 +1,29 @@
+{
+    "node_id": 29,
+    "parent_node_id": 19,
+    "context_node_ids": [
+        19
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.5021520481762645,
+    "max_reward": 0.5021520481762645,
+    "avg_reward": 0.5021520481762645,
+    "score": [
+        1,
+        1,
+        0.942754397454182
+    ],
+    "small_guidance": "- The conv (Conv3d on 128\u00d73\u00d716\u00d732\u00d732 \u2192 16 out, k=3) almost certainly dominates the 0.86 ms; the fused tail kernel is already efficient. Add a `triton.autotune` over `(BLOCK_S \u2208 {128,256,512}, BLOCK_C=16, num_warps \u2208 {2,4,8}, num_stages \u2208 {2,3,4})` on `_fused_norm_clamp_max_kernel` to squeeze the tail, but expect <5% gain.\n- Since C=16 fits exactly in BLOCK_C, drop the `for c_start in range(0,C,BLOCK_C)` loop and the `tl.where(c_mask, \u2026, -inf)` \u2014 load a single [16,BLOCK_S] tile, fuse stats + clamp + max in one persistent pass per (n) so the data never touches HBM twice. This removes the separate `_stats_kernel` launch entirely.\n- For the stats kernel, BLOCK_S=1024 with S=14\u00d730\u00d730=12600 means 13 iterations; bump to BLOCK_S=2048 and num_warps=8 to halve loop overhead.",
+    "large_guidance": "- The conv dominates \u2014 write a custom Conv3d Triton kernel (im2col-style GEMM, one program per (N, OC-tile, output-spatial-tile), K = IC\u00b7kd\u00b7kh\u00b7kw = 81) and fuse the multiplier into the epilogue. This is the high-headroom move; the existing post-conv fusion already runs near memory-bound.\n- Make the conv kernel emit `[N, C, S]` in channels-last (NDHWC) layout so the downstream norm+clamp+max kernel can load the channel dim contiguously and reduce across C with a single vector op (C=16 fits one warp).\n- Collapse stats + normalize + clamp + \u00d7mult + channel-max into a single persistent kernel per (N) that keeps the [16, S] tile resident in registers/shared memory: one pass to compute per-channel mean/var (Welford or two-pass over S-tiles), then a second pass over the same tile producing the channel-reduced output. Eliminates the mean/invstd HBM round-trip.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 30,
+    "global_best_node_id": 28,
+    "global_best_score": [
+        1,
+        1,
+        1.6580138687333263
+    ]
+}

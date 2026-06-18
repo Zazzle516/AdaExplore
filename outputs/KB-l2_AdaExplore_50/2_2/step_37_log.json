@@ -1,0 +1,29 @@
+{
+    "node_id": 37,
+    "parent_node_id": 30,
+    "context_node_ids": [
+        30
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4276782113821138,
+    "max_reward": 0.4276782113821138,
+    "avg_reward": 0.4276782113821138,
+    "score": [
+        1,
+        1,
+        0.32834524390243897
+    ],
+    "small_guidance": "- The current kernel does a gather-style transposed conv where many `(kh,kw)` combinations are invalid for any given output pixel (stride=2 means only 1 of 4 contributes per kh/kw pair). Swap the GEMM orientation so the K-dim is `IC` only (not `IC*KH*KW`) and accumulate per valid `(kh,kw)`; also try `BLOCK_SP=32, BLOCK_OC=128` and `BLOCK_SP=64, BLOCK_OC=128` with `num_warps=4, num_stages=4` since `BLOCK_K=64` is small.\n- Add autotune configs with `BLOCK_SP` aligned to `OW=256` row tiles (e.g. tile along `OW` only so `ih`/`iw` are easier to vectorize) and try `num_stages=4` with `num_warps=4`.\n- Hoist the bias load and the clamp/scale epilogue outside any loops (already done) and consider precomputing `oh+PAD`, `ow+PAD` once before the kh/kw loops to cut index arithmetic.",
+    "large_guidance": "- Switch from gather (output-centric) to **scatter-add** (input-centric): one program per `(N, IC tile, input-spatial tile)` computes the `input \u00d7 weight` outer product and scatter-adds into the output. This matches the natural structure of ConvTranspose2d, avoids the `% STRIDE == 0` masking that wastes 3/4 of the work in gather form with stride=2, and the GEMM-K is `IC` with full utilization.\n- Alternatively, reformulate as a true im2col GEMM where the K dimension iterates over `IC` only and the kh/kw loop is the outer accumulator with proper masking \u2014 but reorder so each program handles a contiguous `OW` row tile (BLOCK_SP = multiple of OW) so the `ih,iw` indexing simplifies to per-row constants per `(kh,kw)` and coalesced input loads.\n- Fuse the bias-add + double-clamp + scale/inv-scale epilogue into the same kernel (already done) and ensure the output store uses a `channels_last`-style layout internally so OC-contiguous stores coalesce \u2014 currently the store has `oc_offs[:, None] * SP + sp_offs[None, :]` which strides by SP across warps; transpose so SP is the inner contiguous dim per warp (already the case if BLOCK_SP is the inner dim, but verify warp layout matches).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 38,
+    "global_best_node_id": 29,
+    "global_best_score": [
+        1,
+        1,
+        0.6189496551724137
+    ]
+}

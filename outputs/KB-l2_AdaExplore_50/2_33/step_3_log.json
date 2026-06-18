@@ -1,0 +1,27 @@
+{
+    "node_id": 3,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure likely comes from BN at training: the reference uses the running stats updated via `bn` module's tracking, but here you compute fresh batch stats then apply with batch mean/var; the issue is `bn.running_mean`/`bn.running_var` are float32 but check `self.bn.weight`/`bias` dtype path \u2014 more importantly, in training mode PyTorch's BN uses the **batch** stats for the output (matches you), but the avg_diff ~3.5e-4 suggests a small bug: the GEMM scale fusion may be losing precision, or `bn_stats_kernel` uses fp32 accumulation but `out` is fp32 fine. Verify the scale application matches reference: reference does `(Wx + b) * scale`, you do same \u2014 but check that `bn_apply_kernel` divides by `M` (population variance) which matches training BN; this should be correct.\n- Tighten autotune: add 128x256x64 and 256x128x32 configs with num_warps=8, num_stages=4 for the large K=8192 GEMM; the current best (128x128x32) underutilizes the K pipeline.\n- Fuse `bn_apply` into a single pass that reads `out` once: use 2D grid over (M_tile, N) so each program loads scale/shift once and applies to a column tile, improving memory bandwidth vs. the current per-column loop.",
+    "large_guidance": "- Rewrite as two kernels only: (1) a tiled GEMM that writes `Wx+b` *and* accumulates per-column sum and sum-of-squares into atomic-add partial buffers using the scale-fused output, then (2) a single fused BN-apply kernel that finalizes mean/var and writes the normalized output. This avoids re-reading the M\u00d7N matrix three times (gemm-store, stats-read, apply-read+write).\n- Alternatively, do GEMM \u2192 store `y = (Wx+b)*scale`, then a single persistent BN kernel per column: one program per N-column, BLOCK_M reduction loop computing mean+var in one Welford pass, then a second loop applying normalization \u2014 fused into one kernel launch (current code is already close, just merge stats+apply into one kernel that keeps mean/var in registers).\n- Consider channels-last layout for `out` (N as outer dim): store the GEMM output transposed so that each BN column is contiguous in memory, turning the BN reduction into a contiguous load instead of a strided one with stride N=8192.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 4,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

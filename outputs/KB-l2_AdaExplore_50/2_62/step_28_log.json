@@ -1,0 +1,30 @@
+{
+    "node_id": 28,
+    "parent_node_id": 15,
+    "context_node_ids": [
+        3,
+        18
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The Linear (1024\u00d78192\u00d78192 matmul) dominates runtime at this scale; the GN+LeakyReLU+double fusion is already cheap. Tuning the GN kernel further won't move the needle \u2014 focus must shift to the matmul.\n- If keeping current structure, try reducing the GN tile: NUM_GROUPS=512 \u00d7 CH_PER_G=16 = 8192 elements per program with num_warps=8, num_stages=2 is reasonable; could also try splitting groups across program_id(1) to increase occupancy (grid = (B, G_TILES)).\n- Ensure `self.fc.weight` is pre-transposed once in `__init__` so the matmul kernel can do contiguous K-inner loads.",
+    "large_guidance": "- Replace `self.fc` (torch.nn.Linear on 1024\u00d78192 @ 8192\u00d78192) with a custom Triton tiled GEMM using `tl.dot`. This is the dominant cost; the GN kernel is already near memory-bandwidth-bound. Use BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8, num_warps=4, num_stages=3-4, with bias fused in the epilogue.\n- Consider fusing the GN forward into the GEMM epilogue only at the row level: each GEMM program produces a 128\u00d7128 tile of activations \u2014 not enough for a per-row group reduction. So keep GEMM and GN as two kernels, but make GEMM the new heavy kernel and let it write directly to the GN input buffer (no bias kernel separately).\n- Alternatively, since num_groups=512 and hidden_size=8192 \u2192 CH_PER_G=16, the GN reduction is tiny. A persistent GEMM that emits one full row (N=8192) per program could fuse GN+LeakyReLU+double in-epilogue, but shared memory / register pressure for a full 8192-wide row is prohibitive \u2014 stick with two-kernel design.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 29,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

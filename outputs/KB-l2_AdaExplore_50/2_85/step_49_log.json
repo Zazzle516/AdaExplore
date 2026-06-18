@@ -1,0 +1,30 @@
+{
+    "node_id": 49,
+    "parent_node_id": 48,
+    "context_node_ids": [
+        47,
+        48
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.47149657608263396,
+    "max_reward": 0.47149657608263396,
+    "avg_reward": 0.47149657608263396,
+    "score": [
+        1,
+        1,
+        0.68984675268173
+    ],
+    "small_guidance": "- The conv kernel is the dominant cost (N=128, OC=64, OH*OW\u224815876, IC*KH*KW=72). Add autotune configs targeting larger BLOCK_SP (256, 512) with BLOCK_OC=64 and num_warps=8, num_stages=3-4; also try BLOCK_OC=16 with BLOCK_SP=512 since OC=64 is tiny and over-tiling OC wastes work.\n- In the conv kernel, hoist per-channel input base `pid_n*IC*IH*IW + ic*IH*IW` and per-(ic,kh,kw) weight load outside the spatial broadcast; precompute `oh*IW+ow` once and reuse with `kh*IW+kw` offset to eliminate redundant multiplies inside the unrolled triple loop.\n- Fuse bias + GroupNorm stats accumulation into the conv epilogue by writing per-(n,g) partial sum/sum_sq to a small scratch buffer, so the second kernel only does normalize+scale+pool+clamp and reads y once instead of twice (currently y is read once for stats and again per channel for the pool).",
+    "large_guidance": "- Restructure as an im2col-style GEMM with channels_last output layout: one program per (N, OH*OW tile, OC tile) with K = IC*KH*KW = 72 (a single unrolled inner accumulation, no K-loop tiling needed). Use `tl.dot` on a [BLOCK_SP, 72] \u00d7 [72, BLOCK_OC] formulation with implicit im2col gather, which lets tensor cores engage (currently the kernel uses scalar FMA via outer-product broadcasts).\n- Fuse conv \u2192 groupnorm-stats into a single pass: have the conv kernel atomically (or via a two-stage reduction over OH*OW tiles) accumulate per-group sum and sum_of_squares while writing the conv output. Then a small kernel finalizes mean/rstd, and a third kernel does (normalize+scale+maxpool+clamp) in one fused sweep with channels_last so the 4\u00d74 pool window is contiguous in HW.\n- For the pool/clamp kernel, switch to one program per (N, C, pool-tile) instead of per (N, G) iterating channels serially; this exposes more parallelism (currently only N*G = 128*16 = 2048 programs, but per-program work iterates 4 channels \u00d7 32\u00d732 outputs). With channels_last and BLOCK over output-spatial, each program reads a contiguous 4\u00d74 window and emits a vectorized clamp+max.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 50,
+    "global_best_node_id": 23,
+    "global_best_score": [
+        1,
+        1,
+        0.9287336140344138
+    ]
+}

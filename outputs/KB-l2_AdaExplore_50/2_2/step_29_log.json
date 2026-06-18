@@ -1,0 +1,29 @@
+{
+    "node_id": 29,
+    "parent_node_id": 28,
+    "context_node_ids": [
+        28
+    ],
+    "depth": 5,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4629029885057472,
+    "max_reward": 0.4629029885057472,
+    "avg_reward": 0.4629029885057472,
+    "score": [
+        1,
+        1,
+        0.6189496551724137
+    ],
+    "small_guidance": "- The gather formulation wastes work: with stride=2, only 1/4 of (kh,kw) combinations per output position are valid (the parity check `ih_num % STRIDE == 0` masks 75% of the IC loop). Restructure so each output (oh,ow) computes only the single (kh,kw) pair matching its parity \u2014 split into 4 sub-kernels or compute kh_start = (oh+PAD) % STRIDE, kw_start similarly, and only iterate kh in {kh_start} (one value), removing the 4\u00d7 redundant IC GEMM passes.\n- Add autotune configs with larger BLOCK_SP (256, 512) and try BLOCK_IC=64 with num_stages=4; current IC=64 means the inner loop only runs 1-2 iterations so software pipelining benefits are minimal \u2014 instead make BLOCK_IC=IC=64 a single pass and increase BLOCK_OC to 128.\n- Swap the dot orientation / layout so x_tile is loaded as [BLOCK_SP, BLOCK_IC] contiguous along IC \u2014 currently x_addrs has IC as the outer (strided by IH*IW) dimension, causing strided loads; transpose to load IC contiguously along the channel axis (or transpose weight pre-pass) for better coalescing.",
+    "large_guidance": "- Rewrite as a per-parity direct kernel: split the output into 4 sub-grids by (oh%2, ow%2). For each parity, the (kh,kw) is uniquely determined, so the kernel becomes a pure GEMM of shape (OC, IH*IW) = W[ic,oc,kh_p,kw_p] @ X[n,ic,:,:] \u2014 a clean batched matmul with no masking, no parity checks, ~4\u00d7 less arithmetic than the current scatter/gather. Launch as one persistent kernel per parity or fuse all 4 with a parity index in program_id.\n- Alternative: implicit-im2col GEMM where K = IC*KH*KW and M=OC, N=N*OH*OW. Pre-permute weight to [OC, IC*KH*KW] once at init. Use BLOCK_M=64, BLOCK_N=128, BLOCK_K=32 with proper masking on the input gather. This gives a single dense GEMM per program with tensor-core utilization, and the parity-zero columns naturally mask out as zeros in the gather.\n- Use channels_last (NHWC) memory layout for both input and output so the IC/OC axis is contiguous; this makes the GEMM-K reduction stride-1 and the bias/clamp/scale epilogue free. Keep the full clamp\u2192scale\u2192clamp\u2192divide epilogue fused at the end (already done).",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 30,
+    "global_best_node_id": 29,
+    "global_best_score": [
+        1,
+        1,
+        0.6189496551724137
+    ]
+}

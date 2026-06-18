@@ -1,0 +1,27 @@
+{
+    "node_id": 8,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4823371661021809,
+    "max_reward": 0.4823371661021809,
+    "avg_reward": 0.4823371661021809,
+    "score": [
+        1,
+        1,
+        0.7792816203429923
+    ],
+    "small_guidance": "- The kernel does Pass 1 + Pass 2 over the same data, redundantly recomputing hardswish per channel. Eliminate Pass 2 by accumulating a per-channel sum during Pass 1 in a (CPG,) register vector (reduce over the BLOCK_S axis only), then compute `out[b,c] = (ch_sum[c]/S - mean) * rstd * gamma[c] + beta[c]` once. This roughly halves global-memory traffic.\n- Autotune over `BLOCK_S \u2208 {512, 1024, 2048, 4096}`, `num_warps \u2208 {4, 8}`, `num_stages \u2208 {2, 3, 4}`. With S = 13\u00b729\u00b729 = 10933, BLOCK_S=2048 or 4096 with 8 warps is likely better than the current 1024/4.\n- Load `gamma`/`beta` for the whole group once (CPG=4) before the store rather than per-channel inside any loop, and keep all arithmetic in fp32 with a final cast on store.",
+    "large_guidance": "- The Conv3D dominates runtime (baseline 6.9 ms, current 8.9 ms total \u2014 the fused tail is fine, but conv is the elephant). Replace `nn.Conv3d` with a custom Triton im2col-style GEMM kernel: one program per `(N, OC_tile, output_spatial_tile)`, gather input with implicit im2col index math, and fuse hardswish into the epilogue before writing to a (B, C, S) buffer.\n- Better: fuse hardswish + GroupNorm reductions directly into the conv epilogue by emitting the conv output in (B, G, CPG, S) layout and having each conv program accumulate partial sum/sumsq for its (b, g) tile via `atomic_add` into a small stats buffer; a second small kernel finalizes mean/rstd and produces the (B, C) mean output. This removes the separate read pass over the conv output.\n- Alternatively, since output channels = 16 and groups = 4 (CPG=4), make one persistent kernel per `(b, g)` that computes the conv outputs for those 4 channels on the fly, accumulates group stats, and emits the final (B, C) reduction \u2014 avoids ever materializing the (B, C, D, H, W) tensor.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 9,
+    "global_best_node_id": 3,
+    "global_best_score": [
+        1,
+        1,
+        0.8366232112246843
+    ]
+}

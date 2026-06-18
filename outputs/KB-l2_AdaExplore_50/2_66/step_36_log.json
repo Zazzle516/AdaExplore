@@ -1,0 +1,30 @@
+{
+    "node_id": 36,
+    "parent_node_id": 34,
+    "context_node_ids": [
+        3,
+        34
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The linear kernel uses BLOCK_M=M=128 for the full batch in a single program along M, leaving only N/BLOCK_N programs (~64-128) \u2014 far below 4090's 128 SMs after grouping. Switch to a 2D grid (pid_m, pid_n) with BLOCK_M=64 or 32 and add a GROUP_M=8 swizzle for L2 reuse; autotune over BLOCK_M\u2208{32,64,128}, BLOCK_N\u2208{64,128,256}, BLOCK_K\u2208{32,64}.\n- Softmax over 16384 cols with BLOCK_SIZE=2048 does 3 passes over HBM per row. Increase BLOCK_SIZE to 4096 or 8192 with num_warps=16, and since 128 rows \u00d7 16384 cols = 8MB fits in L2, the 3-pass cost is mostly redundant compute \u2014 consider a single-pass online softmax (Welford-style running max + rescale of sum) to halve global loads.\n- Cache `self.matmul.bias` on device once in `__init__` (move weight + bias to CUDA eagerly) so the per-forward `.contiguous().cuda()` no-op dispatch overhead is removed; same for the weight transpose.",
+    "large_guidance": "- Fuse the entire pipeline into a single persistent kernel per row-tile: each program loads its BLOCK_M rows of x once, streams K to produce the full N=16384 output row in registers/SMEM (or in tiles written to scratch), then does the softmax max/sum/normalize over that same row without re-reading from HBM. With M=128 this is feasible if you tile N and keep per-row running max+sum across N-tiles (online softmax), eliminating the separate softmax kernel's 3 HBM passes.\n- Alternatively, since K=N=16384 and M=128 is small, treat this as a tall-skinny GEMM: use split-K or stream-K to fill the 128 SMs, with BLOCK_M=128 (full batch) and many (pid_n, pid_k) programs doing atomic-add or a two-stage reduction into the output, then run a fused row-softmax epilogue.\n- The current linear kernel grid has only ~64 programs (N/256) \u2014 the GPU is severely underutilized. Any redesign must produce \u2265256 programs; the cleanest path is 2D tiling over (M,N) with BLOCK_M=32, giving 4\u00d764=256 programs, plus GROUP_M swizzle.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 37,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

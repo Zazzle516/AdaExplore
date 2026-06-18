@@ -1,0 +1,29 @@
+{
+    "node_id": 21,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        2
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5029678464899782,
+    "max_reward": 0.5029678464899782,
+    "avg_reward": 0.5029678464899782,
+    "score": [
+        1,
+        1,
+        0.9494847335423198
+    ],
+    "small_guidance": "- The fused pool+sum kernel is tiny relative to the ConvTranspose3d; tuning it further won't move the needle. If you keep it, try `num_warps=4` with `BLOCK_C=64` (C=64 here) and drop `num_stages` to 1 since the inner loop is fully unrolled (216 loads).\n- Drop the extra `x.contiguous()` call before launching the fused kernel \u2014 the conv already returns contiguous NCDHW, so this is a redundant copy of a 16\u00d764\u00d736\u00b3 tensor.\n- Remove the `channels_last_3d` weight conversion: cuDNN's ConvTranspose3d on Ampere does not have a channels_last_3d fast path and this can actually slow it down vs. plain NCDHW + benchmark.",
+    "large_guidance": "- The ConvTranspose3d dominates (~10ms of 11ms). Replace it with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)`, load the input tile and the `(IC, OC, kD, kH, kW)` weight slice, compute the outer product, and `tl.atomic_add` into the output grid at `(n, oc, d*stride - pad + kd, ...)`. Fuse the bias add in the same kernel.\n- Alternatively, implement ConvTranspose3d as a gather-style GEMM: for each output voxel, gather the contributing input voxels (those where `(o + pad - k) % stride == 0`) and accumulate into a `BLOCK_OC \u00d7 BLOCK_SPATIAL` tile. This avoids atomics and maps cleanly onto an autotuned GEMM with `BLOCK_M/N/K` sweeps.\n- Then fuse maxpool1(k=2) \u2218 maxpool2(k=3) into a single k=6, stride=6 pool (already done) and chain it directly onto the convT output without a round-trip \u2014 i.e., have the convT kernel write into a scratch and immediately launch the pool+sum, keeping the intermediate in L2 by tiling the pool grid to match convT output tiles.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 22,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.9494847335423198
+    ]
+}

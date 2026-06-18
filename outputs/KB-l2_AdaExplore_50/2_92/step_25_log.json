@@ -1,0 +1,29 @@
+{
+    "node_id": 25,
+    "parent_node_id": 24,
+    "context_node_ids": [
+        24
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5059530811633315,
+    "max_reward": 0.5059530811633315,
+    "avg_reward": 0.5059530811633315,
+    "score": [
+        1,
+        1,
+        0.9741129195974848
+    ],
+    "small_guidance": "- The conv (128\u00d78\u219264, 3\u00d73, 128\u00d7128) likely dominates runtime; tuning the GN/LSE tail further yields little. But within the current structure, try fusing the stats kernel and the apply-LSE into a single persistent kernel per `(N, group)` that computes mean/var, then loops channels-in-group to apply norm+tanh+hardswish+residual and accumulates LSE \u2014 eliminating one full read of `x_conv`.\n- Add autotune configs to `gn_stats_kernel` (BLOCK_HW 512/1024/2048, num_warps 4/8) instead of fixed 1024/8; HW=15876 so BLOCK_HW=2048 with num_warps=8 may halve loop iterations.\n- For `fused_apply_lse_kernel`, add larger BLOCK_HW (2048, 4096) configs and try num_stages=3; the inner loop is `static_range(64)` so register pressure is high \u2014 also try num_warps=4 with BLOCK_HW=512 to relieve it.",
+    "large_guidance": "- Replace `nn.Conv2d` with a custom Triton im2col-style GEMM kernel: one program per `(N, OC tile, output-spatial tile)` with BLOCK_M=64 (OC), BLOCK_N=128 (HW), BLOCK_K=ICxKHxKW=72. Conv is the heaviest op (128\u00d764\u00d7126\u00d7126\u00d78\u00d79 \u2248 7.5 GFLOPs/batch element) and is the largest remaining headroom.\n- Fuse conv \u2192 GN stats \u2192 norm+tanh+hardswish+residual \u2192 LSE into a two-stage pipeline: stage 1 = conv kernel that writes `x_conv` and per-(N,group) partial sums via atomics or a separate reduction; stage 2 = single fused kernel doing normalization, activation, residual, and online LSE in one sweep over channels per spatial tile.\n- Use channels_last (NHWC) layout end-to-end so the channel axis is contiguous: this makes the GN per-spatial-pixel reduction across channels coalesced and lets the LSE channel-loop be a contiguous load rather than strided by HW.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 26,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.9741129195974848
+    ]
+}

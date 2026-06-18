@@ -1,0 +1,29 @@
+{
+    "node_id": 49,
+    "parent_node_id": 24,
+    "context_node_ids": [
+        24
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- Drop the separate bias+swish+scale kernel and fuse the epilogue (bias add, sigmoid, multiply by scaling_factor) directly into the GEMM accumulator before storing \u2014 this removes a full M*N read+write pass over a 128x32768 fp32 tensor (~16MB). Pass `scaling_factor` as `tl.constexpr` or a 0-d tensor.\n- Since M=128 is small, restrict autotune to `BLOCK_M` in {32,64,128} and prefer larger `BLOCK_N` (128/256) with `SPLIT_K`>=2 (K=32768 is huge), and try `num_stages=4`, `num_warps=8` for K-loop overlap. Avoid the `B = weight.t().contiguous()` pre-transpose copy \u2014 pass weight directly with swapped strides (stride_bk=1, stride_bn=K) so `tl.dot` loads it transposed without an extra 4GB copy.\n- With epilogue fused, only `SPLIT_K=1` configs can fuse cleanly; for SPLIT_K>1 use a two-stage approach (atomic-add accumulate, then a small fused epilogue) but benchmark both \u2014 at this K, SPLIT_K=1 with large BLOCK_N may win once the transpose copy is removed.",
+    "large_guidance": "- Eliminate the `weight.t().contiguous()` materialization entirely: it allocates and writes a 32768x32768 fp32 tensor (4 GB) on every forward, which alone can dominate runtime. Launch the GEMM directly on `weight` (shape [N, K], row-major) using A @ W^T semantics with strides (stride_bk=1, stride_bn=K) so the inner load along K is contiguous on weight rows.\n- Redesign as a single persistent GEMM kernel with fused bias+swish+scale epilogue and no split-K (or split-K with a second tiny epilogue kernel). With M=128, the grid is just `cdiv(128,BLOCK_M) * cdiv(32768,BLOCK_N)` \u2014 pick BLOCK_M=128, BLOCK_N=128 or 256, BLOCK_K=32 or 64, GROUP_M=8 swizzle for L2 reuse on weight tiles.\n- Consider tf32 (`tl.dot(a, b, allow_tf32=True)`) \u2014 the correctness tolerance is 5e-2 so tf32 is safe, and on Ada it roughly doubles tensor-core throughput vs full fp32.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 50,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

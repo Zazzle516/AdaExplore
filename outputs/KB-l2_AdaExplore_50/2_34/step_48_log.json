@@ -1,0 +1,30 @@
+{
+    "node_id": 48,
+    "parent_node_id": 47,
+    "context_node_ids": [
+        12,
+        44
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.41571574589646465,
+    "max_reward": 0.41571574589646465,
+    "avg_reward": 0.41571574589646465,
+    "score": [
+        1,
+        1,
+        0.22965490364583332
+    ],
+    "small_guidance": "- Increase `ROWS_PER_PROG` (e.g. 8 or 16) and bump `num_warps=4` since C=64 means BLOCK_C=64 leaves warps idle; alternatively process multiple rows in parallel per program via a 2D tile (`ROWS_PER_BLOCK` rows \u00d7 BLOCK_C cols) and reduce along axis=1.\n- Wrap the LN+GELU kernel in `@triton.autotune` over `{(ROWS_PER_PROG, num_warps)} = {(4,2),(8,4),(16,4),(16,8),(32,4)}` keyed on `(M, C)`.\n- The LN kernel is already memory-bound and tiny; the dominant cost is the ConvTranspose3d \u2014 tail tuning will not move `fast_p` much.",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)` reading the input tile, multiplying by the (IC, OC, kD, kH, kW) weight, and `tl.atomic_add`-scattering into the output grid with stride/padding index math. This is where the 38ms runtime actually lives.\n- Alternatively, formulate the transposed conv as a gather GEMM: one program per `(N, OC tile, output-spatial tile)` that gathers contributing input positions (those where `(out + pad - kk) % stride == 0`) and performs a tiled matmul against the reshaped weight `[IC, OC*kD*kH*kW]`. Use channels_last_3d layout so IC is contiguous along the GEMM-K axis. Start tiles at `(BM,BN,BK)=(32,32,16)` num_warps=4 num_stages=2 to stay within SMEM.\n- Fuse the LayerNorm+GELU+scale into the conv-transpose epilogue only if the output is written once per `(n, d, h, w)` (the gather formulation guarantees this; the scatter formulation does not). With the gather kernel, accumulate the full OC vector for one spatial site in registers, then do the per-site LN reduction over OC=64 and apply GELU+scale before the store \u2014 collapsing two passes into one.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 49,
+    "global_best_node_id": 15,
+    "global_best_score": [
+        1,
+        1,
+        0.7944818288288288
+    ]
+}

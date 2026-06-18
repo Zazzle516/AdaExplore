@@ -1,0 +1,30 @@
+{
+    "node_id": 33,
+    "parent_node_id": 30,
+    "context_node_ids": [
+        28,
+        30
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.45375468671679203,
+    "max_reward": 0.45375468671679203,
+    "avg_reward": 0.45375468671679203,
+    "score": [
+        1,
+        1,
+        0.5434761654135338
+    ],
+    "small_guidance": "- The Conv3d dominates runtime here (output is 128\u00d716\u00d714\u00d762\u00d762 \u2248 86M elements, ~46 GFLOPs); the fused GN+min+clamp kernel is fine but tail tuning won't close the gap. If staying small, reduce BLOCK_S to 1024\u20132048 with NUM_BLOCKS computed accordingly and try num_warps=4, num_stages=2 \u2014 current BLOCK_S=8192 wastes registers and over-masks since S=53816.\n- Drop the redundant `tl.minimum(norm, min_value)` then `tl.maximum(norm, min_value)` \u2014 just clamp to [min_value, max_value] once (the min(x, min_value) then clamp to \u2265min_value collapses to just `min_value` when value\u2264min, so a single max(min_value, min(norm, max_value)) after the min(norm,min_value) chain is enough \u2014 or precompute the constant fold within the epilogue).\n- Add `triton.autotune` over {BLOCK_S: 1024, 2048, 4096} \u00d7 {num_warps: 4, 8} \u00d7 {num_stages: 2, 3} keyed on S.",
+    "large_guidance": "- Replace `nn.Conv3d` with a custom Triton im2col-style GEMM kernel: one program per (N, OC_tile, output-spatial tile) with BLOCK_M=64, BLOCK_N=64, BLOCK_K=32 over the IC*kD*kH*kW reduction. With in_channels=3, kernel=3\u00b3, K=81 \u2014 small enough to unroll the K-loop completely. This is where the >2\u00d7 headroom lives (baseline 2.89 ms vs current 5.32 ms \u2014 torch's cuDNN conv is already fast, so the custom conv must use channels_last-ish layout and fuse the GN epilogue).\n- Fuse the entire pipeline: conv \u2192 GN \u2192 min \u2192 clamp into two kernels \u2014 (1) conv producing per-(N,group) partial sums and sum-of-squares alongside the output (write conv output to scratch, accumulate group stats atomically or via a second reduction kernel), (2) a normalize+min+clamp kernel reading scratch. Or simpler: do conv into scratch, then a single fused GN+epilogue kernel (already have this \u2014 so the conv replacement is the priority).\n- Fold the dropout's scaling (1/(1-p)) and mask generation into the epilogue kernel using `tl.rand` with a per-launch seed, eliminating the separate dropout launch and its full read/write of 86M elements.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 34,
+    "global_best_node_id": 20,
+    "global_best_score": [
+        1,
+        1,
+        0.83563387283237
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 24,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The compile failure is at the C launcher stage (gcc), often triggered by a kernel argument shape mismatch or excessive register/shared memory pressure. Try reducing `BLOCK_OC` to exactly `triton.next_power_of_2(OC)` (=16) and explicitly set `num_warps=4, num_stages=2`; also ensure all integer scalar args are passed as plain Python ints (cast via `int(...)`) at launch.\n- Drop the `if pid >= total: return` early-exit and instead launch grid `(Do*Ho*Wo, N)` exactly so no masking is needed; this avoids any divergence/launcher edge cases. Also consider tiling multiple pooled-output positions per program (e.g. 2x2x2) to amortize the 81-iteration weight reload.\n- Cache the weight tile `[BLOCK_OC, IC*KD*KH*KW]` in registers once outside the 64-iteration spatial loop (it's only 16x81 floats), so each spatial position only gathers input and does a small matmul-style accumulation, instead of reloading weights 64 times.",
+    "large_guidance": "- Restructure as im2col-style GEMM: one program per `(N, output-spatial tile of pooled cells)`. For each pooled cell, compute the 4x4x4 conv outputs as a tiled GEMM over `K = IC*KD*KH*KW = 81` with `M = OC = 16`, then do softmax across OC and 4x4x4 max in registers. This keeps weights resident and shares input loads across overlapping conv windows within the pool.\n- Split the fusion: kernel 1 computes conv+softmax into a `(N, OC, OD, OH, OW)` buffer with channels-last layout (so softmax-over-OC is contiguous); kernel 2 fuses the two MaxPool3d (combined stride 4) into a single 4x4x4 reduction. The current single-kernel design recomputes conv values for overlapping pool windows when stride/window relationships change and bottlenecks on weight reloads.\n- Use channels-last (NDHWC) for the conv output so the OC softmax reduction is a contiguous load and so the pool reduction coalesces across the C axis. Precompute `pool_total = pool_kernel_size**2 = 4` and the per-output window bounds at init; pass them as constexpr.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 25,
+    "global_best_node_id": 22,
+    "global_best_score": [
+        1,
+        1,
+        2.689860190720031
+    ]
+}

@@ -1,0 +1,27 @@
+{
+    "node_id": 1,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness bug is the atomic-add accumulation: each (pid_m, pid_n) tile only sees a slice of N, so it computes max-pool over its local BLOCK_N window and sums, then atomic-adds. This double-counts/mis-pools because max-pool windows of size 2 should pair adjacent N-elements globally \u2014 but if BLOCK_N is a multiple of KERNEL_SIZE and N is tiled exactly, the pool windows align; however the sum across N is split across tiles which is fine. The actual issue is likely that `tl.reshape` to 3D then `tl.max(axis=2)` is not supported / produces wrong results in Triton \u2014 switch to using `tl.arange` masks: compute even-indexed and odd-indexed maxes via two separate loads/compares, or split acc into two halves with strided access.\n- Ensure BLOCK_N % KERNEL_SIZE == 0 in every autotune config (already true for 2) and that N (32768) is divisible by BLOCK_N for all configs so no masked -inf survives into a sum incorrectly.\n- After fixing, prefer larger BLOCK_M (64-128) since M=128 is small; try BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, num_warps=8, num_stages=3 to reduce grid in M to 1-2 and amortize the K-loop.",
+    "large_guidance": "- Restructure as one program per row of M (grid = M), doing a persistent K-streamed dot product against the full weight matrix tile-by-tile along N: for each N-tile of size BLOCK_N, compute the (1, BLOCK_N) GEMV result, add bias, do max-pool of pairs (e.g. `tl.maximum(acc[0::2], acc[1::2])` via reshape-free strided arange), accumulate the sum locally, then at the end multiply by scale and store. This eliminates atomic-add and the fragile 3D reshape, and is well-matched to M=128 (small) with N=K=32768 (large).\n- Alternative: keep the 2D GEMM tiling but make the max-pool + sum reduction explicit using two loads with stride 2 (`offs_n_even = 2*tl.arange(0, BLOCK_N//2)`) and `tl.maximum`, then `tl.sum(axis=1)`, and atomic-add the per-tile partial sums into out[m]. Avoid `tl.reshape` to 3D which is brittle.\n- Since M=128 is tiny, GEMV-per-row (batch_size programs, each looping over N) is likely optimal: launch 128 programs, each with num_warps=8, streaming K and N, fusing bias+pool+sum+scale entirely in registers with a single global store per row.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 2,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

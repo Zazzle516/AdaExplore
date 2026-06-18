@@ -1,0 +1,29 @@
+{
+    "node_id": 26,
+    "parent_node_id": 25,
+    "context_node_ids": [
+        25
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.48576165733239723,
+    "max_reward": 0.48576165733239723,
+    "avg_reward": 0.48576165733239723,
+    "score": [
+        1,
+        1,
+        0.807533672992277
+    ],
+    "small_guidance": "- The row-sum kernel is tiny (1024 rows \u00d7 8192 cols, ~33 MB read); the matmul dominates. Tuning BLOCK_N/num_warps further won't move the 3.67 ms number much. If staying small, try BLOCK_N=8192 with num_warps=8/num_stages=4 to process the whole row in one tile and drop the loop overhead.\n- Consider launching one program per row group (e.g. 4 rows per program) to amortize launch overhead, since the reduction is memory-bound and each row only reads 32 KB.",
+    "large_guidance": "- Fuse the matmul with the row-sum: compute `out[m] = scale * sum_n (x @ W.T)[m, n]` directly. Since the sum reduces N (hidden_size), this is equivalent to `out[m] = scale * sum_k x[m,k] * (sum_n W[n,k])`. BUT the safety contract forbids precomputing `sum_n W[:,k]` at init. Instead, fuse at runtime: a single Triton GEMM-style kernel that computes the (M, N) matmul tile-by-tile and accumulates each tile's row-sum into a per-row register, never materializing the (M, N) intermediate. This eliminates the 32 MB write+read of `mm` between cuBLAS and the reduction kernel.\n- Structure: one program per M-tile (BLOCK_M rows). Loop over K in BLOCK_K chunks, computing partial `x_tile @ W_tile.T` via `tl.dot`, then immediately reduce across the N tile dimension into a per-row scalar accumulator. Use BLOCK_M=64/128, BLOCK_N=128, BLOCK_K=32, num_warps=8, num_stages=3.\n- This removes both the materialization of the (1024, 8192) mm result and the separate reduction kernel launch \u2014 the reference matmul still executes (every fma runs at runtime), just with its output streamed into a reduction instead of stored.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 27,
+    "global_best_node_id": 26,
+    "global_best_score": [
+        1,
+        1,
+        0.807533672992277
+    ]
+}

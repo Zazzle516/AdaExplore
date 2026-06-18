@@ -1,0 +1,29 @@
+{
+    "node_id": 17,
+    "parent_node_id": 6,
+    "context_node_ids": [
+        6
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4145216885088404,
+    "max_reward": 0.4145216885088404,
+    "avg_reward": 0.4145216885088404,
+    "score": [
+        1,
+        1,
+        0.2198039301979331
+    ],
+    "small_guidance": "- The scatter kernel launches `N*D_in*H_in*W_in = 64*32^3 = 2,097,152` programs each doing atomic_adds; atomics dominate. Tune `BLOCK_OC` to exactly 16 (next_pow2(16)=16, already) and try `num_warps=1` since the work per program is tiny (16 channels). Also try `num_warps=4` with stages=1.\n- Precompute `pod, poh, pow_` and `valid` once per `(kd,kh,kw)` outside the inner atomic; coalesce the three weight loads into a single contiguous load of shape `[3, BLOCK_OC]` per `(kd,kh,kw)` to reduce instruction count.\n- Replace `tl.atomic_add` with a non-atomic store path by restructuring the loop: launch one program per (n, pooled-output voxel, OC tile) and *gather* contributions rather than scatter \u2014 this eliminates the ~2M atomics that are the bottleneck.",
+    "large_guidance": "- Rewrite as a **gather-style ConvTranspose3d fused with both avg-pools (factor 4)**: one program per `(n, oc_tile, pod, poh, pow_tile)`. Inside, iterate over the 4\u00d74\u00d74 pooled window of conv-transpose outputs; for each output voxel iterate the valid `(kd,kh,kw)` taps that map back to integer input positions (`(od+pad-kd) % stride == 0`). Accumulate in registers, divide by 64, apply fused BN scale/shift + conv bias, write once. No atomics.\n- Use im2col-style indexing with the GEMM-K dimension = `IC * (subset of kd*kh*kw taps)`; for stride=2, only ~1/8 of kernel taps contribute per output voxel, so unroll the tap enumeration as a static loop. Tile `BLOCK_OC=16` (full OC), `BLOCK_SPATIAL=8 or 16` along pooled-W.\n- Fold the avg-pool factor (1/64) into `scale` at the host side (already partially done) and fuse the conv_bias add into the epilogue so the kernel emits final values in one pass \u2014 eliminating the separate `bn_bias_finalize_kernel` launch.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 18,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        0.36042383585251137
+    ]
+}

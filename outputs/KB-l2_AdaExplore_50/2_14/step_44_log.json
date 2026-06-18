@@ -1,0 +1,30 @@
+{
+    "node_id": 44,
+    "parent_node_id": 43,
+    "context_node_ids": [
+        42,
+        43
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness bug is the atomic_add race / double-counting: multiple `pid_n` programs add to the same `out_ptr + rm` slot, but `out` is `torch.zeros(...)` \u2014 that part is fine \u2014 however the real issue is likely that `tl.atomic_add` with a 1-D mask/offsets on an (M,1) tensor is being indexed as `out_ptr + rm` where `rm` is just row indices; that's correct, so re-check: more likely the bug is that `acc` is masked only on `rn` but not on `rm`, so out-of-range M rows contribute garbage via tl.dot \u2014 mask `acc` on `rm_mask[:, None]` too before sum, and ensure `out` dtype matches.\n- Better: split into two stages \u2014 one program per N-tile column computes partial row sums into a `(num_n_tiles, M)` scratch, then a tiny second kernel reduces along the tile axis. Avoids atomics entirely.\n- Add larger-K configs (BLOCK_K=64/128) and a GROUP_M=8 swizzle; K=8192 benefits from num_stages=4 and num_warps=8 with BLOCK_M=128, BLOCK_N=128.",
+    "large_guidance": "- Output is `(M,1)`: the N dimension is fully reduced. Rewrite as: precompute `w_colsum_per_tile` is forbidden (algebraic shortcut). Instead, do a tiled GEMM where each program handles one `(BLOCK_M, BLOCK_N)` tile, reduces its tile along N inside the kernel to a `(BLOCK_M,)` partial, and writes to a `(num_n_tiles, M)` scratch buffer with no atomics. Follow with a small reduction kernel summing along the tile axis and multiplying by `scaling_factor * 0.5`.\n- Alternatively, a one-program-per-row persistent kernel: each program owns one row of M, streams over K in blocks, and over N in blocks inside, accumulating a scalar `row_sum` directly. With M=1024 this gives 1024 programs \u2014 good occupancy on a 4090. Avoids both atomics and a scratch buffer; the inner loop is `tl.dot` of `(1,BLOCK_K) x (BLOCK_K,BLOCK_N)` then `tl.sum` over N.\n- Ensure all reference ops execute at runtime \u2014 the matmul must materialize the per-(m,n) product before the N-reduction; do not fold weight into a column-sum vector at init.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 45,
+    "global_best_node_id": 27,
+    "global_best_score": [
+        1,
+        1,
+        0.8119585150360703
+    ]
+}

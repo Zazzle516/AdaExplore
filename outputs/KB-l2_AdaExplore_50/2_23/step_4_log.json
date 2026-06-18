@@ -1,0 +1,29 @@
+{
+    "node_id": 4,
+    "parent_node_id": 3,
+    "context_node_ids": [
+        3
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4891664084440945,
+    "max_reward": 0.4891664084440945,
+    "avg_reward": 0.4891664084440945,
+    "score": [
+        1,
+        1,
+        0.8356228696637792
+    ],
+    "small_guidance": "- Sweep `BLOCK_OC \u2208 {8,16,24}` (OC=24 \u2192 24 divides evenly with BLOCK_OC=24 eliminating mask waste) and `BLOCK_S \u2208 {128,256,512}` with `num_warps \u2208 {4,8}`, `num_stages \u2208 {2,3}` via `triton.autotune`. With OC=24, BLOCK_OC=24 (or 12) avoids wasted lanes from BLOCK_OC=8 with masking.\n- In `conv3d_kernel`, hoist the `ic` loop outermost and unroll `KD/KH/KW` via `tl.static_range`; precompute `IH*IW`, `ID*IH*IW` outside loops; drop the `ic_valid` mask by setting `IC_C=IC` exactly (already done) so the inner `tl.load` mask is just `s_mask`.\n- In `gn_mean_kernel`, fuse pass-1 and pass-2 into a single pass by storing per-channel `s_sum` in registers (CPG=3 is tiny) \u2014 avoids re-reading `y` from HBM. Also replace `tl.atomic_add` with a direct store since each `n` maps to exactly G programs by combining via a second small kernel, or use one program per `n` looping over groups.",
+    "large_guidance": "- Restructure conv3d as an implicit-GEMM with channels_last output layout: one program per `(N, output-spatial tile, OC tile)` doing a `[BLOCK_S, IC*KD*KH*KW] @ [IC*KD*KH*KW, BLOCK_OC]` matmul via `tl.dot`, instead of the current outer-product accumulation. IC*KD*KH*KW = 3*27 = 81, so K is tiny and a single `tl.dot` covers it; this exploits tensor cores and is far faster than the scalar FMA loop.\n- Fuse the entire GroupNorm + mean reduction into the conv epilogue when feasible: since the final output is just a scalar per batch, after computing the conv tile, accumulate per-(n,group) partial sum and sum-of-squares directly using `tl.atomic_add` into small workspaces, then a tiny finalize kernel computes mean from (sum, sumsq, weighted_sum, bias_sum). This removes the full y materialization read-back.\n- Alternatively, keep the conv kernel but write y in `channels_last` (N, OD, OH, OW, OC) layout so the GN kernel reads contiguous channel vectors per spatial point \u2014 improves the GN pass bandwidth substantially and lets CPG=3 fit in a single vector load.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 5,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.8356228696637792
+    ]
+}

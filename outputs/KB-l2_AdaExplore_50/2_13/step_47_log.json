@@ -1,0 +1,29 @@
+{
+    "node_id": 47,
+    "parent_node_id": 46,
+    "context_node_ids": [
+        46
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4417998383838384,
+    "max_reward": 0.4417998383838384,
+    "avg_reward": 0.4417998383838384,
+    "score": [
+        1,
+        1,
+        0.4448486666666666
+    ],
+    "small_guidance": "- The kernel currently runs one program per (B,H,W) = 16*128*128 = 262144 programs each loading C*D = 64*32 = 2048 fp32 elements; try tiling H*W (e.g. BLOCK_HW=8 or 16) per program so the bias load and softmax reductions are amortized across multiple spatial positions, and bump num_warps to 4\u20138.\n- Add `triton.autotune` over (BLOCK_HW \u2208 {1,4,8,16}, num_warps \u2208 {2,4,8}, num_stages \u2208 {2,3}); current num_warps=2 with a 64\u00d732 tile is likely under-occupied.\n- Hoist the `1/D` scale and avoid the `tl.where(mask_c, ..., -inf)` by sizing BLOCK_C exactly to C=64 (already power of 2) so the masking branch can be eliminated.",
+    "large_guidance": "- The torch ConvTranspose3d on (16,16,32,128,128)\u2192(16,64,32,128,128) is the dominant cost (~20ms baseline, fast_p<0.5 means conv dominates). Replace it with a custom Triton kernel: scatter-add formulation of conv-transpose with stride=1, padding=1, k=3 reduces to a direct 3D conv with flipped kernel \u2014 implement as a gather-style conv where each output element accumulates over (IC, kd, kh, kw)=16*27=432 macs, fused directly with the depth-mean (accumulate only the depth slice contribution divided by D), bias add, softmax over channels, tanh, and scale \u2014 producing the final (B,64,1,H,W) tensor in one pass.\n- Fusion boundary: one program per (B, H_tile, W_tile) computing all 64 output channels in registers; loop over D internally accumulating the depth-mean of conv output, then do softmax across the 64-element channel vector in registers. This avoids materializing the (B,64,32,128,128)=512MB intermediate entirely.\n- Use channels-last weight layout and load the 16*64*27 = 27648-element weight tensor once into shared memory / use tl.constexpr-tiled K dimension; tune BLOCK_HW (4 or 8) so register pressure for the 64-channel accumulator vector stays manageable.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 48,
+    "global_best_node_id": 45,
+    "global_best_score": [
+        1,
+        1,
+        2.9052616573033707
+    ]
+}

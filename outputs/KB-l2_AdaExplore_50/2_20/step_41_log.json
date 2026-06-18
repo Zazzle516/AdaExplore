@@ -1,0 +1,29 @@
+{
+    "node_id": 41,
+    "parent_node_id": 38,
+    "context_node_ids": [
+        38
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4143074814814815,
+    "max_reward": 0.4143074814814815,
+    "avg_reward": 0.4143074814814815,
+    "score": [
+        1,
+        1,
+        0.21803672222222223
+    ],
+    "small_guidance": "- The current gather loop has an inner `for ic_start in range(0, IC, BLOCK_K)` inside the static KD*KH*KW loop, redoing index math 27\u00d7 per IC tile. Hoist the IC loop to be the outermost reduction axis and accumulate across `(kd,kh,kw)` inside it, or increase BLOCK_K to 32 with IC=32 so only one IC iteration runs. Also add larger tiles like `{BLOCK_OC:128, BLOCK_SP:128, num_warps:8, num_stages:3}` and `{BLOCK_OC:64, BLOCK_SP:256}` to the autotune set.\n- The spatial-tile layout (`BLOCK_SP` over flattened `OD*OH*OW=33*65*65`) gives very sparse valid `(kd,kh,kw)` matches per output element (only 1 of 27 typically hits due to stride=2). Switch to gather-by-input: tile over input spatial coords so every load contributes, eliminating the `id_ok & ih_ok & iw_ok` masks that currently zero ~96% of work.\n- The conv_bias add and `(2y+eb)*y+y` epilogue are already fused \u2014 good. But the `tl.dot` shape is `(BLOCK_SP, 32) @ (32, BLOCK_OC)`; ensure BLOCK_SP and BLOCK_OC are both \u226564 multiples-of-16 in every autotune config so the MMA path is hit (drop the 32\u00d7\u2026 configs).",
+    "large_guidance": "- Rewrite as a scatter-add ConvTranspose3d kernel: one program per `(N, IC tile, input-spatial tile)`, compute the `input \u00d7 weight` outer product into the BLOCK_OC \u00d7 (KD*KH*KW) tile, then scatter-add into the output grid using `tl.atomic_add` (or pre-zero output and atomic_add). This avoids the 27\u00d7 wasted index work the current gather form does (only 1/stride^3 \u2248 12.5% of kernel positions actually contribute per output voxel).\n- Alternative: keep the gather form but reformulate as im2col GEMM where the K dimension is `IC * ceil(KD/SD) * ceil(KH/SH) * ceil(KW/SW)` \u2014 i.e. for each output voxel only enumerate the `(kd,kh,kw)` combos whose modular condition can possibly match, instead of full KD*KH*KW with masking. With stride=2 and K=3 this cuts the inner reduction from 27 to 8 per output element.\n- Fuse the epilogue (`+conv_bias`, `+extra_bias`, `*y`, `+y` \u2192 `(2y+eb)*y+y`) directly into whichever new kernel produces the output. Use channels-last (NDHWC) storage internally so the GEMM-K axis (IC) and GEMM-N axis (OC) are contiguous for coalesced loads/stores; do a one-shot layout permute on weight at init.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 42,
+    "global_best_node_id": 30,
+    "global_best_score": [
+        1,
+        1,
+        0.7022256262425447
+    ]
+}

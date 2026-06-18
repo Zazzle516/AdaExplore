@@ -1,0 +1,30 @@
+{
+    "node_id": 46,
+    "parent_node_id": 36,
+    "context_node_ids": [
+        10,
+        36
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4288727059325651,
+    "max_reward": 0.4288727059325651,
+    "avg_reward": 0.4288727059325651,
+    "score": [
+        1,
+        1,
+        0.338199823943662
+    ],
+    "small_guidance": "- The conv dominates (>90% of 19.8ms); tuning the fused pool kernel further has tiny headroom. Still, try BLOCK_W=32/64 with num_warps=4 and add a small `triton.autotune` over (BLOCK_W, num_warps, num_stages) to reduce launch overhead from N*OD*OH*OW_BLOCKS = 4*16*64*4 = 16384 programs.\n- Skip the `x.contiguous()` between conv and pool \u2014 pass channels_last_3d strides directly into the fused kernel so the channel axis is contiguous (BLOCK_C loads coalesce in NHWC), eliminating a full tensor copy.\n- Bake C as a `tl.constexpr` (=64) so masking on C disappears and the compiler unrolls the 8 corner loads tightly.",
+    "large_guidance": "- The Conv3d (4\u00d732\u00d732\u00d7128\u00d7128 \u2192 4\u00d764\u00d732\u00d7128\u00d7128 with k=3, pad=1) is the bottleneck. Replace it with a custom Triton implicit-GEMM kernel: one program per (N, OC tile, output-spatial tile), with K = IC*kd*kh*kw = 32*27 = 864, gathering input via implicit im2col index math and accumulating in an FP32 register tile. Use channels_last_3d input layout so the GEMM-K (IC) dim is contiguous.\n- Fuse the entire tail (2\u00d72\u00d72 maxpool over OC + logsumexp over OC + ReLU + bias) into the conv epilogue: have each program produce a 2\u00d72\u00d72 spatial tile for all OC, run maxpool in registers across OC, then reduce across OC to LSE+ReLU and write a single scalar per output voxel. This avoids materializing the 4\u00d764\u00d732\u00d7128\u00d7128 conv output (128 MB) entirely.\n- If full fusion is too complex, at minimum write the custom conv writing to a channels_last buffer and keep the existing pool/LSE/ReLU kernel \u2014 the conv replacement alone should yield the bulk of the speedup. Autotune BLOCK_M (OC tile) \u2208 {32,64}, BLOCK_N (spatial tile) \u2208 {32,64,128}, BLOCK_K \u2208 {32,64}.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 47,
+    "global_best_node_id": 27,
+    "global_best_score": [
+        1,
+        1,
+        1.1936464374482187
+    ]
+}

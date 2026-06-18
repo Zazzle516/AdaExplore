@@ -1,0 +1,29 @@
+{
+    "node_id": 13,
+    "parent_node_id": 7,
+    "context_node_ids": [
+        7
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- Enable TF32 in `tl.dot` (`allow_tf32=True`) \u2014 the GEMM is 1024\u00d78192\u00d78192 fp32 and TF32 roughly doubles throughput on Ada with the 5e-2 tolerance. Also drop `BLOCK_K=128` configs and bias the autotune list toward `BLOCK_M=128, BLOCK_N=256, BLOCK_K=32-64, num_warps=8, num_stages=3-4` which are the sweet spot for this M.\n- Pre-transpose the weight once in `__init__` to shape `(K, N)` contiguous, so the inner B load becomes `[BLOCK_K, BLOCK_N]` with the contiguous axis on N \u2014 this removes the `tl.trans(b)` and lets `tl.dot(a, b)` consume B directly with coalesced loads along N.\n- Fold `gemm.bias + self.bias` into a single cached parameter at init (instead of recomputing the sum each forward) and pass it straight to the kernel; also precompute and cache the transposed weight as a buffer to avoid `.contiguous()` work per call.",
+    "large_guidance": "- The GEMM dominates (~537 GFLOPs in fp32). Rewrite as a split-K or stream-K persistent GEMM with TF32 `tl.dot`, weight pre-transposed to `(K,N)`, and the hardtanh+mish epilogue applied on the accumulator before store. Target ~0.7\u20131.0 ms for the GEMM on a 4090.\n- Fuse GroupNorm into the GEMM epilogue: with `num_groups=256` and `out_features=8192`, each group is 32 channels \u2014 make `BLOCK_N` a multiple of 32 (e.g. 128 = 4 groups) and reduce mean/var across each 32-wide subgroup inside the tile using `tl.reshape` + `tl.sum` along the inner axis, then apply affine and store. This eliminates the entire second kernel and the extra read/write of the 1024\u00d78192 activation tensor.\n- Alternatively, if epilogue fusion is too tight on registers, write a persistent two-pass kernel: pass 1 computes GEMM+bias+hardtanh+mish and per-group partial sums into a small `(M, G)` stats buffer; pass 2 normalizes in place. Avoid recomputing the activation by storing it once.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 14,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "node_id": 28,
+    "parent_node_id": 22,
+    "context_node_ids": [
+        21,
+        22
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The GEMM uses `allow_tf32=False` which forces slower FP32 mma; switch to `allow_tf32=True` (inputs are fp32 random in [0,1), well within tf32 precision for this 5e-2 tolerance) \u2014 this alone should roughly halve the GEMM time on the 4090.\n- Expand the autotune list with larger K tiles (BLOCK_K=128) and try `num_stages=4-5` with `BLOCK_M=128, BLOCK_N=256` since K=8192 is large; also add a `BLOCK_M=64, BLOCK_N=128, BLOCK_K=128` config for better L2 reuse.\n- In the group-norm kernel, CPG=512 \u2192 BLOCK=512; bump `num_warps=8` and consider `num_stages=2` and using `tl.sum` with the mask-then-zero trick already present; also fold the reduction by loading x once into registers and reusing (already done) \u2014 main win is ensuring the load is fully coalesced (it is, since rows are contiguous).",
+    "large_guidance": "- Use a split-K or persistent GEMM with tf32 (or even fp16 accumulate-to-fp32 cast on input) to dramatically cut the 1024\u00d78192\u00d78192 matmul cost, which dominates 4.65 ms; alternatively dispatch to cuBLAS via `torch.addmm` for the GEMM and only keep a custom fused GN+HardTanh kernel \u2014 cuBLAS tf32 on a 4090 will beat a hand-tuned Triton fp32 GEMM at this size.\n- Fuse the bias add into the GroupNorm kernel instead of the GEMM epilogue: have the GEMM produce raw `x@W^T`, then in the GN kernel load `bias` once per group and add before computing mean/var \u2014 this removes one global write/read and lets the GEMM run as a pure cuBLAS call.\n- Consider a two-stage GN kernel for CPG=512: stage-1 computes per-(sample,group) mean/rstd with one program per group using a wider BLOCK and warp-shuffle reduction; stage-2 (or same kernel persistent) applies affine+hardtanh. With only 16 groups \u00d7 1024 samples = 16384 programs, persistence is unnecessary, but increasing warps to 8 and using vectorized fp32x4 loads will saturate bandwidth.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 29,
+    "global_best_node_id": 2,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

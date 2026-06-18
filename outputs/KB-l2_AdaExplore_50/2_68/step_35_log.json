@@ -1,0 +1,30 @@
+{
+    "node_id": 35,
+    "parent_node_id": 22,
+    "context_node_ids": [
+        11,
+        22
+    ],
+    "depth": 3,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- The weight passed to the kernel is `w.t()` which has stride (1, K) \u2014 meaning `stride_wk=1, stride_wn=K`. The inner-K loads on B then read along contiguous N (good) but the K axis is stride 1 \u2014 actually the load `w_ptrs = offs_k[:,None]*stride_wk + offs_n[None,:]*stride_wn` becomes `offs_k*1 + offs_n*K`, so each row of the BLOCK_K\u00d7BLOCK_N tile is strided by K. That's a poor coalescing pattern. Materialize `w_t = w.t().contiguous()` once in `__init__` (store as a buffer of shape (K, N) row-major) so `stride_wk=N, stride_wn=1`, giving coalesced inner-N loads.\n- With M=128 only, `BLOCK_M=128` is the right pick \u2014 prune `BLOCK_M=64/256` configs and add `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4` and `BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, num_warps=4, num_stages=4` variants. K=16384 is huge, so favor `BLOCK_K=64` with `num_stages=4` to overlap loads.\n- Drop the K-tail masking: K=16384 is divisible by 64/128, so use `tl.load(x_ptrs)` / `tl.load(w_ptrs)` without masks in the inner loop (M=128, N=16384 are also tile-aligned with BLOCK_M=128, BLOCK_N=128/256), removing predication overhead.",
+    "large_guidance": "- Pre-transpose and store the weight as a contiguous (K, N) row-major tensor in `__init__` (one-time cost), so the GEMM's B operand has stride (N, 1) \u2014 this is the single biggest issue: currently B is loaded with stride 1 along K and stride K along N, defeating coalescing.\n- Consider a split-K kernel: with M=128 and K=16384 the M-tile is tiny (1 row-group) while K is massive, so a single program per (M,N) tile under-utilizes the 128 SMs. Split K into ~4-8 chunks, each program accumulates a partial, then a small atomic-add (or a second reduction kernel) finalizes \u2014 this exposes more parallelism. Fuse the bias+min-c epilogue only in the finalize step.\n- Alternatively, since M=128 fits in a single BLOCK_M, use a persistent-N kernel: launch `num_pid_n` programs along N only, each iterating internally over the full K with prefetched stages, and write the full M=128 output column tile in one shot. This eliminates the GROUP_M swizzle overhead and maximizes K-loop pipelining.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 36,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

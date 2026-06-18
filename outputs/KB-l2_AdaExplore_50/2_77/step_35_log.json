@@ -1,0 +1,27 @@
+{
+    "node_id": 35,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.06367334081632653
+    ],
+    "small_guidance": "- The conv_transpose kernel is the bottleneck (245ms vs 15.6ms baseline). The current gather-based implementation iterates IC*KD*KH*KW=64*125=8000 times per spatial element with masked loads, which is extremely slow. Add `triton.autotune` over BLOCK_SPATIAL \u2208 {64,128,256,512} with num_warps \u2208 {4,8} and num_stages \u2208 {2,3} \u2014 but tuning alone will not close a 16\u00d7 gap.\n- Switch to channels_last (NDHWC) memory layout so the IC reduction axis is contiguous, enabling vectorized loads across IC instead of strided reads.\n- Hoist the kd/kh/kw loops outside and precompute the validity masks once per (kd,kh,kw); currently the mask computation happens inside the innermost loop redundantly.",
+    "large_guidance": "- Rewrite ConvTranspose3d as a **scatter-add of input \u00d7 kernel outer product** (per the skill guide): one program per (N, IC tile, input-spatial tile) computes `input[n,ic,id,ih,iw] * weight[ic, :, :, :, :]` and atomically scatters into the output. This avoids the 8000-iteration gather per output element and exploits the fact that input volume (64\u00b716\u00b732\u00b732=1M) is much smaller than output volume (128\u00b720\u00b736\u00b736\u22483.3M per batch).\n- Alternatively, implement as an **implicit-GEMM**: reshape as `(N*OD*OH*OW, OC) = (N*OD*OH*OW, IC*KD*KH*KW) @ (IC*KD*KH*KW, OC)` with one program per (output-spatial tile, OC tile) using BLOCK_M=64, BLOCK_N=64, BLOCK_K=32, with `tl.dot` for the matmul. The K dimension (IC*KD*KH*KW=8000) tiles well and `tl.dot` is dramatically faster than scalar FMA loops.\n- Fuse the scale + BN affine into the conv epilogue (fold `scale * bn_w * invstd` into weight and `(bias*scale - mean)*invstd*bn_w + bn_b` into bias at forward start), then the global avg pool becomes a single reduction kernel over the conv output \u2014 eliminates one full read/write pass over the 3.3M-element output tensor.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 36,
+    "global_best_node_id": 17,
+    "global_best_score": [
+        1,
+        1,
+        1.599996769230769
+    ]
+}

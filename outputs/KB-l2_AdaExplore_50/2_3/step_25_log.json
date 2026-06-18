@@ -1,0 +1,30 @@
+{
+    "node_id": 25,
+    "parent_node_id": 24,
+    "context_node_ids": [
+        23,
+        24
+    ],
+    "depth": 4,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5138323659527607,
+    "max_reward": 0.5138323659527607,
+    "avg_reward": 0.5138323659527607,
+    "score": [
+        1,
+        1,
+        1.0391170191102757
+    ],
+    "small_guidance": "- The kernel currently does 4 independent LayerNorm reductions per program (one per (d,h) pair in the pool window); try fusing the pool-window dim into the reduction by loading all 4 rows into a 2D tile [4, BLOCK_W] and computing the norm via `tl.sum(..., axis=1)` to share index math and reuse gamma/beta loads.\n- Add autotune configs with `num_warps=1` since W=64 and BLOCK_W=64 \u2014 one warp is plenty per program; current min `num_warps=2` likely wastes occupancy. Also include `num_stages=2` only (drop 3/4 \u2014 no big loop to pipeline).\n- Process two output-W lanes per program by widening to BLOCK_W=64 and emitting BLOCK_WO=32 pooled outputs in one shot (already done), but additionally tile over `ho` (merge two ho rows) so each program emits a 2\u00d7Wo pooled strip, halving launch count (currently N*C*Do*Ho = 32*64*8*16 = 262144 programs).",
+    "large_guidance": "- The ConvTranspose3d is the dominant cost (the fused post-kernel is already ~1.04\u00d7 faster than baseline, meaning the conv is essentially the entire 8.4ms). Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per (N, IC tile, input-spatial tile) computing the outer product `input[n,ic,d,h,w] \u00d7 weight[ic,oc,kd,kh,kw]` and scatter-adding into the upsampled output grid with stride=2, padding=1, output_padding=1. Use channels_last_3d layout so OC is contiguous.\n- Alternatively, formulate the transposed conv as a gather-style GEMM: each output voxel reads the relevant (kd,kh,kw) input voxels (those satisfying the stride/pad inverse map) and accumulates `\u03a3 x \u00b7 w`. Tile (OC, output-spatial) with BLOCK_M=32, BLOCK_N=32, BLOCK_K=16 to stay within SMEM, and fuse the bias + sum_weight add directly into the epilogue store.\n- Fuse the entire pipeline: have the conv-transpose kernel write into a buffer that the existing post-kernel already consumes, OR push further and fuse conv-transpose epilogue with sum+LN+avgpool+GELU when the output tile aligns with a (2,2,2) pool block \u2014 emit one program per pooled output voxel that accumulates the 8 pre-pool conv-transpose outputs into registers, then norms+pools+GELUs in place.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 26,
+    "global_best_node_id": 25,
+    "global_best_score": [
+        1,
+        1,
+        1.0391170191102757
+    ]
+}

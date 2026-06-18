@@ -1,0 +1,27 @@
+{
+    "node_id": 1,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing with avg_diff ~2e-4; the bug is the GroupNorm reduction dividing by `CPG` (channels per group = 512) instead of the full group size. With input shape (1024, 8192) and 16 groups, GroupNorm normalizes over channels-per-group only (since there is no spatial dim), so `CPG=512` is correct \u2014 but check that `mask` is being applied correctly to the sum. Specifically, when `BLOCK > CPG`, `tl.sum(x)` includes masked-out lanes; ensure `x` is loaded with `other=0.0` (it is) so this should be fine. The real issue is likely `BLOCK = next_power_of_2(512) = 512` exactly, so no masking issue \u2014 investigate fp32 accumulation precision: cast loaded `x` to fp32 before sum (already done) and use `tl.sum` on fp32. The mismatch (~1e-3 max) suggests the GEMM output differs from torch.linear; verify weight stride passing \u2014 `weight.stride(1), weight.stride(0)` is correct for treating (N,K) weight as (K,N) B-matrix.\n- Try increasing GEMM autotune to include `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3` and add a `GROUP_M=8` block-swizzle for L2 reuse on this large 1024\u00d78192\u00d78192 GEMM.\n- For group_norm kernel, with CPG=512 use `num_warps=4` and load as a single contiguous tile; consider one program per row processing all groups in a loop to amortize launch overhead, or fuse with the GEMM epilogue is impractical (cross-row stats not needed but cross-channel-within-row are).",
+    "large_guidance": "- The 1024\u00d78192\u00d78192 GEMM dominates runtime (~137 GFLOPs). A from-scratch rewrite should use a split-K or persistent-GEMM strategy with `tl.dot` tiles of 128\u00d7128\u00d764 plus `GROUP_M=8` swizzling, and cast accumulator to fp32 with fp32 inputs. Consider using `tf32` via `tl.dot(..., allow_tf32=True)` only if correctness tolerance allows; otherwise keep strict fp32.\n- Fuse the GroupNorm pass-1 (sum and sum-of-squares per group) into the GEMM epilogue: each GEMM tile already produces a contiguous slice of the output row, so atomically/locally accumulate per-group partial sums into a small workspace, then a tiny second kernel finalizes mean/rstd and applies affine+hardtanh.\n- Alternatively, since N=8192 and groups=16 \u2192 CPG=512, a two-kernel pipeline (GEMM \u2192 fused GN+Hardtanh) is fine; focus the rewrite on making the GN kernel persistent per row with vectorized 4-wide loads and a single warp-level reduction across CPG=512 elements (one warp of 32 lanes \u00d7 16 elements each via `tl.sum`).",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 2,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

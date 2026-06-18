@@ -1,0 +1,29 @@
+{
+    "node_id": 2,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The OOM is in `gemm_logsumexp_persistent_kernel` where the accumulator is `[BLOCK_M, BLOCK_N=1024]` fp32 = 4KB/row, multiplied by `num_stages=3` pipelined K-loads. Drop autotune configs to `BLOCK_M=16`, `BLOCK_K=32/64`, `num_stages=2` to fit in 100KB shared memory.\n- Also reduce `BLOCK_K` since two `[BLOCK_M, BLOCK_K]` and `[BLOCK_N=1024, BLOCK_K]` tiles are staged \u2014 at `BLOCK_K=128, stages=3` the W tile alone is `1024*128*4*3 \u2248 1.5MB`. Use `BLOCK_K=32, num_stages=2, num_warps=8`.\n- Keep `BLOCK_N=1024` as constexpr but consider tiling N into 2 halves with online logsumexp combine if shared memory is still tight.",
+    "large_guidance": "- The persistent \"keep full [BLOCK_M, N] accumulator\" strategy is fragile because N=1024 forces a 4KB-per-row fp32 tile that explodes with pipelining. Redesign as a two-pass GEMM+LSE: (1) standard tiled GEMM writing `Z = H @ W2^T + b2` of shape [M, N], (2) a separate row-wise logsumexp kernel that streams N in `BLOCK_N=256` chunks using the online (max, sumexp) update \u2014 this keeps shared memory bounded and lets the GEMM use proven 128\u00d7128\u00d732 tiles.\n- Alternatively, fuse GEMM+LSE with a *streaming-N* design: one program per row-tile, iterate over N tiles of width `BLOCK_N=128`, recomputing the partial GEMM for each N tile and folding it into an online logsumexp (running max + sumexp rescale). Accumulator stays `[BLOCK_M, BLOCK_N=128]` so shared memory is ~10x smaller. Cost: K is re-read per N tile, but K=4096 is small relative to the savings.\n- Keep kernel 1 (GEMM+sigmoid) as-is \u2014 it is structurally sound. Only kernel 2 needs the redesign.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 3,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        1.5116216275773648
+    ]
+}

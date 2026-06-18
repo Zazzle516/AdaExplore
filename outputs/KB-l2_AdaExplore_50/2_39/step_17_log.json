@@ -1,0 +1,30 @@
+{
+    "node_id": 17,
+    "parent_node_id": 16,
+    "context_node_ids": [
+        13,
+        16
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4816511884805502,
+    "max_reward": 0.4816511884805502,
+    "avg_reward": 0.4816511884805502,
+    "score": [
+        1,
+        1,
+        0.773622304964539
+    ],
+    "small_guidance": "- The GEMM (16384\u00d74096\u00d74096) dominates; `torch.addmm` is already cuBLAS, so further BN-kernel tuning won't move the needle. If keeping the current structure, fuse the scale+stats pass to read y once and increase `BLOCK_M_STAT` to 2048 with `num_warps=8, num_stages=4` to better hide DRAM latency, and try `BLOCK_M_AP=64, BLOCK_N_AP=512, num_warps=8` for the apply pass (more N coalescing on 4090).\n- Replace the separate `addmm` with a Triton GEMM kernel whose epilogue directly writes `y*scale` and produces a partial sum/sumsq per block tile (atomic-add into per-N accumulators), eliminating the second full read of y for stats.\n- Make the apply kernel persistent over M (one program per N tile streaming M) so the (a,b) vectors stay in registers and y is loaded only once.",
+    "large_guidance": "- Rewrite as a single fused Triton GEMM-epilogue kernel: tiled `tl.dot` over (M=16384, N=4096, K=4096) producing `y = (xW^T + bias) * scale`, and in the same epilogue do an atomic-add of column sum and sum-of-squares into two N-sized fp32 buffers. Then a tiny second kernel computes mean/invstd and the affine; a third (or fused into the first via two-pass) applies normalization. This removes the extra full-tensor read currently done by `scale_bn_stats_kernel`.\n- Tile shapes for the GEMM on 4090: BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, GROUP_M=8, num_warps=4, num_stages=4; transpose W once at init (store W^T contiguous) so the K-loop loads are contiguous on both operands.\n- Alternatively, do a two-pass scheme over the GEMM output: pass 1 = fused GEMM + scale + write y + atomic stats; pass 2 = fused normalize+affine reading y once. This keeps total y traffic at 1 write + 1 read versus the current 1 write + 2 reads, and should close most of the remaining gap to cuBLAS+vectorized BN.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 18,
+    "global_best_node_id": 14,
+    "global_best_score": [
+        1,
+        1,
+        0.7791481785714286
+    ]
+}

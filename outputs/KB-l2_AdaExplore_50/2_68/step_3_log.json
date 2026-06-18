@@ -1,0 +1,27 @@
+{
+    "node_id": 3,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4,
+    "max_reward": 0.4,
+    "avg_reward": 0.4,
+    "score": [
+        1,
+        1,
+        0.0
+    ],
+    "small_guidance": "- Add larger tile configs targeting M=128 (batch_size=128 fits exactly one BLOCK_M=128): try `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=3/4` and `BLOCK_M=64, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4`. K=16384 is huge, so deeper pipelining (num_stages=4) should overlap loads better.\n- Drop the per-iteration K mask: K=16384 is divisible by all BLOCK_K candidates, so use an unmasked inner loop (`tl.load(a_ptrs)` / `tl.load(b_ptrs)`) and only mask the tail outside the hot loop \u2014 removes a compare from every K step.\n- Add a `GROUP_M` swizzle (e.g. 8) on the program grid for better L2 reuse of B tiles across N tiles within an M group; with M=128 and BLOCK_M=128 the swizzle mostly affects N ordering, which still helps L2.",
+    "large_guidance": "- Problem is M=128, N=16384, K=16384 \u2014 extremely skinny in M. A GEMM tiled with BLOCK_M=128 means only `ceil(N/BLOCK_N)` programs along N (e.g. 64 programs for BLOCK_N=256), severely under-occupying the 128 SMs of the 4090. Redesign as a Split-K GEMM: split the K=16384 reduction across multiple programs (e.g. SPLIT_K=4 or 8) with `tl.atomic_add` into the output, multiplying the grid by SPLIT_K to saturate SMs. Apply the bias/min/sub epilogue in a tiny second pass (or only on the SPLIT_K=0 program after a barrier-free design with a separate epilogue kernel).\n- Alternatively, since A is tiny (128\u00d716384 = 8MB) and reused fully for every N tile, design a persistent kernel where each program iterates over multiple N tiles, keeping the A tile resident in registers/SMEM \u2014 turns the workload into a streaming-B GEMV-like pattern with maximal A reuse.\n- Consider casting weight to fp16/bf16 once at init (kept in fp32 master copy if needed) and using `tl.dot` in fp16 with fp32 accumulator \u2014 the K dimension is bandwidth-bound and halving B's bytes roughly doubles throughput on the 4090.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 4,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

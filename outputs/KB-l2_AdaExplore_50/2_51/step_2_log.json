@@ -1,0 +1,29 @@
+{
+    "node_id": 2,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness bug is in the reference semantics: after mean over dim=1 the tensor is (B,1); logsumexp over dim=1 of a single element is identity. So the scalar per row is just `mean(gemm(x) - sub)`, then GELU, then broadcast-add to original x. Current kernel computes that, but `row_sum` is accumulated via `atomic_add` from multiple splits AND the second kernel is launched before a sync \u2014 ensure the launch ordering is correct (it is on same stream, so fine). The real bug: `row_sum` is zeroed with `torch.zeros`, but multiple `(pid_m, pid_split)` programs atomic-add to the same `offs_m` \u2014 that's correct. Double-check that BLOCK_N tile's masked-out lanes contribute 0 (they do via `tl.where`). Suspect: `mask_n = offs_n < n_end_split` but bias/sub loads use same mask \u2014 OK. Likely issue: `n_per_split = tl.cdiv(N, SPLIT_N)` with `SPLIT_N=8` and N=8192 gives 1024, fine. Investigate whether `original_x` residual uses the pre-`.cuda()` tensor \u2014 `x` is reassigned to `.contiguous().cuda()`, so `out = x + g` uses the GPU copy, correct. Run a unit diff: max_diff 3.5 suggests the GELU scalar is wrong per row \u2014 verify `inv_N` is `1/out_features` (it is) and not `1/(out_features* something)`.\n- Add `tl.debug_barrier()` is unnecessary; instead make `row_sum` dtype match and ensure atomic_add semantics on fp32 \u2014 that's supported. Try `SPLIT_N=1` configs first to isolate whether atomic accumulation is the bug.\n- Once correct, fuse the residual-add+GELU kernel to read `original_x` directly from input pointer (no clone needed) and broadcast `g` across the row in a single pass with BLOCK=8192, num_warps=8.",
+    "large_guidance": "- Redesign as two kernels: (1) a fused GEMM-bias-sub-rowsum where each program owns a full row tile (BLOCK_M rows) and the entire N dimension, accumulating row_sum in registers and writing once \u2014 eliminates atomics and split-K reduction races. With N=8192, K=8192, M=2048 on a 4090, a persistent-row reduction kernel using BLOCK_M=32, BLOCK_N=128, BLOCK_K=32 streams W in tiles; the row_sum stays in registers across N. (2) Epilogue kernel that computes `gelu(row_sum/N)` and broadcast-adds it to original_x in one pass.\n- Alternative: since the output of LSE/GELU is a single scalar per row, compute that scalar entirely in kernel 1 (store `B`-length vector of GELU(mean)), then kernel 2 is a simple `out = x + scalar[row]` elementwise \u2014 this is the minimal-work design and avoids needing row_sum as intermediate.\n- Verify with a tiny torch reference that `logsumexp` over a singleton dim is identity (it is: `log(exp(a))=a`), so the LSE op can be dropped without violating the safety contract since the reduction dim is size 1 \u2014 this is a runtime tautology, not an algebraic shortcut on a heavy op.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 3,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        1,
+        0.7594370142565696
+    ]
+}

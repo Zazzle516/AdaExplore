@@ -1,0 +1,29 @@
+{
+    "node_id": 13,
+    "parent_node_id": 1,
+    "context_node_ids": [
+        1
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.47480208217140735,
+    "max_reward": 0.47480208217140735,
+    "avg_reward": 0.47480208217140735,
+    "score": [
+        1,
+        1,
+        0.7171171779141104
+    ],
+    "small_guidance": "- The fused ReLU+GN kernel is already light; the conv_transpose3d dominates runtime. Minor tuning (BLOCK_S=4096, num_warps=8, num_stages=3) on the GN pass will not close the gap. Consider also caching the relu'd value to a temp buffer to avoid recomputing relu in the second pass \u2014 but this is at most a few percent.\n- Fold GroupNorm's affine into the second pass by precomputing per-channel scale/bias vectors once per group (already partially done); could vectorize across CPG with a 2D tile (BLOCK_C \u00d7 BLOCK_S) to reduce loop overhead.\n- Increase parallelism: launch grid (N, G, num_s_tiles) only for normalization phase using two-stage (reduce then apply) to expose more SMs.",
+    "large_guidance": "- The dominant cost (~7ms baseline, ~10ms custom) is `nn.ConvTranspose3d`. Replace it with a custom Triton scatter-add kernel: for each input element `(n, ic, d, h, w)`, scatter `input * weight[ic, oc, kd, kh, kw]` into `output[n, oc, d+kd, h+kh, w+kw]`. With kernel_size=3, stride=1, padding=0, output spatial is 34\u00d734\u00d734. A gather formulation (one program per output tile, iterate over IC\u00d7kd\u00d7kh\u00d7kw) avoids atomic adds and maps cleanly to a GEMM tile of shape (OC, spatial_tile) \u00d7 (IC*27).\n- Fuse ReLU and GroupNorm directly into the conv-transpose epilogue: produce conv output in channels-last layout, run ReLU on the accumulator, then a second kernel does the per-group reduction (mean/var) and a third applies normalization \u2014 or use a single persistent kernel per (N, group) that computes conv output for all CPG channels of a group, applies ReLU, accumulates stats, then writes normalized output.\n- Use channels_last3d (NDHWC) layout so the GEMM-K axis (IC*27) is contiguous and the OC tile is contiguous on output; this also makes the GN reduction across CPG channels naturally tiled.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 14,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.3333471482889734
+    ]
+}

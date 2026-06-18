@@ -1,0 +1,27 @@
+{
+    "node_id": 45,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The fused_post kernel hard-codes the assumption that InstanceNorm2d on a (1,C,1,1) tensor produces zeros \u2014 this is an algebraic shortcut that is also numerically wrong because InstanceNorm2d normalizes over spatial dims (H*W=1) per channel; with unbiased=False var=0, normalized=0, so output=y*y. But the reference uses `(x-mean)/sqrt(var+eps)` which for a single element gives 0, then +y, *y => y*y. The measured avg_diff ~0.4 shows the real reference is NOT producing y*y, meaning the reference InstanceNorm2d in eval/train mode is actually normalizing across the batch-like dim differently. Re-examine: input is (B, C, 1, 1) where unsqueeze gave shape (B,1,1,C)? Check the unsqueeze order \u2014 `x.unsqueeze(1).unsqueeze(1)` on (B, out_features) gives (B, 1, 1, out_features), so C=1 and H=1, W=out_features. InstanceNorm2d normalizes over H*W=out_features per (batch, channel=1). Fix the kernel to do a proper per-row mean/var reduction over N=out_features.\n- Make fused_post a two-pass reduction kernel: pass1 compute mean and rstd over the row of length N=8192, pass2 normalize, add y, multiply y. Use BLOCK=8192 with num_warps=8, num_stages=2.\n- Keep the GEMM kernel as-is; add GROUP_M=8 swizzle for better L2 reuse at M=1024, N=8192.",
+    "large_guidance": "- Redesign fused_post to faithfully implement InstanceNorm2d: for input shape (B,1,1,out_features), per-row reduction computes mean and variance across the out_features axis, then output[i,j] = ((x[i,j]-mean[i])/sqrt(var[i]+eps) + y[i,j]) * y[i,j]. Use one program per row, a single persistent tile holding the full row (N=8192 fits), do a Welford or two-pass reduction in registers/shared.\n- Consider fusing the InstanceNorm reduction into the GEMM epilogue is hard because the row must be fully materialized before mean/var; instead, launch GEMM then a single persistent normalize+residual+multiply kernel. Tile the row with BLOCK_N=1024 and loop 8 times if register pressure is high.\n- Ensure the kernel uses `unbiased=False` (population variance) matching InstanceNorm2d's behavior at training time with track_running_stats, since the module is in training mode by default.",
+    "evaluator_direction": "large",
+    "evaluator_valid": false,
+    "total_nodes": 46,
+    "global_best_node_id": 28,
+    "global_best_score": [
+        1,
+        1,
+        0.8257900886245404
+    ]
+}

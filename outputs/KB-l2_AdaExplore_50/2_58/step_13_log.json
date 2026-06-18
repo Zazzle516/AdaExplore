@@ -1,0 +1,30 @@
+{
+    "node_id": 13,
+    "parent_node_id": 12,
+    "context_node_ids": [
+        11,
+        12
+    ],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.5278666514240677,
+    "max_reward": 0.5278666514240677,
+    "avg_reward": 0.5278666514240677,
+    "score": [
+        1,
+        1,
+        1.1548998742485586
+    ],
+    "small_guidance": "- Sweep BLOCK_W \u2208 {16, 32, 64} and num_warps \u2208 {2, 4, 8} via `triton.autotune` on `(OD, OH, OW, N)` \u2014 with OW=33, BLOCK_W=16 gives 3 tiles vs BLOCK_W=32's 2 tiles with heavy tail-masking; an aligned BLOCK_W choice can save ~15-25% of stride-2 wasted lanes.\n- Hoist the input gather: since stride=2, only ~1/8 of `(kd,kh,kw)` combinations contribute valid input at any output cell. Replace the 27-iter `static_range` triple loop with two static loops over `(kd_parity, kh_parity, kw_parity)` collapsed \u2014 i.e. compute `id_q` once per parity and skip the divisibility check. This removes ~26/27 of the masked loads.\n- Try `num_stages=3` and pre-load the full weight tile `w[IC, OC, KD, KH, KW]` once into registers (only 3\u00b716\u00b727=1296 floats) outside the spatial loops, then index it with constexpr offsets \u2014 cuts weight-load traffic from KDHW\u00d7OC loads per program to one.",
+    "large_guidance": "- Restructure as a scatter-add ConvTranspose: launch over `(N, ID, IH, IW)` input tiles, compute the `[OC, BLOCK]` outer product `weight @ x` into a per-program output patch, then `tl.atomic_add` into the full conv output. This eliminates the stride-2 wasted-iteration problem entirely (every kernel iteration does useful work). Follow with a separate fused LSE+HardSwish+bias+clamp kernel reading `[N,OC,OD,OH,OW]`.\n- Alternatively, split into two kernels: (1) a true GEMM-based ConvTranspose3d producing `[N, OC, OD, OH, OW]` with `BLOCK_M=64, BLOCK_N=64, BLOCK_K=IC*KD*KH*KW=81` using channels-last layout, then (2) a row-wise fused LSE/HardSwish/clamp kernel over the OC axis. Current per-output gather forces redundant weight loads and wastes 7/8 of stride-2 iterations.\n- If staying with the gather strategy, switch the inner-most contraction to `tl.dot` with weight laid out as `[KD*KH*KW, IC, OC]` precomputed in `__init__` (a layout-only transform, not algebraic), enabling a single `tl.dot(x_tile[BLOCK_W, IC], w_tile[IC, OC])` per (kd,kh,kw) \u2014 Tensor Cores will outperform the current FMA-only outer product.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 14,
+    "global_best_node_id": 5,
+    "global_best_score": [
+        1,
+        1,
+        1.3267919485553208
+    ]
+}

@@ -1,0 +1,29 @@
+{
+    "node_id": 47,
+    "parent_node_id": 29,
+    "context_node_ids": [
+        29
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- The correctness failure (~1e-3 max diff, ~9e-5 mean) is consistent with GroupNorm using `group_size` as divisor while masked-out lanes contribute correctly \u2014 but the matmul kernel may have a B-stride issue: weight is (N, K) row-major with stride (K, 1), so for logical B (K, N) you need `stride_bk = 1` and `stride_bn = K`; this is already correct. The actual likely bug is precision: cast `a` and `b` to fp32 inside the K-loop or use `tl.dot(a, b, allow_tf32=False)` since default TF32 on Ampere may exceed the 5e-2 tolerance for K=1024. Try `allow_tf32=False` first.\n- In group_norm_kernel, prefer Welford or compute mean with `tl.sum(x)/group_size` where `group_size=64` (always power-of-2 here), so `BLOCK=64` and `num_warps=2` are fine; no change needed but verify `weight`/`bias` are loaded with proper offsets (they are per-channel, indexed as `group*group_size+offs`, correct).\n- Add an autotune sweep on the matmul including `BLOCK_M=256, BLOCK_N=128, BLOCK_K=64, num_warps=8, num_stages=3` for the large M=32768 case.",
+    "large_guidance": "- Rewrite as a single fused matmul\u2192swish\u2192bias\u2192GroupNorm kernel using a persistent split-K-free GEMM whose output tile aligns with one GroupNorm group (BLOCK_N = group_size = 64, BLOCK_M chosen freely). Each program computes a full row-tile\u00d7group output, then performs the per-row, per-group reduction in registers/shared memory before writing normalized output \u2014 eliminating the intermediate (32768, 4096) write/read entirely (~512 MB of DRAM traffic).\n- Alternatively, keep matmul separate but write the post-swish+bias output in `channels_last`-by-group layout so GroupNorm can be a single fused two-pass kernel; combine with an epilogue that accumulates partial sums of x and x\u00b2 during the matmul store so the second kernel only needs the stats.\n- Ensure fp32 accumulation and `allow_tf32=False` (or explicit fp32 cast of operands) in `tl.dot` to satisfy the 5e-2 tolerance with K=1024; current TF32 path is the most likely correctness failure cause.",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 48,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.0
+    ]
+}

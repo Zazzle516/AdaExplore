@@ -1,0 +1,29 @@
+{
+    "node_id": 10,
+    "parent_node_id": 9,
+    "context_node_ids": [
+        9
+    ],
+    "depth": 2,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.4207638894815953,
+    "max_reward": 0.4207638894815953,
+    "avg_reward": 0.4207638894815953,
+    "score": [
+        1,
+        1,
+        0.27130208822316104
+    ],
+    "small_guidance": "- The BN+mean-sub kernel is fine but trivial vs. the conv: it's only ~5% of the runtime. Tuning here cannot close the gap. If kept, try BLOCK_S=4096, num_warps=8, num_stages=3 and cache `vals_bn` between the two passes via a scratch buffer or recompute (current recompute is fine).\n- Ensure inputs to the kernel are in `channels_last_3d` so the C axis is contiguous; right now S=D*H*W is contiguous which is okay for this kernel, but the conv_transpose runs in NCDHW \u2014 switching the conv to channels_last_3d may speed it via cuDNN.\n- No further small-kernel tuning will move fast_p above ~0.3 because `nn.ConvTranspose3d` dominates (>90% of 6.57 ms).",
+    "large_guidance": "- Replace `nn.ConvTranspose3d` with a custom Triton scatter-add kernel: one program per `(N, IC tile, input-spatial tile)`, loading an input tile and the `[IC, OC, kD, kH, kW]` weight, computing the input\u00d7weight outer product, and `tl.atomic_add`-ing into the output grid at positions `(d*stride - pad + kd, h*stride - pad + kh, w*stride - pad + kw)`. Fold the conv bias, the eval-time BN affine (`scale`, `shift`), into the same tensor before the mean subtraction.\n- Alternative gather formulation: one program per `(N, OC tile, output-spatial tile)`, iterating over `(IC, kd, kh, kw)` and gathering valid input positions where `(out + pad - k) % stride == 0`. This avoids atomics and tends to be faster on Ampere; choose tiles `(BM=64, BN=32, BK=16)` at num_warps=4, num_stages=2 to stay within SMEM.\n- Fuse a two-pass epilogue: after the conv tile is computed, accumulate per-(N,C) partial sums into a global `sum[N,C]` buffer with atomics, then a second small kernel computes `mean = sum/S` and writes `bn(x) - mean`. Or stage the conv output to global, then run the existing BN+mean-sub kernel \u2014 this alone would yield ~10x since the conv is the bottleneck.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 11,
+    "global_best_node_id": 4,
+    "global_best_score": [
+        1,
+        1,
+        0.32290846370039283
+    ]
+}

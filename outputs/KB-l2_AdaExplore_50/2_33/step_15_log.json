@@ -1,0 +1,31 @@
+{
+    "node_id": 15,
+    "parent_node_id": 14,
+    "context_node_ids": [
+        3,
+        7,
+        14
+    ],
+    "depth": 4,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "- Correctness is failing because the BN running stats update happens *before* the apply step uses `use_mean`/`use_var`, but `unbiased_var = var * (M / max(M-1, 1))` looks fine \u2014 the real bug is likely that BN in training mode is supposed to normalize with biased var but PyTorch's `BatchNorm1d` uses biased var for normalization and unbiased for running \u2014 that matches. Re-check: `bn_stats_kernel` uses `BLOCK_M=1024` with `M=1024`, so the loop runs once but `tl.sum` over a masked vector should be exact. The likely issue is reading the GEMM `out` tensor with strides `out.stride(0), out.stride(1)` while the apply kernel assumes contiguous `N` layout (`offs_m*N + offs_n`) \u2014 confirm consistency, but more importantly the bias/scale fusion in GEMM may be applying scale to the bias incorrectly: reference does `(Wx+b)*scale`, kernel does `(acc+bias)*scale` \u2014 that matches. Investigate small numerical drift: try casting `mean`/`var` from fp32 stats but apply with fp32 scale/shift; likely fine. Most likely culprit: the apply kernel loads `x` as fp32 (input dtype) but `scale`/`shift` computed from fp32 mean/var \u2014 fine. **Set `eps` as `tl.constexpr` and verify**; also ensure `bn_stats_kernel` is launched with `num_warps=8` for the 1024-wide reduction.\n- Add `triton.autotune` to `bn_apply_kernel` over `BLOCK_M \u2208 {32,64,128}`, `BLOCK_N \u2208 {128,256}`, `num_warps \u2208 {4,8}`.\n- Consider fusing BN-apply into the GEMM epilogue for the eval path (use `running_mean`/`running_var` as kernel inputs), eliminating one full M\u00d7N read/write.",
+    "large_guidance": "- Fuse the entire pipeline into a single kernel for the eval/inference path: GEMM \u2192 scale \u2192 BN-affine, where BN folds to a per-channel `(scale*w/sqrt(var+eps), b - mean*scale*w/sqrt(var+eps))` precomputed once on the host. This removes the BN stats pass and the second M\u00d7N traffic.\n- For training, do a two-kernel design: (1) fused GEMM+scale that also writes a partial column-sum and column-sum-of-squares to a small (num_pid_m, N) workspace via `tl.atomic_add` or a second reduction kernel; (2) a fused apply kernel that finalizes mean/var and writes normalized output. This eliminates the separate `bn_stats_kernel` pass over the full M\u00d7N output.\n- Use a persistent-CTA GEMM with `BLOCK_M=128, BLOCK_N=256, BLOCK_K=64, num_warps=8, num_stages=4` tailored to (1024, 8192, 8192) and transpose-load B with `stride_bk=1, stride_bn=K` (already done) \u2014 confirm vectorized loads by padding/aligning to 16B.",
+    "evaluator_direction": "large",
+    "evaluator_valid": true,
+    "total_nodes": 16,
+    "global_best_node_id": 12,
+    "global_best_score": [
+        1,
+        1,
+        0.5658960882834168
+    ]
+}
