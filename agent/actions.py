@@ -11,6 +11,7 @@ from src.utils import extract_first_code
 from src.eval import eval_kernel_against_ref, wrapped_eval_kernel_against_ref, KernelExecResult
 from agentprompt.evaluator_prompt import generate_evaluator_prompt
 from agentprompt.tuner_prompt import generate_tuner_prompt
+from agentprompt.Utils.detect import replaced_heavy_op_built
 from agent.utils import extract_edits, str_replace
 
 def _use_performance_metric(args: argparse.Namespace) -> bool:
@@ -137,12 +138,19 @@ def run_evaluator(ref_arch_src: str, kernel: str, metrics: KernelExecResult, inf
     Runs even when the kernel failed to compile — the prompt assembler injects
     the traceback into a dedicated section.
     """
+    # Runtime verification of the executed path: a dead-branch rewrite is one
+    # where the reference heavy op still ran in PyTorch (recorded at eval time)
+    # while ModelNew built a Triton replacement that never executed. Gate it out.
+    meta = getattr(metrics, "metadata", None) or {}
+    dead_branch = bool(metrics) and bool(meta.get("heavy_op_executed_in_pytorch")) \
+        and replaced_heavy_op_built(kernel, ref_arch_src)
     evaluator_prompt, mode = generate_evaluator_prompt(
         task_params=args.task_params,
         custom_triton_kernels=kernel,
         run_info=metrics,
         experience_guidance_path=args.general_memory_path,
         knowledge_1_threshold=args.knowledge_1_threshold,
+        dead_branch_rewrite=dead_branch,
     )
     evaluator_output = query_inference_server(
         server=inference_server,
@@ -151,6 +159,11 @@ def run_evaluator(ref_arch_src: str, kernel: str, metrics: KernelExecResult, inf
         max_completion_tokens=args.max_completion_tokens,
     )
     small_guidance, large_guidance, direction, valid = _parse_evaluator_json(evaluator_output)
+    if dead_branch:
+        # Runtime verification found the reference heavy op still executed in
+        # PyTorch while a Triton replacement was built but never ran (dead
+        # branch). Gate it out: valid=False -> calculate_score -> (1,0,0).
+        valid = False
     if mode == "slow":
         # SLOW_GOAL omits direction; force the large-bias here from the
         # builder-reported mode (single source of truth for the Mode-A gate).

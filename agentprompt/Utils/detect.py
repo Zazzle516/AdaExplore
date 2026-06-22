@@ -283,6 +283,135 @@ def detect_shortcut_risk(arch_src: str) -> list[ShortcutChain]:
     return chains
 
 
+# --- Dead-branch heavy-op rewrite detection ---------------------------------
+#
+# Paired with runtime verification (src/heavyop_checker.py): the runtime signal
+# says the reference heavy op still dispatched through aten inside ModelNew (it
+# ran in PyTorch, not Triton); this static signal says ModelNew nonetheless
+# *built* a custom Triton replacement of that heavy op. Together they catch the
+# cheat where a `@triton.jit` conv is parked in a dead branch (e.g. the `else:`
+# of `if self.training:`) while the real PyTorch conv runs on the live path.
+#
+# Discriminator (calibrated on outputs/KB-l2_AdaExplore_50/2_15): legit kept-op
+# kernels (steps 1/3/7) only build a BN/sub Triton kernel and never read the
+# heavy module's weight; cheats (steps 2/4/5/6/9) extract `self.<conv>.weight`
+# to feed a custom conv. Reading the heavy module's `.weight` is therefore the
+# tell of a built conv replacement -- the Triton-kernel count is not (step 7 is
+# legit yet defines two `@triton.jit` kernels).
+
+
+def _find_class_named(tree: ast.Module, name: str):
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == name:
+            return node
+    # Fallback: first class definition in the module.
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            return node
+    return None
+
+
+def _ref_heavy_op_names(arch_src: str) -> set:
+    """Heavy-op names used in the reference Model.forward (resolved via __init__)."""
+    if not arch_src or not isinstance(arch_src, str):
+        return set()
+    try:
+        tree = ast.parse(arch_src)
+    except SyntaxError:
+        return set()
+    cls = _find_model_class(tree)
+    if cls is None:
+        return set()
+    init_map = _build_init_map(cls)
+    forward_fn = next(
+        (n for n in cls.body
+         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+         and n.name == "forward"),
+        None,
+    )
+    if forward_fn is None:
+        return set()
+    names = set()
+    for stmt in forward_fn.body:
+        for cat, name, _ in _ordered_ops(stmt, init_map):
+            if cat == "heavy":
+                names.add(name)
+    return names
+
+
+def _defines_triton_kernel(tree: ast.Module) -> bool:
+    """True if the module defines/launches a custom Triton kernel.
+
+    Detects a `@triton.jit`/`@jit`-decorated function, any `tl.*` attribute use,
+    or a `fn[grid](...)` launch (a Call whose func is a Subscript).
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for dec in node.decorator_list:
+                d = dec.func if isinstance(dec, ast.Call) else dec
+                if isinstance(d, ast.Attribute) and d.attr == "jit":
+                    return True
+                if isinstance(d, ast.Name) and d.id == "jit":
+                    return True
+        if isinstance(node, ast.Attribute):
+            if isinstance(node.value, ast.Name) and node.value.id == "tl":
+                return True
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Subscript):
+            return True
+    return False
+
+
+def _reads_heavy_module_weight(cls: ast.ClassDef, heavy_attrs: set) -> bool:
+    """True if the class reads `self.<heavy_attr>.weight` for a heavy module.
+
+    `self.conv_transpose.weight` parses as Attribute(attr='weight',
+    value=Attribute(attr='conv_transpose', value=Name('self'))). Extracting the
+    heavy module's weight is the signature of building a custom heavy-op kernel
+    (vs. legit kernels that just call `self.conv_transpose(x)`).
+    """
+    for node in ast.walk(cls):
+        if (isinstance(node, ast.Attribute)
+                and node.attr in ("weight", "bias")
+                and isinstance(node.value, ast.Attribute)
+                and isinstance(node.value.value, ast.Name)
+                and node.value.value.id == "self"
+                and node.value.attr in heavy_attrs):
+            return True
+    return False
+
+
+def replaced_heavy_op_built(kernel_src: str, arch_src: str) -> bool:
+    """Did ModelNew *build* a custom Triton implementation of the reference heavy op?
+
+    Branch-agnostic intent signal (the caller ANDs it with runtime verification).
+    Returns True iff: the reference uses a heavy op (Conv*/ConvTranspose*/Linear),
+    the kernel source defines/launches a custom Triton kernel, and ModelNew reads
+    the heavy module's `.weight`/`.bias` (the tell of a built heavy-op replacement,
+    not merely an `nn.*`/`F.*` call). Fail-safe to False on a missing heavy op, no
+    Triton kernel, no weight extraction, or any parse error.
+    """
+    try:
+        ref_heavy = _ref_heavy_op_names(arch_src)
+        if not ref_heavy:
+            return False
+        if not kernel_src or not isinstance(kernel_src, str):
+            return False
+        try:
+            tree = ast.parse(kernel_src)
+        except SyntaxError:
+            return False
+        cls = _find_class_named(tree, "ModelNew")
+        if cls is None:
+            return False
+        init_map = _build_init_map(cls)
+        heavy_attrs = {attr for attr, (ctor, _) in init_map.items() if ctor in _HEAVY}
+        if not heavy_attrs:
+            return False
+        return _defines_triton_kernel(tree) and _reads_heavy_module_weight(cls, heavy_attrs)
+    except Exception:
+        return False
+
+
 # --- Kernel comment / docstring stripping -----------------------------------
 #
 # LLM-generated kernels frequently carry comments like

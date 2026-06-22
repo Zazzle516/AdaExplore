@@ -23,3 +23,13 @@ designing from scratch or tuning an existing kernel.
    CUDA C++ extension (`torch.utils.cpp_extension`). Do not assume any op is
    the immovable part of the graph — the heaviest op usually has the most
    headroom.
+
+   Your replacement must **execute unconditionally** on the forward path. The
+   eval harness runs the model at PyTorch's default `training=True` and never
+   calls `.eval()`, so any heavy-op replacement guarded behind `if self.training:`,
+   `if x.is_cuda:`, or parked in an `else:` / fallback branch is **dead code that
+   never runs** — the original PyTorch op executes and is timed instead. Such a
+   branch counts as **not** replacing the op: the evaluator verifies at runtime
+   which path actually executed and scores a dead-branch rewrite as invalid. Call
+   your custom kernel directly in `forward`, with no conditional that can route
+   execution back to the reference `nn.*`/`F.*` op.

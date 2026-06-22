@@ -26,6 +26,7 @@ import traceback
 logger = logging.getLogger(__name__)
 
 from .format import KernelExecResult, REPO_TOP_PATH
+from .heavyop_checker import _HeavyOpRecorder
 
 # 目前 level2-9 的测试有环境报错问题  无法测试出 Agent Kernel 的真实能力
 # 后续考虑围绕 AdaExplore 搭建一整个 workflow  然后这个报错单独拆分到 env 中
@@ -850,13 +851,54 @@ def run_and_check_correctness(
             set_seed(trial_seed)
             model_new = new_model_instance.cuda(device=device)
 
-            output = model(*inputs)
-            torch.cuda.synchronize(device=device)
+            # Runtime verification (trial 0 only): record which heavy aten ops
+            # actually dispatch during each forward. Triton launches bypass
+            # __torch_dispatch__, so a heavy aten op recorded here means the
+            # reference op truly ran in PyTorch rather than a custom kernel.
+            # Fully guarded -- any recorder failure leaves the metadata unset.
+            _ref_heavy = None
+            if trial == 0:
+                try:
+                    with _HeavyOpRecorder() as _rec:
+                        output = model(*inputs)
+                    _ref_heavy = _rec.heavy_ops()
+                except Exception:
+                    output = model(*inputs)
+                torch.cuda.synchronize(device=device)
+            else:
+                output = model(*inputs)
+                torch.cuda.synchronize(device=device)
             # ensure all GPU operations are completed before checking results
 
             try:
-                output_new = model_new(*inputs)
-                torch.cuda.synchronize(device=device)
+                _new_heavy = None
+                if trial == 0:
+                    try:
+                        with _HeavyOpRecorder() as _rec:
+                            output_new = model_new(*inputs)
+                        _new_heavy = _rec.heavy_ops()
+                    except Exception:
+                        # The recorder must never turn a working kernel into a
+                        # failure: re-run unrecorded. A genuine model error here
+                        # re-raises into the outer except below and is recorded
+                        # as a runtime error, exactly as before.
+                        output_new = model_new(*inputs)
+                        _new_heavy = None
+                    torch.cuda.synchronize(device=device)
+                    try:
+                        if _ref_heavy is not None and _new_heavy is not None:
+                            metadata["executed_heavy_ops"] = {
+                                "ref": sorted(_ref_heavy),
+                                "new": sorted(_new_heavy),
+                            }
+                            metadata["heavy_op_executed_in_pytorch"] = (
+                                bool(_ref_heavy) and _ref_heavy.issubset(_new_heavy)
+                            )
+                    except Exception:
+                        pass
+                else:
+                    output_new = model_new(*inputs)
+                    torch.cuda.synchronize(device=device)
                 if output.shape != output_new.shape:
                     metadata = register_and_format_exception(
                         "correctness_issue",

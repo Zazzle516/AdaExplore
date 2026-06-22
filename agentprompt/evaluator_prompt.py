@@ -188,7 +188,26 @@ Verify the kernel's main accumulation loop iterates over the full
 
 """
 
-def generate_evaluator_prompt(custom_triton_kernels: str=None, run_info=None, experience_guidance_path: str=None, task_params: dict=None, knowledge_1_threshold: int=3):
+DEAD_BRANCH_ALERT = """## Dead-branch rewrite detected (runtime-verified)
+
+Runtime verification of the executed forward path found that the reference heavy
+operator (Conv*, ConvTranspose*, or Linear) **still ran in PyTorch** during the
+measured forward, even though this kernel *defines* a custom Triton replacement
+for it. The Triton replacement is **dead code** — parked in a branch that never
+executes (e.g. the `else:` of `if self.training:`, an `if x.is_cuda:` guard, or
+a fallback that is never taken). The eval harness runs the model at PyTorch's
+default `training=True`, so the PyTorch heavy op is what actually executed and
+was timed; the "rewrite" contributed nothing.
+
+This kernel has been scored as **invalid** (it does not genuinely replace the
+heavy op). Your guidance must require that the heavy-op replacement execute
+**unconditionally** on the forward path — not guarded behind `self.training`,
+device checks, or any `else:` fallback that keeps the original `nn.*`/`F.*` op
+on the live path. A replacement that does not run is not a replacement.
+
+"""
+
+def generate_evaluator_prompt(custom_triton_kernels: str=None, run_info=None, experience_guidance_path: str=None, task_params: dict=None, knowledge_1_threshold: int=3, dead_branch_rewrite: bool=False):
     # Extract required parameters from task prompt template
     required_keys = _extract_format_keys(TASK_INSTRUCTION)
 
@@ -224,7 +243,13 @@ def generate_evaluator_prompt(custom_triton_kernels: str=None, run_info=None, ex
         correctness = run_info.correctness
     # mode is the single source of truth for: skill step_type, STRUCTURAL_ALERT
     # gating, the goal-block append, and the Mode-A direction force in run_evaluator.
-    if correctness and 0 < ratio < 0.8:
+    # A dead-branch rewrite is structurally Mode A (the heavy op was never actually
+    # replaced on the live path), so force "slow" regardless of measured speed --
+    # this makes the large-step path deterministic rather than relying on the cheat
+    # coincidentally measuring slow. Everything downstream (step_type="large",
+    # SLOW_GOAL, STRUCTURAL_ALERT skip, and the direction="large" force in
+    # run_evaluator, which keys on mode=="slow") then applies automatically.
+    if dead_branch_rewrite or (correctness and 0 < ratio < 0.8):
         mode = "slow"          # Mode A
     elif correctness and ratio >= 5.0:
         mode = "adversarial"   # Mode B
@@ -253,6 +278,12 @@ def generate_evaluator_prompt(custom_triton_kernels: str=None, run_info=None, ex
                 reduction=chain.reduction,
                 shape_descriptor=chain.shape_descriptor,
             )
+
+    # Inject the dead-branch alert. The cheat is forced into Mode A ("slow")
+    # above, where STRUCTURAL_ALERT is skipped, so the corrective feedback rides
+    # on this dedicated alert instead.
+    if dead_branch_rewrite:
+        prompt += DEAD_BRANCH_ALERT
 
     prompt += TASK_INSTRUCTION.format(**format_dict)
 
