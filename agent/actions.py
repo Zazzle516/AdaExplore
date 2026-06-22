@@ -138,12 +138,16 @@ def run_evaluator(ref_arch_src: str, kernel: str, metrics: KernelExecResult, inf
     Runs even when the kernel failed to compile — the prompt assembler injects
     the traceback into a dedicated section.
     """
-    # Runtime verification of the executed path: a dead-branch rewrite is one
-    # where the reference heavy op still ran in PyTorch (recorded at eval time)
-    # while ModelNew built a Triton replacement that never executed. Gate it out.
+    # Runtime verification of the executed path: if the reference heavy op still
+    # dispatched through PyTorch/aten during the measured forward, the kernel did
+    # NOT replace it -- force invalid, regardless of whether a Triton replacement
+    # was even built. replaced_heavy_op_built only selects which corrective message
+    # to show: built-but-dead (dead-branch) vs. never-built (no replacement at all).
     meta = getattr(metrics, "metadata", None) or {}
-    dead_branch = bool(metrics) and bool(meta.get("heavy_op_executed_in_pytorch")) \
-        and replaced_heavy_op_built(kernel, ref_arch_src)
+    heavy_op_unreplaced = bool(metrics) and bool(meta.get("heavy_op_executed_in_pytorch"))
+    built = replaced_heavy_op_built(kernel, ref_arch_src) if heavy_op_unreplaced else False
+    dead_branch = heavy_op_unreplaced and built
+    heavy_op_not_replaced = heavy_op_unreplaced and not built
     evaluator_prompt, mode = generate_evaluator_prompt(
         task_params=args.task_params,
         custom_triton_kernels=kernel,
@@ -151,6 +155,7 @@ def run_evaluator(ref_arch_src: str, kernel: str, metrics: KernelExecResult, inf
         experience_guidance_path=args.general_memory_path,
         knowledge_1_threshold=args.knowledge_1_threshold,
         dead_branch_rewrite=dead_branch,
+        heavy_op_not_replaced=heavy_op_not_replaced,
     )
     evaluator_output = query_inference_server(
         server=inference_server,
@@ -159,10 +164,11 @@ def run_evaluator(ref_arch_src: str, kernel: str, metrics: KernelExecResult, inf
         max_completion_tokens=args.max_completion_tokens,
     )
     small_guidance, large_guidance, direction, valid = _parse_evaluator_json(evaluator_output)
-    if dead_branch:
+    if heavy_op_unreplaced:
         # Runtime verification found the reference heavy op still executed in
-        # PyTorch while a Triton replacement was built but never ran (dead
-        # branch). Gate it out: valid=False -> calculate_score -> (1,0,0).
+        # PyTorch -- the heavy op was not replaced (a dead-branch Triton op that
+        # never ran, or no Triton replacement built at all). Gate it out:
+        # valid=False -> calculate_score -> (1,0,0).
         valid = False
     if mode == "slow":
         # SLOW_GOAL omits direction; force the large-bias here from the

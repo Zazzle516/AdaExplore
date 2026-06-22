@@ -29,7 +29,12 @@ designing from scratch or tuning an existing kernel.
    calls `.eval()`, so any heavy-op replacement guarded behind `if self.training:`,
    `if x.is_cuda:`, or parked in an `else:` / fallback branch is **dead code that
    never runs** — the original PyTorch op executes and is timed instead. Such a
-   branch counts as **not** replacing the op: the evaluator verifies at runtime
-   which path actually executed and scores a dead-branch rewrite as invalid. Call
-   your custom kernel directly in `forward`, with no conditional that can route
+   branch counts as **not** replacing the op. Equally, fusing only the cheap
+   surrounding work (BatchNorm, reductions, pointwise ops) while leaving the heavy
+   `nn.*`/`F.*` op on the live PyTorch path counts as **not** replacing it either —
+   the heavy op itself must be reimplemented in your custom kernel. The evaluator
+   verifies at runtime which path actually executed: if the reference heavy op
+   still ran in PyTorch, the kernel is scored **invalid**, whether that is because
+   the replacement was dead code or because no replacement was written. Call your
+   custom heavy-op kernel directly in `forward`, with no conditional that can route
    execution back to the reference `nn.*`/`F.*` op.

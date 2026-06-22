@@ -207,7 +207,24 @@ on the live path. A replacement that does not run is not a replacement.
 
 """
 
-def generate_evaluator_prompt(custom_triton_kernels: str=None, run_info=None, experience_guidance_path: str=None, task_params: dict=None, knowledge_1_threshold: int=3, dead_branch_rewrite: bool=False):
+HEAVY_OP_NOT_REPLACED_ALERT = """## Heavy op not replaced (runtime-verified)
+
+Runtime verification of the executed forward path found that the reference heavy
+operator (Conv*, ConvTranspose*, or Linear) **still ran in PyTorch** during the
+measured forward, and `ModelNew` defines **no** custom Triton/CUDA replacement for
+it. The kernel only fuses the surrounding work (BatchNorm, reductions, pointwise
+ops) and leaves the heavy op on the live PyTorch path, so the heavy op — the part
+with the most headroom — was never actually replaced.
+
+This kernel has been scored as **invalid** (the heavy op must be replaced, not
+merely wrapped). Your guidance must require a custom Triton (or CUDA C++) kernel
+that implements the heavy op itself and executes **unconditionally** on the
+forward path. Fusing only the cheap surrounding ops does not count as replacing
+the heavy op.
+
+"""
+
+def generate_evaluator_prompt(custom_triton_kernels: str=None, run_info=None, experience_guidance_path: str=None, task_params: dict=None, knowledge_1_threshold: int=3, dead_branch_rewrite: bool=False, heavy_op_not_replaced: bool=False):
     # Extract required parameters from task prompt template
     required_keys = _extract_format_keys(TASK_INSTRUCTION)
 
@@ -243,13 +260,16 @@ def generate_evaluator_prompt(custom_triton_kernels: str=None, run_info=None, ex
         correctness = run_info.correctness
     # mode is the single source of truth for: skill step_type, STRUCTURAL_ALERT
     # gating, the goal-block append, and the Mode-A direction force in run_evaluator.
-    # A dead-branch rewrite is structurally Mode A (the heavy op was never actually
-    # replaced on the live path), so force "slow" regardless of measured speed --
-    # this makes the large-step path deterministic rather than relying on the cheat
-    # coincidentally measuring slow. Everything downstream (step_type="large",
-    # SLOW_GOAL, STRUCTURAL_ALERT skip, and the direction="large" force in
-    # run_evaluator, which keys on mode=="slow") then applies automatically.
-    if dead_branch_rewrite or (correctness and 0 < ratio < 0.8):
+    # A kernel whose heavy op was never actually replaced on the live path (either a
+    # dead-branch rewrite that built a Triton op but parked it off-path, or a kept-op
+    # kernel that built no replacement at all) is structurally Mode A, so force "slow"
+    # regardless of measured speed -- this makes the large-step (redesign) path
+    # deterministic rather than relying on the unreplaced kernel coincidentally
+    # measuring slow. Everything downstream (step_type="large", SLOW_GOAL,
+    # STRUCTURAL_ALERT skip, and the direction="large" force in run_evaluator, which
+    # keys on mode=="slow") then applies automatically.
+    heavy_op_unreplaced = dead_branch_rewrite or heavy_op_not_replaced
+    if heavy_op_unreplaced or (correctness and 0 < ratio < 0.8):
         mode = "slow"          # Mode A
     elif correctness and ratio >= 5.0:
         mode = "adversarial"   # Mode B
@@ -279,11 +299,16 @@ def generate_evaluator_prompt(custom_triton_kernels: str=None, run_info=None, ex
                 shape_descriptor=chain.shape_descriptor,
             )
 
-    # Inject the dead-branch alert. The cheat is forced into Mode A ("slow")
-    # above, where STRUCTURAL_ALERT is skipped, so the corrective feedback rides
-    # on this dedicated alert instead.
+    # Inject the heavy-op-not-replaced alert. Both forms are forced into Mode A
+    # ("slow") above, where STRUCTURAL_ALERT is skipped, so the corrective feedback
+    # rides on these dedicated alerts instead. dead_branch_rewrite (built a Triton
+    # op but it ran off-path) and heavy_op_not_replaced (built no replacement at
+    # all) are mutually exclusive by construction in run_evaluator; prefer the
+    # dead-branch wording if both were somehow set.
     if dead_branch_rewrite:
         prompt += DEAD_BRANCH_ALERT
+    elif heavy_op_not_replaced:
+        prompt += HEAVY_OP_NOT_REPLACED_ALERT
 
     prompt += TASK_INSTRUCTION.format(**format_dict)
 
