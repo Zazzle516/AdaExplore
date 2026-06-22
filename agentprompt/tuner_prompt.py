@@ -21,7 +21,6 @@ from agent.inference_server import create_inference_server, query_inference_serv
 from agent.utils import extract_edits, str_replace
 import re
 from agentprompt.prompt_modules import generate_experience_guidance_prompt
-from agentprompt.prompt_modules import generate_hardware_information_prompt
 from agentprompt.Utils import generate_skill_prompt
 
 def _extract_format_keys(template: str):
@@ -195,7 +194,6 @@ def generate_tuner_prompt(
     prompt = PROBLEM_STATEMENT
     prompt += generate_skill_prompt(task_params.get("arc_src"), step_type="small", task_params=task_params)
     prompt += generate_experience_guidance_prompt(experience_guidance_path, threshold=knowledge_1_threshold)
-    prompt += generate_hardware_information_prompt(task_params.get('gpu_name'), task_params.get('gpu_architecture'))
     prompt += TASK_INSTRUCTION.format(**format_dict)
     return prompt
 

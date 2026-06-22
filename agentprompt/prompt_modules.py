@@ -8,14 +8,6 @@ The following are frequently observed failure patterns from prior kernel optimiz
 
 """
 
-HARDWARE_INFORMATION = """## Hardware Information
-
-Here is some information about the underlying hardware that you should keep in mind:
-
-- The GPU that will run the kernel is NVIDIA {gpu_name}, {gpu_architecture} architecture.
-
-"""
-
 def generate_experience_guidance_prompt(experience_guidance_path: str, threshold: int=2) -> str:
     """
     threshold: the threshold of the experience guidance, if the experience guidance is less than the threshold, it will not be included in the experience guidance
@@ -31,8 +23,3 @@ def generate_experience_guidance_prompt(experience_guidance_path: str, threshold
             experience_guidance_content.append(line.strip().split("||")[0])
         experience_guidance_content = "\n".join(experience_guidance_content)
     return EXPERIENCE_GUIDANCE.format(experience_guidance=experience_guidance_content)
-
-def generate_hardware_information_prompt(gpu_name: str, gpu_architecture: str) -> str:
-    if gpu_name is None or gpu_architecture is None:
-        return ""
-    return HARDWARE_INFORMATION.format(gpu_name=gpu_name, gpu_architecture=gpu_architecture)

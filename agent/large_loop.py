@@ -150,15 +150,17 @@ def run_large_loop(ref_arch_src: str, inference_server: str, args: argparse.Name
         # proposal. Direction tag parsed and logged but unused (fixed ratio).
         # The validity verdict gates the proposal out of the elite pool if it
         # won via an algebraic shortcut.
-        _small_guidance, large_guidance, direction, valid = run_evaluator(
+        _small_guidance, large_guidance, direction, valid, eval_prompt = run_evaluator(
             ref_arch_src, proposal_kernel, proposal_metrics, inference_server, args
         )
         logger.debug(f"Proposal evaluator direction (ignored): {direction}, valid: {valid}")
-        
+
         # log the proposal
         if log_path is not None:
             with open(os.path.join(log_path, f"proposal_{i+1}.txt"), "w") as f:
                 f.write(logs["proposer_prompt"])
+            with open(os.path.join(log_path, f"proposal_{i+1}_evaluator_prompt.txt"), "w") as f:
+                f.write(eval_prompt)
             with open(os.path.join(log_path, f"proposal_{i+1}.py"), "w") as f:
                 f.write(logs["proposal_kernel"])
             with open(os.path.join(log_path, f"proposal_{i+1}_metrics.txt"), "w") as f:

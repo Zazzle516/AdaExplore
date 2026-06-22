@@ -1,7 +1,6 @@
 import re
 import json
 from agentprompt.prompt_modules import generate_experience_guidance_prompt
-from agentprompt.prompt_modules import generate_hardware_information_prompt
 from agentprompt.Utils import generate_skill_prompt
 from agentprompt.Utils.detect import detect_shortcut_risk, strip_comments_and_docstrings
 from src.eval import KernelExecResult
@@ -12,7 +11,7 @@ def _extract_format_keys(template: str):
 
 PROBLEM_STATEMENT = """## Problem Statement
 
-You evaluate the most recent custom Triton kernel and its measured performance, then emit guidance for the next iteration. Follow the Optimization Skills below — guidance should focus on kernel-level tuning, fusion, and (when the torch convolution dominates runtime) replacing it with a custom Triton kernel; never propose graph-level algebraic shortcuts that eliminate a heavy operator.
+You evaluate the most recent custom Triton kernel and its measured performance, then emit guidance for the next iteration. Follow the Optimization Skills below.
 
 """
 
@@ -62,50 +61,40 @@ restate that a redesign is needed.
 
 GOAL = """### Goal
 
-You evaluate the most recent custom Triton kernel and its measured
-performance, then emit guidance for the next iteration. Produce exactly
-four tagged blocks, in this order:
+Your objective is to decide whether the next iteration should **tune** the
+current kernel or **redesign** it from scratch, for a kernel that is
+correct-but-moderate, compile-failed, or numerically wrong. Produce concrete
+guidance for both possibilities, judge which is more promising, and certify
+that the kernel actually does the reference work.
 
-<small_guidance>
-1-3 concrete tuning bullets — block sizes, num_warps, num_stages, layout,
-autotune configs, fusion opportunities within the existing kernel
-structure. These will be consumed by the tuner if a refinement step is
-chosen.
-</small_guidance>
+Provide:
 
-<large_guidance>
-1-3 concrete design bullets — what a from-scratch rewrite should change
-about the kernel's strategy (im2col vs. direct, scatter-add vs. gather,
-fusion boundary, persistence). These will be consumed by the proposer if a
-redesign step is chosen.
-</large_guidance>
+* **small_guidance** — 1-3 concrete tuning bullets (block sizes, num_warps,
+  num_stages, layout, autotune configs, fusion opportunities within the
+  existing kernel structure). Consumed by the tuner if a refinement step is
+  chosen.
+* **large_guidance** — 1-3 concrete design bullets (what a from-scratch rewrite
+  should change about the kernel's strategy: im2col vs. direct, scatter-add vs.
+  gather, fusion boundary, persistence). Consumed by the proposer if a redesign
+  step is chosen.
+* **direction** — `"large"` if the current kernel is structurally unable to
+  reach the target and a from-scratch rewrite is more promising than continued
+  tuning; `"small"` if continued tuning of the current kernel will close the
+  gap. On compile failure, default to `"large"` unless the traceback points at a
+  trivially-fixable issue (e.g. a typo, a wrong constexpr, a missing import).
+* **valid** — `false` if the kernel reaches its measured performance via an
+  algebraic shortcut — i.e. one or more operators in the reference forward have
+  been collapsed at init time, folded into a downstream reduction, or replaced
+  with a substitute that does materially less arithmetic than the reference (the
+  "_base" skill section describes this contract). `true` in all other cases —
+  including kernels that are slow, compile-failed, or numerically wrong;
+  validity is about *whether the kernel is doing the reference work*, not whether
+  it is doing it well. `true` is the default — only emit `false` when you are
+  confident the contract was violated.
 
-<direction>large</direction>  if you believe the current kernel is
-structurally unable to reach the target and a from-scratch rewrite is more
-promising than continued tuning.
-
-<direction>small</direction>  if you believe continued tuning of the
-current kernel will close the gap.
-
-<valid>false</valid>  if the kernel reaches its measured performance via an
-algebraic shortcut — i.e. one or more operators in the reference forward have
-been collapsed at init time, folded into a downstream reduction, or replaced
-with a substitute that does materially less arithmetic than the reference.
-The "_base" skill section describes this contract; emit `false` whenever it
-is violated, even if compile + correctness checks pass and the speedup looks
-real.
-
-<valid>true</valid>  in all other cases — including kernels that are slow,
-compile-failed, or numerically wrong. Validity is about *whether the kernel
-is doing the reference work*, not whether it is doing it well.
-
-Emit exactly one <direction> tag and exactly one <valid> tag. Both guidance
-blocks are always required even if one is short. <valid>true</valid> is the
-default — if you omit or malform the tag it will be treated as valid, so only
-emit <valid>false</valid> when you are confident the contract was violated.
-On compile failure, default to <direction>large</direction> unless the
-traceback points at a trivially-fixable issue (e.g. a typo, a wrong
-constexpr, a missing import).
+Respond with a SINGLE JSON object and nothing else — no prose outside it, no
+markdown fences — using exactly these keys: "small_guidance" (string),
+"large_guidance" (string), "direction" ("large" or "small"), "valid" (boolean).
 
 """
 
@@ -125,37 +114,60 @@ weight or input along an axis that a downstream sum / mean / avg-pool later
 collapses -- then running a smaller GEMM / matvec -- violates the contract even
 though it is mathematically equivalent.
 
-Produce exactly four tagged blocks, in this order:
+Provide:
 
-<reasoning>
-Walk the kernel's main accumulation loop. State (a) which heavy-op output axis
-is materialized at full shape, and (b) which arithmetic loop performs the
-reference's full MAC count. If you cannot point to both in the actual code, say
-so explicitly -- that is grounds for <valid>false</valid>.
-</reasoning>
+* **reasoning** — walk the kernel's main accumulation loop. State (a) which
+  heavy-op output axis is materialized at full shape, and (b) which arithmetic
+  loop performs the reference's full MAC count. If you cannot point to both in
+  the actual code, say so explicitly -- that is grounds for `valid: false`.
+* **small_guidance** — 1-3 concrete tuning bullets (block sizes, num_warps,
+  num_stages, layout, autotune configs, fusion opportunities within the existing
+  kernel structure).
+* **large_guidance** — 1-3 concrete design bullets (what a from-scratch rewrite
+  should change about the kernel's strategy). If the kernel is a shortcut, the
+  large guidance must direct the proposer back to materializing the full
+  heavy-op output.
+* **direction** — `"large"` or `"small"`.
+* **valid** — `true` ONLY when your reasoning named both (a) the full-shape
+  heavy-op output axis and (b) the full-MAC arithmetic loop. A kernel that fuses
+  the heavy op and the downstream reduction into one pass is still valid -- the
+  contract is violated only when the heavy op's work axis is collapsed *before*
+  the heavy op runs. In every other case -- including when you are merely unsure
+  -- emit `false`.
 
-<small_guidance>
-1-3 concrete tuning bullets -- block sizes, num_warps, num_stages, layout,
-autotune configs, fusion opportunities within the existing kernel structure.
-</small_guidance>
+Respond with a SINGLE JSON object and nothing else — no prose outside it, no
+markdown fences — using exactly these keys: "reasoning" (string),
+"small_guidance" (string), "large_guidance" (string), "direction" ("large" or
+"small"), "valid" (boolean).
 
-<large_guidance>
-1-3 concrete design bullets -- what a from-scratch rewrite should change about
-the kernel's strategy. If the kernel is a shortcut, the large guidance must
-direct the proposer back to materializing the full heavy-op output.
-</large_guidance>
+"""
 
-<direction>large</direction> or <direction>small</direction> -- exactly one.
+SLOW_GOAL = """### Goal (redesign mode)
 
-<valid>true</valid> is emitted ONLY when your <reasoning> named both (a) the
-full-shape heavy-op output axis and (b) the full-MAC arithmetic loop. A kernel
-that fuses the heavy op and the downstream reduction into one pass is still
-valid -- the contract is violated only when the heavy op's work axis is
-collapsed *before* the heavy op runs. In every other case -- including when you
-are merely unsure -- emit <valid>false</valid>.
+The kernel is **correct but slow** (measured fast_p is between 0 and 0.8x — it
+is slower than the PyTorch baseline). It retained the reference heavy operator
+(Conv*, ConvTranspose*, or Linear) and only tuned around it. That retained
+PyTorch operator *is* the bottleneck: tuning, fusion, and config changes cannot
+close the gap while the heavy op runs as an opaque PyTorch call. The only way
+forward is a from-scratch redesign that **replaces** (not wraps) the heavy
+operator with a custom Triton kernel.
 
-Emit exactly one <direction> tag and exactly one <valid> tag. The <reasoning>
-block is required before <valid>.
+Provide a single **large_guidance** block: 1-3 concrete design bullets
+prescribing a Triton strategy that *replaces* the heavy op. Use the per-op
+strategy that matches the reference:
+
+* **ConvTranspose*d** — scatter-add (or gather) formulation with explicit
+  stride / padding / output-padding index arithmetic; do not call
+  `nn.ConvTranspose*d`.
+* **Conv*d** — tiled im2col + GEMM, or direct cross-correlation with an explicit
+  reduction loop over the (C_in, K) window.
+* **Linear / matmul** — split-K GEMM with `tl.dot`, tiled over M/N/K.
+
+Do not produce tuning guidance, a direction decision, or a validity check — a
+slow correct kernel is neither a shortcut nor a tuning candidate.
+
+Respond with a SINGLE JSON object and nothing else — no prose outside it, no
+markdown fences — using exactly this key: "large_guidance" (string).
 
 """
 
@@ -210,19 +222,31 @@ def generate_evaluator_prompt(custom_triton_kernels: str=None, run_info=None, ex
     if isinstance(run_info, KernelExecResult):
         ratio = run_info.runtime_stats.get("fast_p", 0) or 0
         correctness = run_info.correctness
-    adversarial = ratio >= 5.0
+    # mode is the single source of truth for: skill step_type, STRUCTURAL_ALERT
+    # gating, the goal-block append, and the Mode-A direction force in run_evaluator.
+    if correctness and 0 < ratio < 0.8:
+        mode = "slow"          # Mode A
+    elif correctness and ratio >= 5.0:
+        mode = "adversarial"   # Mode B
+    else:
+        mode = "default"       # Mode C (default + all compile/correctness failures)
 
     prompt = PROBLEM_STATEMENT
-    # Skill prompt loaded with step_type="both" so the evaluator sees both
-    # Design and Tuning content per detected family.
-    prompt += generate_skill_prompt(task_params.get("arc_src"), step_type="both", task_params=task_params)
+    # Skill step_type varies by mode: Mode A is redesign-only (Design content
+    # only), Modes B/C see both Design and Tuning per detected family. _base
+    # (the no-shortcut contract) is emitted for any step_type.
+    prompt += generate_skill_prompt(
+        task_params.get("arc_src"),
+        step_type=("large" if mode == "slow" else "both"),
+        task_params=task_params,
+    )
     prompt += generate_experience_guidance_prompt(experience_guidance_path, threshold=knowledge_1_threshold)
-    prompt += generate_hardware_information_prompt(task_params.get('gpu_name'), task_params.get('gpu_architecture'))
 
-    # Inject a Structural Alert (after hardware info, before the task) when the
+    # Inject a Structural Alert (after the skills, before the task) when the
     # reference contains a heavy-op -> linear-reduction chain. Skipped on the
-    # failure path to keep that prompt focused.
-    if correctness:
+    # failure path and in Mode A: a slow correct kernel cannot be an algebraic
+    # shortcut, so the anti-shortcut alert is irrelevant.
+    if correctness and mode != "slow":
         for chain in detect_shortcut_risk(task_params.get("arc_src")):
             prompt += STRUCTURAL_ALERT.format(
                 heavy_op=chain.heavy_op,
@@ -249,5 +273,5 @@ def generate_evaluator_prompt(custom_triton_kernels: str=None, run_info=None, ex
         if compile_error:
             prompt += COMPILE_FAILURE.format(compile_error=compile_error)
 
-    prompt += ADVERSARIAL_GOAL if adversarial else GOAL
-    return prompt
+    prompt += {"slow": SLOW_GOAL, "adversarial": ADVERSARIAL_GOAL}.get(mode, GOAL)
+    return prompt, mode

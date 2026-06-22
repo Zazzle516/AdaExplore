@@ -70,6 +70,9 @@ class MCTSNode:
     # performance via an algebraic shortcut and its score is collapsed to
     # (1, 0, 0). None/True pass through (default-valid).
     evaluator_valid: Optional[bool] = None
+    # Exact prompt sent to the evaluator for this node's kernel. Persisted to
+    # step_{idx}_evaluator_prompt.txt for debugging the evaluator's guidance.
+    evaluator_prompt: str = ""
     
     # Cache for score (to avoid repeated calculation)
     _score_cache: tuple = field(default=None, repr=False)
@@ -265,6 +268,7 @@ class MCTSKernelOptimizer:
         large_guidance: str = "",
         evaluator_direction: Optional[str] = None,
         evaluator_valid: Optional[bool] = None,
+        evaluator_prompt: str = "",
     ) -> MCTSNode:
         """Create a new node and add it to the tree."""
         if context_node_ids is None:
@@ -285,6 +289,7 @@ class MCTSKernelOptimizer:
             large_guidance=large_guidance,
             evaluator_direction=evaluator_direction,
             evaluator_valid=evaluator_valid,
+            evaluator_prompt=evaluator_prompt,
         )
         self.node_counter += 1
         self.all_nodes.append(node)
@@ -507,8 +512,9 @@ class MCTSKernelOptimizer:
         # Run the evaluator on the new kernel (skip in dummy mode) so the next
         # iteration's guidance + MCTS soft-bias have a direction to read.
         small_guidance, large_guidance, direction, valid = "", "", None, None
+        evaluator_prompt = ""
         if not is_dummy:
-            small_guidance, large_guidance, direction, valid = run_evaluator(
+            small_guidance, large_guidance, direction, valid, evaluator_prompt = run_evaluator(
                 self.ref_arch_src,
                 proposal_kernel,
                 proposal_metrics,
@@ -528,6 +534,7 @@ class MCTSKernelOptimizer:
             large_guidance=large_guidance,
             evaluator_direction=direction,
             evaluator_valid=valid,
+            evaluator_prompt=evaluator_prompt,
         )
 
         return new_node
@@ -575,8 +582,9 @@ class MCTSKernelOptimizer:
 
         # Run the evaluator on the new kernel (skip in dummy mode).
         small_guidance, large_guidance, direction, valid = "", "", None, None
+        evaluator_prompt = ""
         if not is_dummy:
-            small_guidance, large_guidance, direction, valid = run_evaluator(
+            small_guidance, large_guidance, direction, valid, evaluator_prompt = run_evaluator(
                 self.ref_arch_src,
                 refined_kernel,
                 refined_metrics,
@@ -595,6 +603,7 @@ class MCTSKernelOptimizer:
             large_guidance=large_guidance,
             evaluator_direction=direction,
             evaluator_valid=valid,
+            evaluator_prompt=evaluator_prompt,
         )
 
         return new_node
@@ -783,6 +792,12 @@ class MCTSKernelOptimizer:
         if node.prompt:
             with open(os.path.join(self.log_path, f"step_{step_idx}_prompt.txt"), "w") as f:
                 f.write(node.prompt)
+
+        # Save the evaluator prompt that graded this node's kernel, for debugging
+        # which mode (slow / adversarial / default) fired and what was sent.
+        if node.evaluator_prompt:
+            with open(os.path.join(self.log_path, f"step_{step_idx}_evaluator_prompt.txt"), "w") as f:
+                f.write(node.evaluator_prompt)
         
         log_dict = {
             "node_id": node.node_id,

@@ -1,6 +1,5 @@
 import re
 from agentprompt.prompt_modules import generate_experience_guidance_prompt
-from agentprompt.prompt_modules import generate_hardware_information_prompt
 from agentprompt.Utils import generate_skill_prompt
 from agentprompt.benchmarks.KB_prompt import KB_TRITON_PROMPT
 from agentprompt.benchmarks.FIT_prompt import FIT_TRITON_PROMPT

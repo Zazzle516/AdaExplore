@@ -167,10 +167,13 @@ def run_small_loop(
     # The direction tag is parsed and logged but unused — IRS has a fixed ratio.
     small_guidance = ""
     if len(previous_kernels) > 0:
-        small_guidance, _large_guidance, direction, valid = run_evaluator(
+        small_guidance, _large_guidance, direction, valid, eval_prompt = run_evaluator(
             ref_arch_src, previous_kernels[-1], previous_metrics[-1], inference_server, args
         )
         logger.debug(f"Seed evaluator direction (ignored): {direction}, valid: {valid}")
+        if log_path is not None:
+            with open(os.path.join(log_path, f"seed_{large_loop_id}_evaluator_prompt.txt"), "w") as f:
+                f.write(eval_prompt)
 
     # start_step is the last completed step index, so we continue from start_step
     for i in tqdm(range(start_step, args.refine_steps), desc=f"Small Loop on problem {args.level}_{args.problem_id}", initial=start_step, total=args.refine_steps):
@@ -191,10 +194,12 @@ def run_small_loop(
                 f.write(str(proposal_metrics))
             logger.debug(f"Proposal Metrics: {proposal_metrics}")
             # Evaluate the fresh proposal so the next small step has guidance.
-            small_guidance, _large_guidance, direction, valid = run_evaluator(
+            small_guidance, _large_guidance, direction, valid, eval_prompt = run_evaluator(
                 ref_arch_src, proposal_kernel, proposal_metrics, inference_server, args
             )
             logger.debug(f"Proposal evaluator direction (ignored): {direction}, valid: {valid}")
+            with open(os.path.join(log_path, f"proposal_{large_loop_id}_{i+1}_evaluator_prompt.txt"), "w") as f:
+                f.write(eval_prompt)
             # Gate the seed best score with the proposal's validity verdict so a
             # shortcut proposal cannot lock in as local best.
             local_best_score = calculate_score(proposal_metrics, valid)
@@ -215,10 +220,13 @@ def run_small_loop(
         previous_metrics.append(tuned_metrics)
 
         # Evaluate the new kernel to update guidance for the next iteration.
-        small_guidance, _large_guidance, direction, valid = run_evaluator(
+        small_guidance, _large_guidance, direction, valid, eval_prompt = run_evaluator(
             ref_arch_src, tuned_kernel, tuned_metrics, inference_server, args
         )
         logger.debug(f"Tune evaluator direction (ignored): {direction}, valid: {valid}")
+        if log_path is not None:
+            with open(os.path.join(log_path, f"tune_{large_loop_id}_{i+1}_evaluator_prompt.txt"), "w") as f:
+                f.write(eval_prompt)
 
         # keep the previous_kernels and previous_metrics list length at most max_memory_round
         if len(previous_kernels) > args.max_memory_round:

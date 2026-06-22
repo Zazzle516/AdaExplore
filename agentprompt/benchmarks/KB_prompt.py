@@ -1,10 +1,4 @@
 KB_TRITON_PROMPT = """
-## Hardware Information
-
-Here is some information about the underlying hardware that you should keep in mind:
-
-- The GPU that will run the kernel is NVIDIA {gpu_name}, {gpu_architecture} architecture.
-
 ## Task Instruction
 
 You are given the following architecture:

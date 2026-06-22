@@ -1,4 +1,5 @@
 import argparse
+import json
 import re
 from typing import Optional
 from agent.inference_server import query_inference_server
@@ -25,11 +26,6 @@ def _extract_tag(output: str, tag: str) -> str:
     matches = re.findall(rf"<{tag}>\s*(.*?)\s*</{tag}>", output, re.DOTALL)
     return matches[-1].strip() if matches else ""
 
-def _extract_direction(output: str) -> Optional[str]:
-    """Return the last <direction>large|small</direction>, or None if missing."""
-    matches = re.findall(r"<direction>\s*(large|small)\s*</direction>", output)
-    return matches[-1] if matches else None
-
 def extract_proposal_kernel(output: str) -> str:
     """Pull the complete kernel file from a proposer response.
 
@@ -50,25 +46,98 @@ def extract_proposal_kernel(output: str) -> str:
             return block.strip()
     return extract_first_code(output, ["python", "cpp"])
 
-def _extract_validity(output: str) -> Optional[bool]:
-    """Return the last <valid>true|false</valid> as a bool, or None if missing/malformed.
+def _last_brace_span(text: str) -> Optional[str]:
+    """Return the last balanced {...} substring (quote/escape aware), or None.
 
-    Missing/malformed → None; downstream treats None as valid (default-true).
+    Single scan tracking string state + brace depth; records each depth-0
+    object close and returns the last one. Recovers JSON trailing arbitrary
+    prose without tripping on braces inside string values.
     """
-    matches = re.findall(r"<valid>\s*(true|false)\s*</valid>", output, re.IGNORECASE)
-    return matches[-1].lower() == "true" if matches else None
+    if not text:
+        return None
+    start = None
+    depth = 0
+    in_str = False
+    escape = False
+    last = None
+    for i, ch in enumerate(text):
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start is not None:
+                    last = text[start:i + 1]
+    return last
+
+def _coerce_json_object(output: str) -> Optional[dict]:
+    """Best-effort single JSON dict from model output; dict or None."""
+    if not output:
+        return None
+    text = output.strip()
+    m = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL | re.IGNORECASE)
+    if m:
+        text = m.group(1).strip()
+    for candidate in (text, _last_brace_span(text)):
+        if not candidate:
+            continue
+        try:
+            obj = json.loads(candidate)
+            if isinstance(obj, dict):
+                return obj
+        except (ValueError, TypeError):
+            pass
+    return None
+
+def _parse_evaluator_json(output: str):
+    """-> (small, large, direction, valid); defaults ('', '', None, None).
+
+    Mode-agnostic: keyed on present fields, never raises. Missing/malformed
+    keys keep their neutral defaults (direction None, valid None -> valid
+    downstream).
+    """
+    small, large, direction, valid = "", "", None, None
+    obj = _coerce_json_object(output)
+    if not isinstance(obj, dict):
+        return small, large, direction, valid
+    if isinstance(obj.get("small_guidance"), str):
+        small = obj["small_guidance"].strip()
+    if isinstance(obj.get("large_guidance"), str):
+        large = obj["large_guidance"].strip()
+    d = obj.get("direction")
+    if isinstance(d, str) and d.strip().lower() in ("large", "small"):
+        direction = d.strip().lower()
+    v = obj.get("valid")
+    if isinstance(v, bool):
+        valid = v
+    elif isinstance(v, str) and v.strip().lower() in ("true", "false"):
+        valid = v.strip().lower() == "true"
+    return small, large, direction, valid
 
 def run_evaluator(ref_arch_src: str, kernel: str, metrics: KernelExecResult, inference_server: str, args: argparse.Namespace):
     """Run the evaluator on a freshly produced kernel.
 
-    Returns (small_guidance, large_guidance, direction, valid). Either guidance
-    may be an empty string on parse failure; direction is None if the tag is
-    missing or malformed; valid is None when the <valid> tag is absent or
-    malformed (treated as valid downstream). Runs even when the kernel failed to
-    compile — the prompt assembler injects the traceback into a dedicated
-    section.
+    Returns (small_guidance, large_guidance, direction, valid, evaluator_prompt).
+    Either guidance may be an empty string on parse failure; direction is None if
+    the tag is missing or malformed; valid is None when the <valid> tag is absent
+    or malformed (treated as valid downstream). evaluator_prompt is the exact
+    prompt sent to the model, surfaced so callers can persist it for debugging.
+    Runs even when the kernel failed to compile — the prompt assembler injects
+    the traceback into a dedicated section.
     """
-    evaluator_prompt = generate_evaluator_prompt(
+    evaluator_prompt, mode = generate_evaluator_prompt(
         task_params=args.task_params,
         custom_triton_kernels=kernel,
         run_info=metrics,
@@ -81,11 +150,12 @@ def run_evaluator(ref_arch_src: str, kernel: str, metrics: KernelExecResult, inf
         prompt=evaluator_prompt,
         max_completion_tokens=args.max_completion_tokens,
     )
-    small_guidance = _extract_tag(evaluator_output, "small_guidance")
-    large_guidance = _extract_tag(evaluator_output, "large_guidance")
-    direction = _extract_direction(evaluator_output)
-    valid = _extract_validity(evaluator_output)
-    return small_guidance, large_guidance, direction, valid
+    small_guidance, large_guidance, direction, valid = _parse_evaluator_json(evaluator_output)
+    if mode == "slow":
+        # SLOW_GOAL omits direction; force the large-bias here from the
+        # builder-reported mode (single source of truth for the Mode-A gate).
+        direction = "large"
+    return small_guidance, large_guidance, direction, valid, evaluator_prompt
 
 def single_small_step(ref_arch_src: str, inference_server: str, previous_kernels: list, previous_metrics: list, args: argparse.Namespace, tuning_guidance: str = ""):
     # Pure executor: the evaluator (run by the orchestrator) supplies
