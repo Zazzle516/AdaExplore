@@ -373,11 +373,16 @@ def eval_kernel_against_ref(
     level: str = None,
     problem_id: str = None,
     gpu_name: str = None,
+    test_source: str = "KB",
+    nsight_ncu: bool = False,
+    nsight_ncu_sudo: str = "",
 ) -> KernelExecResult:
     """
     Evaluate the custom kernel against the original model
 
     num_correct_trials: number of trials to initialize different random inputs; correctness pass only if all trials pass
+    nsight_ncu: when True (and the kernel is correct), run the opt-in ncu hardware-counter pass
+        in addition to the always-on nsys trace. Needs root; nsight_ncu_sudo supplies the sudo password.
     num_perf_trials: run the evalutation many times to take the average
     device: GPU (cuda) device to run the evalutation on
     backend: str, either 'cuda' or 'triton', determines which backend implementation to use
@@ -635,6 +640,53 @@ def eval_kernel_against_ref(
                     print(f"[Eval] Performance Stats: {runtime_stats}")
                 kernel_exec_result.runtime = runtime_stats["mean"]
                 kernel_exec_result.runtime_stats = runtime_stats
+
+                # Nsight profiling [best-effort, gated]: capture per-kernel
+                # hardware execution data for the evaluator. nsys always runs for
+                # a correct kernel (no root); ncu is opt-in (needs root, gated by
+                # nsight_ncu). Mirrors the parse->metadata->prompt pipeline used
+                # by compilation_error_parsed; never raises into the eval path.
+                try:
+                    from src.nsight_profiler import profile_kernel
+
+                    nsight_kernel_path = None
+                    nsight_tmp = None
+                    if tempfile is not None and hasattr(tempfile, "name") and os.path.exists(tempfile.name):
+                        # Reuse the Triton model-loading tempfile already on disk.
+                        nsight_kernel_path = tempfile.name
+                    else:
+                        # Write custom_model_src to a temp .py for the runner.
+                        import tempfile as _tf
+                        with _tf.NamedTemporaryFile(
+                            mode="w", suffix=".py", delete=False
+                        ) as _f:
+                            _f.write(custom_model_src)
+                            nsight_kernel_path = _f.name
+                            nsight_tmp = _f.name
+
+                    kernel_exec_result.metadata["nsight"] = profile_kernel(
+                        nsight_kernel_path,
+                        run_args={
+                            "test_source": test_source,
+                            "level": level,
+                            "problem_id": problem_id,
+                            "backend": backend,
+                            "dtype_str": dtype_str,
+                            "device": _normalize_device(device),
+                        },
+                        device=_normalize_device(device),
+                        ncu=nsight_ncu,
+                        ncu_sudo=nsight_ncu_sudo,
+                    )
+                    if nsight_tmp is not None:
+                        try:
+                            os.unlink(nsight_tmp)
+                        except OSError:
+                            pass
+                except Exception as _nsight_e:  # noqa: BLE001 -- profiling never breaks eval
+                    if verbose:
+                        print(f"[Eval] Nsight profiling skipped: {_nsight_e}")
+                    kernel_exec_result.metadata["nsight"] = {"error": str(_nsight_e)}
         except Exception as e:
             # TODO: seems like this is not working as expected
             # TODO: Randomness or other issues?
@@ -1163,8 +1215,11 @@ def _local_subprocess_eval(
     dtype_str: str,
     timeout: int,
     gpu_name: str = None,
+    test_source: str = "KB",
     level: str = None,
     problem_id: str = None,
+    nsight_ncu: bool = False,
+    nsight_ncu_sudo: str = "",
 ) -> KernelExecResult:
     """Execute evaluation in local subprocess."""
     eval_file_dir = os.path.dirname(os.path.abspath(__file__))
@@ -1190,8 +1245,11 @@ def _local_subprocess_eval(
         'backend': backend,
         'dtype_str': dtype_str,
         'gpu_name': gpu_name,
+        'test_source': test_source,
         'level': level,
         'problem_id': problem_id,
+        'nsight_ncu': nsight_ncu,
+        'nsight_ncu_sudo': nsight_ncu_sudo,
     }
     args_json = json.dumps(args_dict)
     
@@ -1280,6 +1338,8 @@ def wrapped_eval_kernel_against_ref(
     level: str = None,
     problem_id: str = None,
     gpu_name: str = None,
+    nsight_ncu: bool = False,
+    nsight_ncu_sudo: str = "",
 ) -> KernelExecResult:
     """
     Wrapper for eval_kernel_against_ref that runs it in a subprocess to avoid RE (Runtime Errors)
@@ -1345,6 +1405,8 @@ def wrapped_eval_kernel_against_ref(
         )
     
     # Remote evaluation
+    # NOTE (v1): nsight_ncu / nsight_ncu_sudo are intentionally NOT forwarded to
+    # the remote judge -- Nsight profiling is wired only on the local eval path.
     if use_remote_eval:
         json_data = {
             "original_model_src": original_model_src,
@@ -1386,8 +1448,11 @@ def wrapped_eval_kernel_against_ref(
         dtype_str=dtype_str,
         timeout=timeout,
         gpu_name=gpu_name,
+        test_source=test_source,
         level=level,
         problem_id=problem_id,
+        nsight_ncu=nsight_ncu,
+        nsight_ncu_sudo=nsight_ncu_sudo,
     )
 
 

@@ -21,6 +21,10 @@ def main():
     parser.add_argument("--dtype", type=str, default="fp32", choices=["fp32", "fp16", "bf16"])
     parser.add_argument("--use_remote_eval", action="store_true", default=False)
     parser.add_argument("--remote_eval_url", type=str, default="http://0.0.0.0:12017")
+    parser.add_argument("--nsight_ncu", action="store_true", default=False,
+                        help="Enable the ncu hardware-counter pass (needs root)")
+    parser.add_argument("--nsight_ncu_sudo", type=str, default="",
+                        help="sudo password used to run ncu as root")
     args = parser.parse_args()
 
     with open(args.kernel_path, "r") as f:
@@ -42,6 +46,8 @@ def main():
         test_source=args.test_source,
         level=args.level,
         problem_id=args.problem_id,
+        nsight_ncu=args.nsight_ncu,
+        nsight_ncu_sudo=args.nsight_ncu_sudo,
     )
 
     print(result)
@@ -54,6 +60,12 @@ def main():
         print(f"std (us):    {result.runtime_stats.get('std', 'N/A')}")
     else:
         print("No runtime stats (kernel did not pass correctness)")
+
+    nsight = result.metadata.get("nsight") if result.metadata else None
+    if nsight is not None:
+        import json as _json
+        print("Nsight profile:")
+        print(_json.dumps(nsight, indent=2, ensure_ascii=False))
 
 
 if __name__ == "__main__":

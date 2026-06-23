@@ -273,6 +273,12 @@ if __name__ == "__main__":
     parser.add_argument("--remote_eval_url", type=str, default="http://127.0.0.1:12017", help="URL for remote evaluation service")
     #TODO: combine remote eval and gpu_ids
 
+    # Nsight profiling Configs
+    # nsys runs automatically for every correct kernel (no root). These two only
+    # gate/enable the opt-in ncu hardware-counter pass (needs root).
+    parser.add_argument("--nsight_ncu", action="store_true", default=False, help="Enable the ncu hardware-counter pass (needs root)")
+    parser.add_argument("--nsight_ncu_sudo", type=str, default="", help="sudo password used to run ncu as root")
+
     # Base Model Configs
     parser.add_argument("--server_type", type=str, default="azure", choices=["azure", "openai", "claude"])
     parser.add_argument("--model_name", type=str, default="gpt-5-mini")

@@ -235,6 +235,8 @@ def single_small_step(ref_arch_src: str, inference_server: str, previous_kernels
         level=getattr(args, 'level', None),
         problem_id=getattr(args, 'problem_id', None),
         gpu_name=getattr(args, 'gpu_name', None),
+        nsight_ncu=getattr(args, 'nsight_ncu', False),
+        nsight_ncu_sudo=getattr(args, 'nsight_ncu_sudo', ""),
     )
 
     logs = {
@@ -302,6 +304,8 @@ def single_large_step(
         level=getattr(args, 'level', None),
         problem_id=getattr(args, 'problem_id', None),
         gpu_name=getattr(args, 'gpu_name', None),
+        nsight_ncu=getattr(args, 'nsight_ncu', False),
+        nsight_ncu_sudo=getattr(args, 'nsight_ncu_sudo', ""),
     )
     # For large step, prompt is just the proposer_prompt
     prompt = proposer_prompt

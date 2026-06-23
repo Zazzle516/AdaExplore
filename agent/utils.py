@@ -393,14 +393,14 @@ def load_config_from_yaml(args: argparse.Namespace, parser: argparse.ArgumentPar
                     break
             
             # Handle different action types
-            if isinstance(arg_action, argparse._StoreTrueAction):
-                # For store_true, only set if YAML says True
-                if value is True:
-                    setattr(args, key, True)
-            elif isinstance(arg_action, argparse._StoreFalseAction):
-                # For store_false, only set if YAML says False
-                if value is False:
-                    setattr(args, key, False)
+            if isinstance(arg_action, (argparse._StoreTrueAction, argparse._StoreFalseAction)):
+                # Boolean flag: YAML is authoritative either way. The earlier
+                # "only set when YAML matches the store_const direction" logic
+                # meant a store_true flag defaulting to True (e.g. use_remote_eval)
+                # could never be turned off from YAML -- `use_remote_eval: false`
+                # was silently dropped. Coerce the YAML value to bool so both
+                # true and false take effect.
+                setattr(args, key, bool(value))
             else:
                 # For other types, set the value
                 setattr(args, key, value)

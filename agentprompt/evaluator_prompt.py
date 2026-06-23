@@ -205,6 +205,28 @@ the heavy op.
 
 """
 
+NSIGHT_PROFILE = """## Nsight hardware profile (measured)
+
+The kernel(s) this candidate actually launched were profiled with NVIDIA Nsight.
+This is real per-operator hardware data for the executed forward path -- use it to
+ground your diagnosis instead of reasoning from the single latency number alone.
+
+```
+{nsight_summary}
+```
+
+How to read it:
+* **kernels** (from nsys): the GPU kernels this candidate launched -- name,
+  instances, total/avg ms, and % of GPU time. The top entry dominates runtime.
+* **memory_ops** (from nsys): host/device memcpy time -- large values signal a
+  transfer bottleneck rather than a compute one.
+* **ncu_kernels** (only when the ncu pass ran): per-kernel hardware counters --
+  `compute_throughput_pct` / `memory_throughput_pct` / `dram_throughput_pct` (% of
+  peak), `achieved_occupancy_pct`, `l2_throughput_pct`, `registers_per_thread`, and
+  a `roofline_bound` classification (memory_bound / compute_bound / latency_bound).
+
+"""
+
 def generate_evaluator_prompt(custom_triton_kernels: str=None, run_info=None, experience_guidance_path: str=None, task_params: dict=None, knowledge_1_threshold: int=3, heavy_op_not_replaced: bool=False, redesign_exhausted: bool=False):
     # Extract required parameters from task prompt template
     required_keys = _extract_format_keys(TASK_INSTRUCTION)
@@ -297,6 +319,21 @@ def generate_evaluator_prompt(custom_triton_kernels: str=None, run_info=None, ex
         prompt += HEAVY_OP_NOT_REPLACED_ALERT
 
     prompt += TASK_INSTRUCTION.format(**format_dict)
+
+    # Inject the Nsight hardware profile (after the metrics block) when present
+    # and non-error. Mirrors the compilation_error_parsed pipeline: parsed data
+    # lives in metadata["nsight"] and is rendered into a dedicated section.
+    if isinstance(run_info, KernelExecResult):
+        nsight = run_info.metadata.get("nsight")
+        # Render only when there is actual profiling payload (kernels or ncu
+        # counters); a pure-error dict (error / nsys_error only) is skipped.
+        if isinstance(nsight, dict) and (
+            nsight.get("kernels") or nsight.get("ncu_kernels")
+        ):
+            from src.nsight_profiler import format_nsight_summary
+            prompt += NSIGHT_PROFILE.format(
+                nsight_summary=format_nsight_summary(nsight)
+            )
 
     # On compile or runtime failure, surface the traceback in a dedicated
     # section before the goal so the evaluator can diagnose the structural
