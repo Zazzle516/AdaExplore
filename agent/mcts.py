@@ -18,7 +18,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from agent.actions import single_large_step, single_small_step, dummy_small_step, dummy_large_step, run_evaluator
+from agent.actions import single_large_step, single_small_step, dummy_small_step, dummy_large_step, run_evaluator, genuine_replacement
 from agent.utils import load_test_source, REPO_TOP_PATH, calculate_score, copy_step_files, read_metrics, dummy_metrics
 from agent.inference_server import create_inference_server
 
@@ -514,12 +514,18 @@ class MCTSKernelOptimizer:
         small_guidance, large_guidance, direction, valid = "", "", None, None
         evaluator_prompt = ""
         if not is_dummy:
+            # Mode-A escape hatch: if this kernel genuinely replaced the heavy op
+            # on the live path (verified at runtime) yet is still slow, release
+            # Mode A to GOAL so tuning becomes reachable.
+            redesign_exhausted = genuine_replacement(
+                proposal_kernel, proposal_metrics, self.ref_arch_src)
             small_guidance, large_guidance, direction, valid, evaluator_prompt = run_evaluator(
                 self.ref_arch_src,
                 proposal_kernel,
                 proposal_metrics,
                 self.inference_server,
                 self.args,
+                redesign_exhausted=redesign_exhausted,
             )
 
         # Add as child node (same as small step)
@@ -584,12 +590,17 @@ class MCTSKernelOptimizer:
         small_guidance, large_guidance, direction, valid = "", "", None, None
         evaluator_prompt = ""
         if not is_dummy:
+            # Mode-A escape hatch (see expand_large): release to GOAL when the
+            # refined kernel genuinely replaced the heavy op but is still slow.
+            redesign_exhausted = genuine_replacement(
+                refined_kernel, refined_metrics, self.ref_arch_src)
             small_guidance, large_guidance, direction, valid, evaluator_prompt = run_evaluator(
                 self.ref_arch_src,
                 refined_kernel,
                 refined_metrics,
                 self.inference_server,
                 self.args,
+                redesign_exhausted=redesign_exhausted,
             )
 
         new_node = self._create_node(

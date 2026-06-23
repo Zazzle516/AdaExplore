@@ -188,25 +188,6 @@ Verify the kernel's main accumulation loop iterates over the full
 
 """
 
-DEAD_BRANCH_ALERT = """## Dead-branch rewrite detected (runtime-verified)
-
-Runtime verification of the executed forward path found that the reference heavy
-operator (Conv*, ConvTranspose*, or Linear) **still ran in PyTorch** during the
-measured forward, even though this kernel *defines* a custom Triton replacement
-for it. The Triton replacement is **dead code** — parked in a branch that never
-executes (e.g. the `else:` of `if self.training:`, an `if x.is_cuda:` guard, or
-a fallback that is never taken). The eval harness runs the model at PyTorch's
-default `training=True`, so the PyTorch heavy op is what actually executed and
-was timed; the "rewrite" contributed nothing.
-
-This kernel has been scored as **invalid** (it does not genuinely replace the
-heavy op). Your guidance must require that the heavy-op replacement execute
-**unconditionally** on the forward path — not guarded behind `self.training`,
-device checks, or any `else:` fallback that keeps the original `nn.*`/`F.*` op
-on the live path. A replacement that does not run is not a replacement.
-
-"""
-
 HEAVY_OP_NOT_REPLACED_ALERT = """## Heavy op not replaced (runtime-verified)
 
 Runtime verification of the executed forward path found that the reference heavy
@@ -224,7 +205,7 @@ the heavy op.
 
 """
 
-def generate_evaluator_prompt(custom_triton_kernels: str=None, run_info=None, experience_guidance_path: str=None, task_params: dict=None, knowledge_1_threshold: int=3, dead_branch_rewrite: bool=False, heavy_op_not_replaced: bool=False):
+def generate_evaluator_prompt(custom_triton_kernels: str=None, run_info=None, experience_guidance_path: str=None, task_params: dict=None, knowledge_1_threshold: int=3, heavy_op_not_replaced: bool=False, redesign_exhausted: bool=False):
     # Extract required parameters from task prompt template
     required_keys = _extract_format_keys(TASK_INSTRUCTION)
 
@@ -260,17 +241,27 @@ def generate_evaluator_prompt(custom_triton_kernels: str=None, run_info=None, ex
         correctness = run_info.correctness
     # mode is the single source of truth for: skill step_type, STRUCTURAL_ALERT
     # gating, the goal-block append, and the Mode-A direction force in run_evaluator.
-    # A kernel whose heavy op was never actually replaced on the live path (either a
-    # dead-branch rewrite that built a Triton op but parked it off-path, or a kept-op
-    # kernel that built no replacement at all) is structurally Mode A, so force "slow"
-    # regardless of measured speed -- this makes the large-step (redesign) path
-    # deterministic rather than relying on the unreplaced kernel coincidentally
-    # measuring slow. Everything downstream (step_type="large", SLOW_GOAL,
-    # STRUCTURAL_ALERT skip, and the direction="large" force in run_evaluator, which
-    # keys on mode=="slow") then applies automatically.
-    heavy_op_unreplaced = dead_branch_rewrite or heavy_op_not_replaced
-    if heavy_op_unreplaced or (correctness and 0 < ratio < 0.8):
-        mode = "slow"          # Mode A
+    # A kernel whose heavy op was never actually replaced on the live path (verified
+    # at runtime: the reference heavy op still dispatched through PyTorch) is
+    # structurally Mode A, so force "slow" regardless of measured speed -- this makes
+    # the large-step (redesign) path deterministic rather than relying on the
+    # unreplaced kernel coincidentally measuring slow. Everything downstream
+    # (step_type="large", SLOW_GOAL, STRUCTURAL_ALERT skip, and the direction="large"
+    # force in run_evaluator, which keys on mode=="slow") then applies automatically.
+    #
+    # Escape hatch: a kernel that genuinely replaced the heavy op (redesign_exhausted)
+    # but is still slow has exhausted the redesign lever -- release Mode A to "default"
+    # (GOAL) so small tuning steps become reachable. heavy_op_not_replaced still forces
+    # "slow" and takes priority (the two are mutually exclusive by construction in
+    # run_evaluator: genuine replacement requires the heavy op NOT to have run in
+    # PyTorch, which is exactly what heavy_op_not_replaced asserts did happen).
+    heavy_op_unreplaced = heavy_op_not_replaced
+    if heavy_op_unreplaced:
+        mode = "slow"          # Mode A (forced -- heavy op verified unreplaced)
+    elif correctness and 0 < ratio < 0.8:
+        # Correct but slow: redesign (Mode A), unless the heavy op was already
+        # genuinely replaced -- then tune instead (Mode C).
+        mode = "default" if redesign_exhausted else "slow"
     elif correctness and ratio >= 5.0:
         mode = "adversarial"   # Mode B
     else:
@@ -299,15 +290,10 @@ def generate_evaluator_prompt(custom_triton_kernels: str=None, run_info=None, ex
                 shape_descriptor=chain.shape_descriptor,
             )
 
-    # Inject the heavy-op-not-replaced alert. Both forms are forced into Mode A
-    # ("slow") above, where STRUCTURAL_ALERT is skipped, so the corrective feedback
-    # rides on these dedicated alerts instead. dead_branch_rewrite (built a Triton
-    # op but it ran off-path) and heavy_op_not_replaced (built no replacement at
-    # all) are mutually exclusive by construction in run_evaluator; prefer the
-    # dead-branch wording if both were somehow set.
-    if dead_branch_rewrite:
-        prompt += DEAD_BRANCH_ALERT
-    elif heavy_op_not_replaced:
+    # Inject the heavy-op-not-replaced alert. heavy_op_not_replaced is forced into
+    # Mode A ("slow") above, where STRUCTURAL_ALERT is skipped, so the corrective
+    # feedback rides on this dedicated alert instead.
+    if heavy_op_not_replaced:
         prompt += HEAVY_OP_NOT_REPLACED_ALERT
 
     prompt += TASK_INSTRUCTION.format(**format_dict)

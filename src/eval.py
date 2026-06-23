@@ -887,10 +887,6 @@ def run_and_check_correctness(
                     torch.cuda.synchronize(device=device)
                     try:
                         if _ref_heavy is not None and _new_heavy is not None:
-                            metadata["executed_heavy_ops"] = {
-                                "ref": sorted(_ref_heavy),
-                                "new": sorted(_new_heavy),
-                            }
                             metadata["heavy_op_executed_in_pytorch"] = (
                                 bool(_ref_heavy) and _ref_heavy.issubset(_new_heavy)
                             )

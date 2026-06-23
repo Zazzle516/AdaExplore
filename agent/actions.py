@@ -11,8 +11,26 @@ from src.utils import extract_first_code
 from src.eval import eval_kernel_against_ref, wrapped_eval_kernel_against_ref, KernelExecResult
 from agentprompt.evaluator_prompt import generate_evaluator_prompt
 from agentprompt.tuner_prompt import generate_tuner_prompt
-from agentprompt.Utils.detect import replaced_heavy_op_built
 from agent.utils import extract_edits, str_replace
+
+def genuine_replacement(kernel: str, metrics: KernelExecResult, ref_arch_src: str) -> bool:
+    """Did the current kernel genuinely replace the heavy op on the live path?
+
+    True iff the kernel is correct AND runtime verification found the reference
+    heavy op did NOT dispatch through PyTorch/aten during the measured forward
+    (i.e. a custom Triton/CUDA kernel actually ran in its place). This is the
+    Mode-A escape hatch: a kernel that genuinely replaced the heavy op and is
+    still slow should be tuned (small steps), not redesigned again.
+
+    `kernel`/`ref_arch_src` are retained for call-site symmetry but not read.
+    Fail safe: missing metadata / parse error -> False (stays in Mode A).
+    """
+    meta = (getattr(metrics, "metadata", {}) or {})
+    return (
+        bool(metrics)
+        and bool(getattr(metrics, "correctness", False))
+        and not meta.get("heavy_op_executed_in_pytorch")
+    )
 
 def _use_performance_metric(args: argparse.Namespace) -> bool:
     test_source = str(getattr(args, "test_source", "KB")).upper()
@@ -127,7 +145,7 @@ def _parse_evaluator_json(output: str):
         valid = v.strip().lower() == "true"
     return small, large, direction, valid
 
-def run_evaluator(ref_arch_src: str, kernel: str, metrics: KernelExecResult, inference_server: str, args: argparse.Namespace):
+def run_evaluator(ref_arch_src: str, kernel: str, metrics: KernelExecResult, inference_server: str, args: argparse.Namespace, redesign_exhausted: bool = False):
     """Run the evaluator on a freshly produced kernel.
 
     Returns (small_guidance, large_guidance, direction, valid, evaluator_prompt).
@@ -137,25 +155,25 @@ def run_evaluator(ref_arch_src: str, kernel: str, metrics: KernelExecResult, inf
     prompt sent to the model, surfaced so callers can persist it for debugging.
     Runs even when the kernel failed to compile — the prompt assembler injects
     the traceback into a dedicated section.
+
+    redesign_exhausted (the Mode-A escape hatch) is forwarded to the prompt
+    builder: when the current kernel genuinely replaced the heavy op on the live
+    path and is still slow, Mode A releases to GOAL so tuning is reachable.
     """
     # Runtime verification of the executed path: if the reference heavy op still
     # dispatched through PyTorch/aten during the measured forward, the kernel did
-    # NOT replace it -- force invalid, regardless of whether a Triton replacement
-    # was even built. replaced_heavy_op_built only selects which corrective message
-    # to show: built-but-dead (dead-branch) vs. never-built (no replacement at all).
+    # NOT replace it -- force invalid, whether that is because no replacement was
+    # written or a Triton replacement was parked in a dead branch.
     meta = getattr(metrics, "metadata", None) or {}
     heavy_op_unreplaced = bool(metrics) and bool(meta.get("heavy_op_executed_in_pytorch"))
-    built = replaced_heavy_op_built(kernel, ref_arch_src) if heavy_op_unreplaced else False
-    dead_branch = heavy_op_unreplaced and built
-    heavy_op_not_replaced = heavy_op_unreplaced and not built
     evaluator_prompt, mode = generate_evaluator_prompt(
         task_params=args.task_params,
         custom_triton_kernels=kernel,
         run_info=metrics,
         experience_guidance_path=args.general_memory_path,
         knowledge_1_threshold=args.knowledge_1_threshold,
-        dead_branch_rewrite=dead_branch,
-        heavy_op_not_replaced=heavy_op_not_replaced,
+        heavy_op_not_replaced=heavy_op_unreplaced,
+        redesign_exhausted=redesign_exhausted,
     )
     evaluator_output = query_inference_server(
         server=inference_server,
@@ -166,9 +184,9 @@ def run_evaluator(ref_arch_src: str, kernel: str, metrics: KernelExecResult, inf
     small_guidance, large_guidance, direction, valid = _parse_evaluator_json(evaluator_output)
     if heavy_op_unreplaced:
         # Runtime verification found the reference heavy op still executed in
-        # PyTorch -- the heavy op was not replaced (a dead-branch Triton op that
-        # never ran, or no Triton replacement built at all). Gate it out:
-        # valid=False -> calculate_score -> (1,0,0).
+        # PyTorch -- the heavy op was not replaced on the live path (no Triton
+        # replacement built, or one parked in a dead branch that never ran).
+        # Gate it out: valid=False -> calculate_score -> (1,0,0).
         valid = False
     if mode == "slow":
         # SLOW_GOAL omits direction; force the large-bias here from the
