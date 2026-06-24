@@ -44,7 +44,6 @@ gpu_name = args['gpu_name']
 level = args['level']
 problem_id = args['problem_id']
 test_source = args.get('test_source', 'KB')
-nsight_ncu = args.get('nsight_ncu', False)
 nsight_ncu_sudo = args.get('nsight_ncu_sudo', "")
 
 # Set device
@@ -71,7 +70,6 @@ try:
         level=level,
         problem_id=problem_id,
         test_source=test_source,
-        nsight_ncu=nsight_ncu,
         nsight_ncu_sudo=nsight_ncu_sudo,
     )
     

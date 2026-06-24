@@ -11,11 +11,14 @@ Two profiling passes:
   GPU kernel(s) the candidate launched (name, instances, total/avg ms, % of GPU
   time) plus memcpy time. Parsed from ``nsys stats`` JSON, not raw sqlite, to
   avoid a schema dependency.
-* **ncu** (opt-in, needs root) -- hardware counters for the candidate's kernel:
-  achieved occupancy, compute/memory/DRAM throughput %, L2 throughput %,
-  registers/thread, and a roofline bound. Invoked via ``sudo -S`` feeding the
-  password on stdin (falls back to a direct call when already root). On
-  permission failure the result carries ``ncu_error`` and the nsys data still stands.
+* **ncu** (default stage, needs root) -- hardware counters for the candidate's
+  dominant kernel(s) only (selected from the nsys ranking, so ncu's expensive
+  replay never touches framework noise): achieved occupancy *and what caps it*
+  (register/shared-mem/warp/block occupancy limits), compute/memory/DRAM/L2
+  throughput %, registers/thread, launch config, cache hit rates, DRAM traffic,
+  and a roofline bound. Invoked via ``sudo -S`` feeding the password on stdin
+  (falls back to a direct call when already root). On permission failure the
+  result carries ``ncu_error`` and the nsys data still stands.
 
 The single public entry point is :func:`profile_kernel`.
 """
@@ -25,6 +28,7 @@ import csv
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -44,6 +48,75 @@ _RUNNER = os.path.join(
 # Keep the candidate's own kernels; drop framework/library noise so the summary
 # describes the kernel(s) this candidate actually authored/launched.
 _DEFAULT_TIMEOUT = 600
+
+
+# --------------------------------------------------------------------------- #
+# Stage 1: candidate-kernel selection (framework-noise classification)
+# --------------------------------------------------------------------------- #
+# A correct candidate also launches many tiny PyTorch/cuDNN/CUTLASS helper
+# kernels. Candidate-authored kernels (Triton / custom CUDA from load_inline)
+# have clean names; framework ones start with `void ` and/or carry a C++
+# namespace marker. We use this to (a) pick what ncu should replay and (b) trim
+# the nsys display list afterward.
+_FRAMEWORK_MARKERS = ("at::", "cudnn", "cutlass", "cublas", "cub::", "thrust::", "void <unnamed>")
+
+
+def _is_framework_kernel(name) -> bool:
+    """True for library/framework kernels (PyTorch/cuDNN/CUTLASS/...) vs. candidate-authored ones."""
+    if not name or not isinstance(name, str):
+        return False
+    low = name.lower()
+    if any(m in low for m in _FRAMEWORK_MARKERS):
+        return True
+    # Template-instantiated C++ library kernels are emitted as `void ns::kernel<...>(...)`.
+    return low.startswith("void ") and "::" in name
+
+
+def _candidate_kernel_names(kernels, *, time_floor: float = 1.0, keep_top_n: int = 3) -> list[str]:
+    """Names of candidate-authored / dominant kernels, derived from the nsys ranking.
+
+    Keep a kernel if it is not framework, or is above a GPU-time floor, or is
+    within the top-N -- the ``keep_top_n`` floor guarantees >=1 name even when a
+    candidate legitimately calls a library GEMM as its main op. The list is
+    already sorted desc by ``time_pct``; a missing ``time_pct`` counts as 0.0.
+    """
+    names = []
+    for i, k in enumerate(kernels or []):
+        tp = k.get("time_pct")
+        tp = tp if isinstance(tp, (int, float)) else 0.0
+        name = k.get("name")
+        if name and ((not _is_framework_kernel(name)) or tp >= time_floor or i < keep_top_n):
+            names.append(name)
+    return names
+
+
+def _filter_noise(result: dict, *, time_floor: float = 1.0, keep_top_n: int = 3) -> None:
+    """Mutate ``result`` in place: trim the nsys display list + reconcile ncu_kernels.
+
+    Filters ``result["kernels"]`` by framework classification / time floor / top-N,
+    reconciles ``result["ncu_kernels"]`` to the kept names (keeping an ncu entry if
+    its name is kept **or** it is not framework -- guards nsys/ncu name-mangling
+    mismatches), and records ``result["noise_kernels_dropped"]`` (no silent
+    truncation).
+    """
+    kernels = result.get("kernels") or []
+    kept = []
+    for i, k in enumerate(kernels):
+        tp = k.get("time_pct")
+        tp = tp if isinstance(tp, (int, float)) else 0.0
+        name = k.get("name")
+        if (not _is_framework_kernel(name)) or tp >= time_floor or i < keep_top_n:
+            kept.append(k)
+    result["noise_kernels_dropped"] = len(kernels) - len(kept)
+    result["kernels"] = kept
+
+    kept_names = {k.get("name") for k in kept}
+    ncu_kernels = result.get("ncu_kernels")
+    if ncu_kernels:
+        result["ncu_kernels"] = [
+            k for k in ncu_kernels
+            if k.get("name") in kept_names or not _is_framework_kernel(k.get("name"))
+        ]
 
 
 def _runner_cmd(kernel_path: str, run_args: dict, num_iters: int) -> list[str]:
@@ -214,58 +287,99 @@ def _run_nsys(kernel_path: str, run_args: dict, num_iters: int, timeout: int) ->
 
 
 # --------------------------------------------------------------------------- #
-# ncu path (opt-in, needs root)
+# ncu path (default stage, needs root)
 # --------------------------------------------------------------------------- #
 # ncu --csv emits one row per (kernel, metric) with columns including
 # "Kernel Name", "Metric Name", "Metric Value". We pivot the metrics we care
 # about per kernel.
 #
-# `ncu --set basic --csv` reports human-readable *display* names in the
-# "Metric Name" column (not the internal `sm__throughput.avg...` ids), so the
-# keys below are the display strings exactly as ncu prints them. `Memory
-# Throughput` is the GPU Speed-Of-Light memory number (max over the memory
-# subsystems); `DRAM Throughput` is the DRAM-only sub-metric -- we keep both so
-# the roofline classification isn't fooled by a kernel that saturates L1/L2/
-# shared while DRAM stays idle. The `basic` set has no L2 hit-rate counter, so
-# `L2 Cache Throughput` is the closest available L2 signal.
+# With explicit `--metrics`, ncu's "Metric Name" column prints the *internal*
+# metric ids (not the human display names `--set basic` showed), so the keys
+# below are those ids. The mapped value names stay stable so `_roofline_bound`
+# and the evaluator prompt keep working. `gpu__compute_memory_throughput` is the
+# GPU Speed-Of-Light memory number (max over the memory subsystems);
+# `dram__throughput` is the DRAM-only sub-metric -- we keep both so the roofline
+# classification isn't fooled by a kernel that saturates L1/L2/shared while DRAM
+# stays idle. Targeting only the dominant candidate kernel(s) via `-k` is what
+# makes this larger bundle affordable. NB: the `launch__*` ids live in ncu's
+# `launch` metric collection; they coexist fine in one `--metrics` request.
 _NCU_METRICS = {
-    "Compute (SM) Throughput": "compute_throughput_pct",
-    "Memory Throughput": "memory_throughput_pct",
-    "DRAM Throughput": "dram_throughput_pct",
-    "Achieved Occupancy": "achieved_occupancy_pct",
-    "L2 Cache Throughput": "l2_throughput_pct",
-    "Registers Per Thread": "registers_per_thread",
+    # throughput / roofline (kept -- _roofline_bound depends on these three)
+    "sm__throughput.avg.pct_of_peak_sustained_elapsed":                 "compute_throughput_pct",
+    "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": "memory_throughput_pct",
+    "dram__throughput.avg.pct_of_peak_sustained_elapsed":               "dram_throughput_pct",
+    "lts__throughput.avg.pct_of_peak_sustained_elapsed":                "l2_throughput_pct",
+    "gpu__time_duration.sum":                                           "duration",
+    # occupancy + WHY it is capped (new -- answers the run_2_15 gap)
+    "sm__warps_active.avg.pct_of_peak_sustained_active":                "achieved_occupancy_pct",
+    "launch__registers_per_thread":                                     "registers_per_thread",
+    "launch__occupancy_limit_registers":                                "occ_limit_registers",
+    "launch__occupancy_limit_shared_mem":                               "occ_limit_shared_mem",
+    "launch__occupancy_limit_warps":                                    "occ_limit_warps",
+    "launch__occupancy_limit_blocks":                                   "occ_limit_blocks",
+    # launch config (new)
+    "launch__grid_size":                                                "grid_size",
+    "launch__block_size":                                               "block_size",
+    "launch__waves_per_multiprocessor":                                 "waves_per_sm",
+    "launch__shared_mem_per_block_static":                              "shared_mem_per_block",
+    # cache behavior (new)
+    "l1tex__t_sector_hit_rate.pct":                                     "l1_hit_rate_pct",
+    "lts__t_sector_hit_rate.pct":                                       "l2_hit_rate_pct",
+    # dram traffic (new -- feeds arithmetic-intensity / roofline)
+    "dram__bytes_read.sum":                                             "dram_bytes_read",
+    "dram__bytes_write.sum":                                            "dram_bytes_write",
 }
 
 
 def _run_ncu(
-    kernel_path: str, run_args: dict, ncu_sudo: str, timeout: int
+    kernel_path: str, run_args: dict, ncu_sudo: str, timeout: int,
+    candidate_names: list = None,
 ) -> dict:
-    """Run the ncu hardware-counter pass (single iteration). Needs root."""
-    base_cmd = [
-        _NCU,
-        "--set", "basic",
-        "--csv",
-        "--target-processes", "all",
-    ] + _runner_cmd(kernel_path, run_args, num_iters=1)
+    """Run the ncu hardware-counter pass (single iteration), targeting candidates. Needs root.
+
+    When ``candidate_names`` is non-empty, restrict ncu to those kernels via a
+    demangled-name regex so its expensive replay never touches framework noise.
+    If the targeted run yields no kernels (regex matched nothing), retry once
+    with the same ``--metrics`` but no ``-k`` so we never produce an empty profile.
+    """
+    metrics_arg = ",".join(_NCU_METRICS.keys())
+
+    def _build_cmd(use_filter: bool) -> list:
+        base = [
+            _NCU,
+            "--metrics", metrics_arg,
+            "--csv",
+            "--target-processes", "all",
+        ]
+        if use_filter and candidate_names:
+            # The nsys "Name" is demangled, so the regex must match the demangled form.
+            base += [
+                "--kernel-name-base", "demangled",
+                "-k", "regex:" + "|".join(re.escape(n) for n in candidate_names),
+            ]
+        base += _runner_cmd(kernel_path, run_args, num_iters=1)
+        return base
 
     is_root = hasattr(os, "geteuid") and os.geteuid() == 0
-    if is_root:
-        cmd = base_cmd
-        stdin_input = None
-    else:
-        # sudo -S reads the password from stdin; -k clears any cached creds so a
-        # wrong password fails fast instead of silently succeeding from cache.
-        cmd = ["sudo", "-S", "-p", ""] + base_cmd
-        stdin_input = (ncu_sudo or "") + "\n"
 
-    proc = subprocess.run(
-        cmd,
-        input=stdin_input,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    def _invoke(use_filter: bool):
+        base_cmd = _build_cmd(use_filter)
+        if is_root:
+            cmd = base_cmd
+            stdin_input = None
+        else:
+            # sudo -S reads the password from stdin; -p "" suppresses the prompt.
+            cmd = ["sudo", "-S", "-p", ""] + base_cmd
+            stdin_input = (ncu_sudo or "") + "\n"
+        return subprocess.run(
+            cmd,
+            input=stdin_input,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+
+    proc = _invoke(use_filter=True)
     if proc.returncode != 0:
         msg = (proc.stderr or proc.stdout or "").strip()
         lowered = msg.lower()
@@ -273,7 +387,14 @@ def _run_ncu(
             return {"ncu_error": f"ncu permission/sudo failure: {msg[:400]}"}
         return {"ncu_error": f"ncu failed (rc={proc.returncode}): {msg[:400]}"}
 
-    return _parse_ncu_csv(proc.stdout)
+    parsed = _parse_ncu_csv(proc.stdout)
+    # Fallback: targeted run matched nothing -> retry once unfiltered (same
+    # metrics keep parsing consistent; Stage 3 reconcile trims framework noise).
+    if candidate_names and not parsed.get("ncu_kernels"):
+        retry = _invoke(use_filter=False)
+        if retry.returncode == 0:
+            parsed = _parse_ncu_csv(retry.stdout)
+    return parsed
 
 
 def _parse_ncu_csv(csv_text: str) -> dict:
@@ -339,7 +460,6 @@ def profile_kernel(
     *,
     run_args: dict,
     device=0,
-    ncu: bool = False,
     ncu_sudo: str = "",
     num_iters: int = 5,
     timeout: int = _DEFAULT_TIMEOUT,
@@ -352,15 +472,16 @@ def profile_kernel(
             ``backend``, ``dtype_str`` (and optional ``suffix``) -- the same
             values eval used so the profiled path matches the measured path.
         device: CUDA device index.
-        ncu: when True, also run the (root-only) ncu hardware-counter pass.
-        ncu_sudo: sudo password fed to ``sudo -S`` for the ncu pass.
+        ncu_sudo: sudo password fed to ``sudo -S`` for the (root-only) ncu pass.
         num_iters: forward iterations for the nsys pass (kept small).
         timeout: per-subprocess timeout in seconds.
 
     Returns:
         A dict describing only the currently executed kernel. Always best-effort:
         any failure surfaces as ``error`` / ``nsys_error`` / ``ncu_error`` rather
-        than raising.
+        than raising. ncu is a default stage (no toggle): it always runs when the
+        binary exists, targeting the dominant candidate kernel(s) from the nsys
+        ranking.
     """
     run_args = dict(run_args or {})
     run_args.setdefault("device", device)
@@ -372,17 +493,24 @@ def profile_kernel(
             return {"error": f"nsys not found at {_NSYS}"}
 
         result.update(_run_nsys(kernel_path, run_args, num_iters, timeout))
+        candidate_names = _candidate_kernel_names(result.get("kernels") or [])
 
-        if ncu:
-            if not os.path.exists(_NCU):
-                result["ncu_error"] = f"ncu not found at {_NCU}"
-            else:
-                try:
-                    result.update(_run_ncu(kernel_path, run_args, ncu_sudo, timeout))
-                except subprocess.TimeoutExpired:
-                    result["ncu_error"] = f"ncu timed out after {timeout}s"
-                except Exception as e:  # noqa: BLE001 -- never break eval
-                    result["ncu_error"] = f"ncu exception: {e}"
+        # ncu is a default stage -- always attempt it (guarded by _NCU existence + try/except).
+        if os.path.exists(_NCU):
+            try:
+                result.update(_run_ncu(kernel_path, run_args, ncu_sudo, timeout, candidate_names))
+            except subprocess.TimeoutExpired:
+                result["ncu_error"] = f"ncu timed out after {timeout}s"
+            except Exception as e:  # noqa: BLE001 -- never break eval
+                result["ncu_error"] = f"ncu exception: {e}"
+        else:
+            result["ncu_error"] = f"ncu not found at {_NCU}"
+
+        if result.get("kernels"):
+            try:
+                _filter_noise(result)   # trims the nsys display list + reconciles ncu_kernels by name
+            except Exception:  # noqa: BLE001 -- filtering never breaks eval
+                pass
     except subprocess.TimeoutExpired:
         result.setdefault("error", f"nsys timed out after {timeout}s")
     except Exception as e:  # noqa: BLE001 -- never break eval

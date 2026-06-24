@@ -374,15 +374,14 @@ def eval_kernel_against_ref(
     problem_id: str = None,
     gpu_name: str = None,
     test_source: str = "KB",
-    nsight_ncu: bool = False,
     nsight_ncu_sudo: str = "",
 ) -> KernelExecResult:
     """
     Evaluate the custom kernel against the original model
 
     num_correct_trials: number of trials to initialize different random inputs; correctness pass only if all trials pass
-    nsight_ncu: when True (and the kernel is correct), run the opt-in ncu hardware-counter pass
-        in addition to the always-on nsys trace. Needs root; nsight_ncu_sudo supplies the sudo password.
+    nsight: for a correct kernel, an always-on nsys trace plus a targeted ncu hardware-counter
+        pass (default stage) profile the dominant kernel(s). ncu needs root; nsight_ncu_sudo supplies the sudo password.
     num_perf_trials: run the evalutation many times to take the average
     device: GPU (cuda) device to run the evalutation on
     backend: str, either 'cuda' or 'triton', determines which backend implementation to use
@@ -641,11 +640,12 @@ def eval_kernel_against_ref(
                 kernel_exec_result.runtime = runtime_stats["mean"]
                 kernel_exec_result.runtime_stats = runtime_stats
 
-                # Nsight profiling [best-effort, gated]: capture per-kernel
-                # hardware execution data for the evaluator. nsys always runs for
-                # a correct kernel (no root); ncu is opt-in (needs root, gated by
-                # nsight_ncu). Mirrors the parse->metadata->prompt pipeline used
-                # by compilation_error_parsed; never raises into the eval path.
+                # Nsight profiling [best-effort]: capture per-kernel hardware
+                # execution data for the evaluator. For a correct kernel, nsys
+                # traces it (no root) and ncu replays the dominant candidate
+                # kernel(s) for deep counters (default stage, needs root via
+                # nsight_ncu_sudo). Mirrors the parse->metadata->prompt pipeline
+                # used by compilation_error_parsed; never raises into the eval path.
                 try:
                     from src.nsight_profiler import profile_kernel
 
@@ -675,7 +675,6 @@ def eval_kernel_against_ref(
                             "device": _normalize_device(device),
                         },
                         device=_normalize_device(device),
-                        ncu=nsight_ncu,
                         ncu_sudo=nsight_ncu_sudo,
                     )
                     if nsight_tmp is not None:
@@ -1218,7 +1217,6 @@ def _local_subprocess_eval(
     test_source: str = "KB",
     level: str = None,
     problem_id: str = None,
-    nsight_ncu: bool = False,
     nsight_ncu_sudo: str = "",
 ) -> KernelExecResult:
     """Execute evaluation in local subprocess."""
@@ -1248,7 +1246,6 @@ def _local_subprocess_eval(
         'test_source': test_source,
         'level': level,
         'problem_id': problem_id,
-        'nsight_ncu': nsight_ncu,
         'nsight_ncu_sudo': nsight_ncu_sudo,
     }
     args_json = json.dumps(args_dict)
@@ -1338,7 +1335,6 @@ def wrapped_eval_kernel_against_ref(
     level: str = None,
     problem_id: str = None,
     gpu_name: str = None,
-    nsight_ncu: bool = False,
     nsight_ncu_sudo: str = "",
 ) -> KernelExecResult:
     """
@@ -1405,8 +1401,8 @@ def wrapped_eval_kernel_against_ref(
         )
     
     # Remote evaluation
-    # NOTE (v1): nsight_ncu / nsight_ncu_sudo are intentionally NOT forwarded to
-    # the remote judge -- Nsight profiling is wired only on the local eval path.
+    # NOTE (v1): nsight_ncu_sudo is intentionally NOT forwarded to the remote
+    # judge -- Nsight profiling is wired only on the local eval path.
     if use_remote_eval:
         json_data = {
             "original_model_src": original_model_src,
@@ -1451,7 +1447,6 @@ def wrapped_eval_kernel_against_ref(
         test_source=test_source,
         level=level,
         problem_id=problem_id,
-        nsight_ncu=nsight_ncu,
         nsight_ncu_sudo=nsight_ncu_sudo,
     )
 

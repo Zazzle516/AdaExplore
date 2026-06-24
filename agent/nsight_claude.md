@@ -1,211 +1,374 @@
-# Plan: Integrate NVIDIA Nsight profiling into the AdaExplore optimization loop
+# Nsight profiling pipeline: nsys → filter → targeted ncu
 
-## Context
+## Pipeline (target design)
 
-AdaExplore optimizes GPU kernels with an MCTS loop: a proposer/tuner writes Triton/CUDA
-kernels, `src/eval.py` measures correctness + wall-clock latency (`fast_p` speedup vs a
-PyTorch/TRT baseline), and an **evaluator** LLM turns those metrics into `small_guidance` /
-`large_guidance` that steer the next round.
+Profile each iteration's **correct** kernel in three stages, so ncu's expensive hardware-counter
+pass only ever touches the kernel that actually matters:
 
-Today the only performance signal the evaluator sees is a single scalar latency (`fast_p`)
-from `torch.cuda.Event`. It has **no visibility into *why* a kernel is slow** — occupancy,
-memory throughput, warp-stall reasons, launch config, per-op timeline. As `Note.md`/`backup.md`
-document, this causes the evaluator to misdiagnose bottlenecks (e.g. "use cuBLAS for the heavy
-GEMM" is never suggested because nothing tells it the kernel is compute-bound at 40% of peak).
+```
+nsys profile (cheap trace, no replay)        →  every kernel the candidate launched, ranked by GPU time
+  └─ filter: pick the dominant candidate kernel(s)  (drop framework/library noise)
+       └─ ncu -k <that kernel>, rich --metrics  (targeted replay, deep counters)
+            └─ assembled summary dict → evaluator prompt
+```
 
-**Goal:** capture detailed per-operator execution data with NVIDIA Nsight and feed a compact,
-parsed summary into the evaluator prompt, so next-round guidance is grounded in real hardware
-counters rather than a single latency number.
+This **inverts** today's flow. Currently ncu replays *every* kernel with a thin `--set basic` and
+the noise is discarded afterward. Instead, let the cheap nsys pass say what matters, then point ncu
+at only that — which is both cheaper (1–3 kernels, not ~11) and richer (a large explicit metric set
+becomes affordable). ncu is a **default stage**, not a user toggle.
 
-### Environment facts (verified)
-- `nsys` 2024.6 and `ncu` 2025.1 are **already installed** at `/usr/local/cuda/bin/`. No install step needed.
-- GPU: RTX 4090, driver 580.126.20, CUDA 12.8.
-- **`RmProfilingAdminOnly: 1` and `perf_event_paranoid: 4`** → `ncu` hardware counters require **root/sudo**; `nsys` tracing runs **without root**. This drives the nsys-default / ncu-opt-in design.
+All code lives in `src/nsight_profiler.py` unless noted. Everything is best-effort and must **never**
+raise into the eval path (mirror the existing `# noqa: BLE001` + subprocess-timeout pattern); any
+failure surfaces as `error` / `nsys_error` / `ncu_error` and the rest of the dict still stands.
 
-### Decisions
-- **nsys runs by default** for every correct kernel (no-root). **ncu is opt-in** via `nsight_ncu` (needs sudo; password supplied via `nsight_ncu_sudo`).
-- **Profile only the currently executed kernel** — the candidate `ModelNew` forward under evaluation. Do not profile the reference/baseline, and do not return a cross-process top-N list; return exactly the GPU kernel(s) this candidate launches.
-- **Local eval path first** (`src/eval.py`), validated with `use_remote_eval=false`. Remote judge wiring is out of scope for v1.
+## Why (background)
 
-### Existing pattern to mirror
-`backup.md` specifies `src/triton_error_parser.py`: a self-contained parser whose output is
-stashed in `KernelExecResult.metadata` (`metadata["compilation_error_parsed"]`, set at
-`src/eval.py:947`) and later rendered into a dedicated evaluator-prompt section. This Nsight
-work follows the identical parse → metadata → prompt-section pipeline.
+- **Framework noise buries the real kernel.** A correct candidate also launches many tiny
+  PyTorch/cuDNN/CUTLASS helper kernels. In run `outputs/KB-l2_AdaExplore_50/2_15`, step 8 had **10 of
+  11** kernels each <1% of GPU time (e.g. `void at::native::vectorized_elementwise_kernel`,
+  `reduce_kernel`), each carrying a full ncu block, while the kernel at 85–99% of runtime sat buried
+  in the middle of the JSON. Candidate kernels are name-separable: custom/Triton kernels have clean
+  names (`conv_transpose3d_kernel`, `triton_...`); framework ones are `void at::… / void cudnn::… /
+  void cutlass::…`.
+- **ncu fields are thin and report *that* not *why*.** `--set basic` gives 6 counters — it shows
+  occupancy is 16% but never whether registers, shared memory, or block count is the cap.
+- **Prereq fixes already landed** (kept so the history isn't lost): the config-loader now coerces
+  YAML bools both ways (`agent/utils.py:load_config_from_yaml`), and the ncu CSV metric mapping was
+  corrected (`_NCU_METRICS`) with `_roofline_bound` classifying on SOL memory throughput.
+
+## Current state → target
+
+| Aspect | Today | Target |
+|---|---|---|
+| nsys pass | always (correct kernels) | unchanged |
+| ncu pass | opt-in via `nsight_ncu` flag | **default stage** (field removed) |
+| noise filtering | none (comment promises it, no code) | candidate-only |
+| ncu metrics | 6 (`--set basic`) | rich explicit `--metrics` bundle |
+| ncu scope | every kernel | `-k` dominant candidate only |
 
 ---
 
 ## Implementation
 
-### 1. New standalone runner: `tool_scripts/nsight_runner.py`
-nsys/ncu profile a **whole process**, so we need a minimal driver they can wrap.
-- CLI: `--kernel_path --test_source --level --problem_id --device --dtype --backend --num_iters`.
-- Reuses existing loaders: `agent.utils.load_test_source` + the same temp-file model-loading
-  helper used in `src/eval.py` (`load_custom_model_with_tempfile`) to build `ModelNew` and inputs
-  exactly as eval does (consistency with the measured path).
-- Does warmup then runs the forward `--num_iters` times, with `torch.cuda.synchronize()`. No
-  timing logic of its own — the profiler records it. Keep iters small (e.g. 5) because ncu replay is slow.
+### Stage 1 — select the candidate kernel(s) from the nsys ranking
 
-### 2. New parser/orchestrator module: `src/nsight_profiler.py`
-Mirrors `src/triton_error_parser.py` in spirit (self-contained, never raises into the eval path).
-- `profile_kernel(kernel_path, *, run_args, device, ncu=False, ncu_sudo="", timeout=...) -> dict`:
-  - **nsys path** (always): `nsys profile -o <tmp> --force-overwrite true python tool_scripts/nsight_runner.py ...`,
-    then `nsys stats --report cuda_gpu_kern_sum --report cuda_gpu_mem_time_sum --format json <tmp>.nsys-rep`.
-    Parse JSON → **the kernel(s) the candidate actually launched** (its own Triton/CUDA kernel, not a
-    cross-process top-N): name, instances, total/avg ms, % of GPU time, grid/block, plus memcpy time.
-    (Use `nsys stats` JSON, not raw sqlite, to avoid a schema dependency.)
-  - **ncu path** (opt-in, when `ncu=True`): `ncu --set basic --csv --target-processes all python tool_scripts/nsight_runner.py ...`
-    on a **single iteration**. Parse CSV → for the candidate's kernel: SM/achieved occupancy, DRAM
-    throughput %, compute(SM) throughput %, L2 hit %, registers/thread, dominant warp-stall reason,
-    roofline bound (memory vs compute). ncu needs root here → invoke via `sudo -S` feeding the
-    `ncu_sudo` password on stdin (fall back to direct call if already root). On permission failure,
-    set `{"ncu_error": "..."}` and continue (nsys data still useful).
-  - Returns a dict describing **only the currently executed kernel**.
-  - Wrap everything in try/except + subprocess timeout; on any failure return `{"error": "..."}` so
-    profiling never breaks evaluation.
+`_is_framework_kernel(name)` classifies a kernel name as library/framework noise vs.
+candidate-authored. Framework kernels start with `void ` and/or carry a C++ namespace marker;
+candidate kernels (Triton / custom CUDA from `load_inline`) have neither.
 
-### 3. Hook into the local eval path: `src/eval.py`
-- Extend `eval_kernel_against_ref` (def at `src/eval.py:359`) signature with
-  `nsight_ncu: bool = False, nsight_ncu_sudo: str = ""`.
-- After performance stats are attached (right after `src/eval.py:637`
-  `kernel_exec_result.runtime_stats = runtime_stats`), inside the `correctness` block, add:
+```python
+_FRAMEWORK_MARKERS = ("at::", "cudnn", "cutlass", "cublas", "cub::", "thrust::", "void <unnamed>")
+
+def _is_framework_kernel(name) -> bool:
+    """True for library/framework kernels (PyTorch/cuDNN/CUTLASS/...) vs. candidate-authored ones."""
+    if not name or not isinstance(name, str):
+        return False
+    low = name.lower()
+    if any(m in low for m in _FRAMEWORK_MARKERS):
+        return True
+    # Template-instantiated C++ library kernels are emitted as `void ns::kernel<...>(...)`.
+    return low.startswith("void ") and "::" in name
+```
+
+`_candidate_kernel_names(...)` returns the keep-set **before** ncu runs, from the nsys kernel list
+(already sorted desc by `time_pct` at line ~108). Keep a kernel if it is not framework, or is above a
+GPU-time floor, or is within the top-N — the `keep_top_n` floor guarantees ≥1 name even when a
+candidate legitimately calls a library GEMM as its main op. A missing `time_pct` (dropped when `None`
+in `_normalize_kernel_row`) counts as `0.0`.
+
+```python
+def _candidate_kernel_names(kernels, *, time_floor: float = 1.0, keep_top_n: int = 3) -> list[str]:
+    """Names of candidate-authored / dominant kernels, derived from the nsys ranking."""
+    names = []
+    for i, k in enumerate(kernels or []):
+        tp = k.get("time_pct")
+        tp = tp if isinstance(tp, (int, float)) else 0.0
+        name = k.get("name")
+        if name and ((not _is_framework_kernel(name)) or tp >= time_floor or i < keep_top_n):
+            names.append(name)
+    return names
+```
+
+### Stage 2 — targeted, richer ncu
+
+**Re-key `_NCU_METRICS` on internal metric IDs and expand the bundle.** With explicit `--metrics`,
+ncu's CSV "Metric Name" column prints the internal IDs (not display names), so keys move to IDs — a
+deliberate, *consistent* reversal of the earlier display-name fix now that `--set basic` is gone. The
+mapped value names stay stable so `_roofline_bound` and the prompt keep working
+(`compute_throughput_pct` / `memory_throughput_pct` / `dram_throughput_pct` /
+`achieved_occupancy_pct` / `registers_per_thread` all still produced).
+
+```python
+_NCU_METRICS = {
+    # throughput / roofline (kept — _roofline_bound depends on these three)
+    "sm__throughput.avg.pct_of_peak_sustained_elapsed":                 "compute_throughput_pct",
+    "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": "memory_throughput_pct",
+    "dram__throughput.avg.pct_of_peak_sustained_elapsed":               "dram_throughput_pct",
+    "lts__throughput.avg.pct_of_peak_sustained_elapsed":                "l2_throughput_pct",
+    "gpu__time_duration.sum":                                           "duration",
+    # occupancy + WHY it is capped (new — answers the run_2_15 gap)
+    "sm__warps_active.avg.pct_of_peak_sustained_active":                "achieved_occupancy_pct",
+    "launch__registers_per_thread":                                     "registers_per_thread",
+    "launch__occupancy_limit_registers":                                "occ_limit_registers",
+    "launch__occupancy_limit_shared_mem":                               "occ_limit_shared_mem",
+    "launch__occupancy_limit_warps":                                    "occ_limit_warps",
+    "launch__occupancy_limit_blocks":                                   "occ_limit_blocks",
+    # launch config (new)
+    "launch__grid_size":                                                "grid_size",
+    "launch__block_size":                                               "block_size",
+    "launch__waves_per_multiprocessor":                                 "waves_per_sm",
+    "launch__shared_mem_per_block_static":                              "shared_mem_per_block",
+    # cache behavior (new)
+    "l1tex__t_sector_hit_rate.pct":                                     "l1_hit_rate_pct",
+    "lts__t_sector_hit_rate.pct":                                       "l2_hit_rate_pct",
+    # dram traffic (new — feeds arithmetic-intensity / roofline)
+    "dram__bytes_read.sum":                                             "dram_bytes_read",
+    "dram__bytes_write.sum":                                            "dram_bytes_write",
+}
+```
+> **Verify the IDs against the installed ncu** (`ncu --query-metrics` / `--list-metrics`) — a few vary
+> by version. `_parse_ncu_csv` maps unknown metrics to nothing, so a stray ID is harmless, but a
+> *renamed* one silently goes missing; double-check the roofline-critical three.
+
+**Make `_run_ncu` targeted + metric-driven.** Replace `--set basic` with `--metrics <ids>`; accept
+`candidate_names` and, when non-empty, add a kernel-name filter (`--kernel-name-base demangled`
+because the nsys "Name" is demangled, so the regex must match that form). Targeting only the candidate
+kernels is what makes the larger metric list affordable.
+
+```python
+base_cmd = [
+    _NCU,
+    "--metrics", ",".join(_NCU_METRICS.keys()),
+    "--csv",
+    "--target-processes", "all",
+]
+if candidate_names:
+    base_cmd += [
+        "--kernel-name-base", "demangled",
+        "-k", "regex:" + "|".join(re.escape(n) for n in candidate_names),
+    ]
+base_cmd += _runner_cmd(kernel_path, run_args, num_iters=1)
+```
+`_parse_ncu_csv` needs no structural change — it already pivots on the "Metric Name" column and looks
+up `_NCU_METRICS.get(metric)`; that column now carries the internal IDs the re-keyed dict expects.
+(Add `import re`.) **Fallback:** if the targeted run yields no `ncu_kernels` (regex matched nothing),
+retry **once with the same `--metrics` but no `-k`** — identical metrics keep parsing consistent, and
+Stage 3's reconcile then trims framework noise from the unfiltered result. No empty profile.
+
+### Stage 3 — assemble in `profile_kernel`
+
+```python
+    result.update(_run_nsys(kernel_path, run_args, num_iters, timeout))
+    candidate_names = _candidate_kernel_names(result.get("kernels") or [])
+
+    # ncu is a default stage — always attempt it (guarded by _NCU existence + try/except).
+    if os.path.exists(_NCU):
+        try:
+            result.update(_run_ncu(kernel_path, run_args, ncu_sudo, timeout, candidate_names))
+        except subprocess.TimeoutExpired:
+            result["ncu_error"] = f"ncu timed out after {timeout}s"
+        except Exception as e:  # noqa: BLE001 -- never break eval
+            result["ncu_error"] = f"ncu exception: {e}"
+    else:
+        result["ncu_error"] = f"ncu not found at {_NCU}"
+
+    if result.get("kernels"):
+        try:
+            _filter_noise(result)   # trims the nsys display list + reconciles ncu_kernels by name
+        except Exception:  # noqa: BLE001 -- filtering never breaks eval
+            pass
+    return result
+```
+
+`_filter_noise(result, *, time_floor=1.0, keep_top_n=3)` mutates in place: filter `result["kernels"]`
+by `_is_framework_kernel` / `time_floor` / `keep_top_n`, reconcile `result["ncu_kernels"]` to the kept
+names (keep an ncu entry if its name is kept **or** it is not framework — guards nsys/ncu
+name-mangling mismatches), and record `result["noise_kernels_dropped"] = <count>` (no silent
+truncation). With targeted ncu it usually has nothing to drop on the ncu side; it still matters for
+the unfiltered fallback path.
+
+### Make ncu a default stage (remove the `nsight_ncu` toggle)
+
+ncu currently is gated by a `nsight_ncu` boolean threaded CLI/YAML → `profile_kernel(ncu=...)`. Make it
+unconditional and stop exposing it. **Rule for every file:** delete `nsight_ncu` plumbing; make the
+ncu pass unconditional; **keep every `nsight_ncu_sudo` line** (ncu still needs root). Do *not* add a
+default-on `store_true` (`default=True` on `store_true` recreates the config-loader bool bug noted
+above). Surface verified with `grep -rn nsight_ncu` (outputs/ snapshots excluded):
+
+- **`src/nsight_profiler.py`** — drop the `ncu: bool = False` param from `profile_kernel` (line ~342;
+  keep `ncu_sudo`); the Stage-3 snippet above already runs ncu unconditionally. Update the module
+  docstring (lines ~14-18): "ncu (opt-in, needs root)" → "ncu (default stage, needs root)".
+- **`src/eval.py`** — delete the `nsight_ncu: bool = False` line from `eval_kernel_against_ref` (377),
+  `_local_subprocess_eval` (1221), `wrapped_eval_kernel_against_ref` (1341); drop `ncu=nsight_ncu`
+  from the `profile_kernel` call (678); drop `'nsight_ncu': nsight_ncu` from the subprocess JSON
+  (1251); drop `nsight_ncu=nsight_ncu` from the forward (1454). Keep each `nsight_ncu_sudo` line
+  (378/1222/1342/679/1252/1455). Update the docstring (384-385) and comments (647, 1408).
+- **`src/eval_subprocess_runner.py`** — remove `nsight_ncu = args.get('nsight_ncu', False)` (47) and
+  the forward (74); keep lines 48 and 75.
+- **`agent/actions.py`** — remove `nsight_ncu=getattr(args, 'nsight_ncu', False)` at both call sites
+  (238, 307); keep the `nsight_ncu_sudo=getattr(...)` lines (239, 308).
+- **`agent/agent_entry.py`** — delete the `--nsight_ncu` argument (279); keep `--nsight_ncu_sudo`
+  (280); update the section comment (277-278).
+- **`tool_scripts/eval_one_kernel.py`** — delete the `--nsight_ncu` argument (24-25) and the
+  `nsight_ncu=args.nsight_ncu` forward (49); keep `--nsight_ncu_sudo` (26-27) and its forward (50).
+- **`config/KB-l2/config_KB-l2_AdaExplore_50.yaml`** — remove `nsight_ncu: true` (17); keep
+  `nsight_ncu_sudo` (18). **`config/KB-l1/config_KB-l1_AdaExplore_50.yaml`** — no `nsight_ncu` key;
+  add `nsight_ncu_sudo` if run on a non-root host. Stale `nsight_ncu:` keys are harmless after the arg
+  is removed (`load_config_from_yaml` skips keys with no matching attr via the `hasattr` guard,
+  `agent/utils.py:387`) but clean them. Auto-saved `outputs/**/config.yaml` are generated — ignore.
+
+### Document the new fields in the evaluator prompt
+
+Extend the `NSIGHT_PROFILE` "how to read it" block (`agentprompt/evaluator_prompt.py:218-226`) so the
+richer counters arrive documented, not as bare keys — call out `occ_limit_registers /
+occ_limit_shared_mem / occ_limit_warps / occ_limit_blocks` as "what is capping occupancy" and the
+`l1_hit_rate_pct` / `l2_hit_rate_pct` / `dram_bytes_*` group. This is the only change outside
+`src/nsight_profiler.py` besides the eval-chain plumbing.
+
+## Consequences
+
+- **Root/sudo:** ncu now runs for every correct kernel. On a non-root host with no `nsight_ncu_sudo`,
+  each correct kernel hits a graceful `ncu_error` (nsys data still stands) — configure
+  `nsight_ncu_sudo`; that is why the field is retained.
+- **Cost:** ncu replays kernels, so eval slows down — targeting 1–3 kernels via `-k` instead of ~11
+  keeps total replays well below the old `--set basic`-over-everything cost. Watch the per-subprocess
+  `timeout`.
+- **Remote path unaffected:** `nsight_ncu` / `nsight_ncu_sudo` were never forwarded to remote judges
+  (`src/eval.py:1408`), so this changes only the local path.
+
+## Deferred
+
+- **Pre-digested one-line verdict.** A deterministic `verdict` string (e.g. *"dominant kernel
+  `conv_transpose3d_kernel` = 85% GPU time; compute-bound 69% SM, 16% occupancy capped by registers
+  → register-pressure-limited"*) computed in Python and surfaced prominently in `NSIGHT_PROFILE`, so
+  the evaluator reads the conclusion instead of re-deriving it each step. The new `occ_limit_*`
+  counters make this much stronger; build it once this pipeline lands.
+
+## Verification
+
+1. **Selection/filter check:** feed a synthetic nsys kernel list mixing framework entries (`void
+   at::native::...` at `time_pct=0.3`) with a candidate (`conv_transpose3d_kernel` at `time_pct=85`);
+   assert `_candidate_kernel_names` returns the candidate + top-N and excludes sub-floor framework
+   names, and `_filter_noise` sets `noise_kernels_dropped`.
+2. **ncu argv check:** assert the built command contains `--metrics ...`, `--kernel-name-base
+   demangled`, and `-k regex:conv_transpose3d_kernel` when candidate names are supplied — and omits
+   `-k` in the fallback shape.
+3. **End-to-end:** run a known-correct kernel through `profile_kernel` (mirror `src/eval.py`
+   ~644-689); confirm `ncu_kernels` holds only the dominant kernel(s), each carrying the new fields
+   (`occ_limit_registers`, `l2_hit_rate_pct`, `dram_bytes_read`, …), and that for the run_2_15 case
+   `occ_limit_registers` flags registers as the occupancy cap.
+4. **Default-stage check:** `grep -rn "nsight_ncu" --include=*.py --include=*.yaml .` returns only
+   `nsight_ncu_sudo`; `python tool_scripts/eval_one_kernel.py --help` shows `--nsight_ncu_sudo` but no
+   `--nsight_ncu`; running it on a correct kernel produces `ncu_kernels` with no enable flag passed.
+5. **Prompt spot-check:** render the evaluator prompt (`NSIGHT_PROFILE` injection,
+   `agentprompt/evaluator_prompt.py:323-336`) and confirm the JSON block is concise (1–3 kernels) and
+   carries the richer counters.
+
+---
+
+# Follow-up: surface ncu's own rule-engine verdicts (replaces the static "How to read it")
+
+## Context
+
+The targeted-ncu pipeline above landed and works: the per-kernel counters reach the evaluator
+prompt accurately. But on the `outputs/KB-l2_AdaExplore_50/2_15` run the agent's `fast_p` plateaued
+(~0.25, still ~4× slower than cuDNN) because it kept chasing the **wrong lever**. The cause is the
+prompt itself: the hand-written *"How to read it:"* block in `agentprompt/evaluator_prompt.py` is
+roofline-blind — it says *"low `occ_limit_registers` → cut `registers_per_thread` to raise
+occupancy"* with no caveat. For a kernel already at 95% memory SOL (`roofline_bound: memory_bound`),
+raising occupancy buys nothing, yet the static text steered the agent there anyway.
+
+Fix: stop hand-authoring the interpretation. NVIDIA Nsight Compute ships an expert **rule engine**
+that emits per-kernel, roofline-aware verdicts (e.g. *"theoretical occupancy 25% limited by
+registers, Est. Local Speedup: 75%"* — or, for a memory-bound kernel, *"Memory is more heavily
+utilized…"*). We surface ncu's own text and delete our static advice. This realizes (and supersedes)
+the **Deferred "pre-digested verdict"** idea above: rather than computing the verdict in Python, we
+use ncu's authored verdict directly.
+
+### Verified facts (drive the design)
+- The nsight dict (`KernelExecResult.metadata["nsight"]`) is **purely informational**. Only two
+  consumers touch it: `src/eval.py` stores it, and `agentprompt/evaluator_prompt.py` (~L336-346)
+  gates on `nsight.get("kernels") or nsight.get("ncu_kernels")` then JSON-dumps the whole dict via
+  `format_nsight_summary`. No MCTS reward / skill-memory code reads any inner field. **Restructuring
+  ncu output is safe.**
+- A **single** ncu invocation combining `--metrics <internal IDs>` + `--section <name>` + `--csv`
+  returns both our existing numeric metric rows **and** rule rows. The CSV gains columns:
+  `Section Name`, `Rule Name`, `Rule Type` (OPT/WRN/INF), `Rule Description` (the expert prose),
+  `Estimated Speedup Type` (local/global), `Estimated Speedup` (e.g. `75`). Rule rows carry a
+  `Kernel Name` but a **blank `Metric Name`**, so they skip the existing metric pivot naturally.
+  → This is **additive**: keep `_NCU_METRICS` and `_parse_ncu_csv`'s pivot; layer rules on top.
+- Installed ncu is **2025.1.1**. Decided section set: **SpeedOfLight, Occupancy,
+  MemoryWorkloadAnalysis, SchedulerStats** — all four reliably emit roofline-aware rules with
+  Estimated Speedup. WarpStateStats / SourceCounters are **excluded**: their rules need source-level
+  PC sampling (warning `smsp__pcsamp_sample_count could not be found` → rules suppressed), so they
+  would cost extra replay passes for no verdict text.
+
+## Changes
+
+### 1. `src/nsight_profiler.py` — add `_NCU_SECTIONS` constant
+After `_NCU_METRICS` (~L331):
+```python
+# ncu's section rule engine emits per-kernel, roofline-aware verdicts (OPT/WRN
+# text + estimated speedup). These four reliably produce rules without needing
+# source-level PC sampling. Adding sections multiplies ncu replay passes, so this
+# list is the single cost/timeout knob (drop SchedulerStats first if needed).
+_NCU_SECTIONS = ("SpeedOfLight", "Occupancy", "MemoryWorkloadAnalysis", "SchedulerStats")
+```
+
+### 2. `src/nsight_profiler.py` — `_run_ncu` / `_build_cmd`
+In `_build_cmd` (~L347-361), after the `--metrics metrics_arg` entry, append a `--section <name>`
+pair for each `_NCU_SECTIONS` entry. Leave everything else intact: `--csv`, `--target-processes
+all`, the targeted `--kernel-name-base demangled -k regex:...`, the unfiltered fallback retry, the
+sudo/root branch, and `num_iters=1`. The fallback rebuilds via `_build_cmd`, so it inherits the
+sections automatically. Keeping `--metrics` preserves every existing stable numeric field.
+
+### 3. `src/nsight_profiler.py` — `_parse_ncu_csv` collect rule rows
+The header detector (~L407) still matches (same `"Kernel Name"` header with sections added).
+Restructure the row loop (~L411-425):
+- A row is a **rule row** when `Metric Name` is blank/absent and `Rule Description` (or `Rule Name`)
+  is populated. The current `if not kname or not metric: continue` wrongly drops these — change it
+  so a populated `kname` with a rule is kept even when `metric` is blank.
+- Metric rows: unchanged — pivot `Metric Name` through `_NCU_METRICS.get` → stable key.
+- Rule rows: append to `entry.setdefault("rules", [])` as:
   ```python
-  if kernel_exec_result.correctness:
-      from src.nsight_profiler import profile_kernel
-      kernel_exec_result.metadata["nsight"] = profile_kernel(
-          ..., ncu=nsight_ncu, ncu_sudo=nsight_ncu_sudo)
+  {"section": <Section Name>|None, "type": <Rule Type>|None,
+   "name": <Rule Name>|None, "desc": <Rule Description>|None,
+   "speedup_pct": float(<Estimated Speedup>) | None}
   ```
-  nsys always runs for a correct kernel; ncu only when `nsight_ncu=True`. Gated, best-effort,
-  never raises. Needs the kernel source on disk → reuse the tempfile already created during model
-  loading, or write `custom_model_src` to a temp `.py` for the runner.
-- Thread the same flags through `wrapped_eval_kernel_against_ref` (def at `src/eval.py:1262`) so
-  callers can pass them; remote branch ignores them in v1 (documented).
+  Coerce `speedup_pct` in its own try/except; all columns via `row.get(...)` so older ncu degrades to
+  `None`, never raises. **Drop `Rule Type == "INF"`** to cut noise (keep OPT + WRN).
+- `_roofline_bound` stays unchanged — cheap deterministic cross-check / fallback when a rule is
+  suppressed.
 
-### 4. Config + plumbing
-- Add to `config/KB-l2/config_KB-l2_AdaExplore_50.yaml` (and document in the config loader)
-  **exactly two fields**: `nsight_ncu` (bool, enable the ncu hardware-counter pass) and
-  `nsight_ncu_sudo` (string, the sudo password used to run ncu as root). nsys profiling of the
-  current kernel runs automatically for every correct kernel; these two only gate/enable ncu.
-- Pass `args.nsight_ncu` / `args.nsight_ncu_sudo` from the agent call sites that invoke eval. The
-  proposer/tuner evaluation goes through `wrapped_eval_kernel_against_ref` in `agent/actions.py`
-  (`single_large_step`/`single_small_step`); forward the flags there.
+### 4. `src/nsight_profiler.py` — `format_nsight_summary`
+No change. The `rules` arrays serialize fine; INF-drop + 4-section subset keep the payload modest.
 
-### 5. Inject into the evaluator prompt: `agentprompt/evaluator_prompt.py`
-- Add a `NSIGHT_PROFILE` template section (mirror `STRUCTURAL_ALERT`, evaluator_prompt.py ~L174).
-- In `generate_evaluator_prompt`, read `run_info.metadata.get("nsight")`; if present and non-error,
-  render via `format_nsight_summary(...)` (a plain `json.dumps` dump of the dict) and append the
-  section after the metrics block.
+### 5. `agentprompt/evaluator_prompt.py` — NSIGHT_PROFILE template (~L208-238)
+**Delete the entire "How to read it:" block** (the field-by-field interpretive advice, including the
+wrong "cut registers" rule). Keep the short lead-in paragraph and the `{nsight_summary}` JSON block.
+Add one concise line directing the evaluator to the embedded `rules`: ncu's own roofline-aware expert
+verdicts — treat them as authoritative and prioritize the fix with the highest `Estimated Speedup` /
+`speedup_pct`. The injection site and its gate (~L336-346) are unchanged.
 
----
+## Verification
+1. **Static argv:** built command contains both `--metrics ...` and the four `--section` flags;
+   fallback shape still omits `-k`.
+2. **Parse unit check:** feed a captured CSV with one metric row + one OPT rule row + one INF row;
+   assert numeric stable fields un-regressed, `rules` has the OPT entry with `speedup_pct` parsed,
+   INF excluded.
+3. **End-to-end:** run `profile_kernel` on an existing `outputs/KB-l2_AdaExplore_50/2_15/step_*.py`
+   (note: `global_best_kernel_10.py` no longer exists; use a present `step_NN.py`), watch ncu's pass
+   count against the 600s timeout, confirm `ncu_kernels[].rules` carries the SOLBottleneck/Occupancy
+   verdicts with speedups.
+4. **Prompt render:** rendered NSIGHT_PROFILE shows the rule text and the old "cut registers"
+   sentence is gone.
 
-## Critical files
-- **New** `tool_scripts/nsight_runner.py` — process the profiler wraps.
-- **New** `src/nsight_profiler.py` — orchestrate nsys/ncu + parse + format (mirrors `src/triton_error_parser.py`).
-- `src/eval.py` — hook after L637; extend `eval_kernel_against_ref` (L359) and `wrapped_eval_kernel_against_ref` (L1262).
-- `agentprompt/evaluator_prompt.py` — new prompt section + render in `generate_evaluator_prompt`.
-- `agent/actions.py` — forward profiling flags through eval calls.
-- `config/KB-l2/config_KB-l2_AdaExplore_50.yaml` + config loader — new flags.
-- `agent/nsight_claude.md` — design documentation (this file).
-
-## Modification locations
-
-### New files
-| File | Contents |
-|------|----------|
-| `tool_scripts/nsight_runner.py` | Standalone driver the profiler wraps. CLI `--kernel_path --test_source --level --problem_id --device --dtype --backend --num_iters`; warmup + forward ×N with `torch.cuda.synchronize()`, no timing of its own. Reuses `agent.utils.load_test_source` + `load_custom_model_with_tempfile`. |
-| `src/nsight_profiler.py` | `profile_kernel(kernel_path, *, run_args, device, ncu=False, ncu_sudo="", timeout=...) -> dict`. nsys path always; ncu path opt-in via `sudo -S`. try/except + subprocess timeout, never raises. |
-
-### Edits to existing files
-| File | Location | Change |
-|------|----------|--------|
-| `src/eval.py` | **L359** `eval_kernel_against_ref` | Extend signature: `nsight_ncu: bool = False, nsight_ncu_sudo: str = ""`. |
-| `src/eval.py` | **after L637** (`kernel_exec_result.runtime_stats = runtime_stats`, inside `correctness` block) | Add gated `profile_kernel(...)` writing `kernel_exec_result.metadata["nsight"]`. Reuse model-loading tempfile or write `custom_model_src` to temp `.py`. |
-| `src/eval.py` | **L1262** `wrapped_eval_kernel_against_ref` | Thread the same two flags through; remote branch ignores them in v1. |
-| `agentprompt/evaluator_prompt.py` | **L174** (next to `STRUCTURAL_ALERT`) | Add `NSIGHT_PROFILE` template section. |
-| `agentprompt/evaluator_prompt.py` | **L208** `generate_evaluator_prompt` | Read `run_info.metadata.get("nsight")`; if present and non-error, render via `format_nsight_summary(...)` and append after the metrics block. |
-| `agent/actions.py` | **L222** `single_small_step` call to `wrapped_eval_kernel_against_ref` | Forward `args.nsight_ncu` / `args.nsight_ncu_sudo`. |
-| `agent/actions.py` | **L289** `single_large_step` call to `wrapped_eval_kernel_against_ref` | Forward `args.nsight_ncu` / `args.nsight_ncu_sudo`. |
-| `config/KB-l2/config_KB-l2_AdaExplore_50.yaml` + config loader | — | Add `nsight_ncu` (bool) and `nsight_ncu_sudo` (string); document in loader. |
-| `tool_scripts/eval_one_kernel.py` | — | Add `--nsight_ncu` / `--nsight_ncu_sudo` flags (used by verification step 5). |
-
-## Reused utilities (avoid new code)
-- `agent.utils.load_test_source` — load reference arch for the runner.
-- `load_custom_model_with_tempfile` (src/eval.py) — build `ModelNew` identically to eval.
-- `KernelExecResult.metadata` (`src/format.py`) — carrier for nsight data (same channel as `compilation_error_parsed`).
-- `STRUCTURAL_ALERT` injection pattern in `evaluator_prompt.py` — template for the new section.
-
----
-
-## Verification (end-to-end)
-1. **Tools sanity**: `nsys --version`, `ncu --version` (already confirmed present).
-2. **Runner alone**: `python tool_scripts/nsight_runner.py --test_source KB --level 2 --problem_id 1 ...`
-   completes a forward pass without profiling. Then wrap with `nsys profile ...` and confirm a `.nsys-rep` is produced.
-3. **Parser unit check**: call `src.nsight_profiler.profile_kernel(...)` on a known-good kernel
-   (e.g. a `global_best` kernel under `outputs/`) → returns a populated dict; assert nsys path works without sudo.
-4. **ncu gating**: with `nsight_ncu=true` and the `nsight_ncu_sudo` password set → confirm
-   occupancy/throughput fields populate; with a wrong/empty password → confirm graceful
-   `{"ncu_error": ...}` while the nsys data is still present.
-5. **eval integration**: `python tool_scripts/eval_one_kernel.py <kernel> --level 2 --problem_id 1`
-   (extend it with `--nsight_ncu` / `--nsight_ncu_sudo` flags) → `result.metadata["nsight"]`
-   populated for a correct kernel with the current kernel's data; nsys-only by default, ncu when enabled.
-6. **Prompt check**: run `generate_evaluator_prompt` on a metrics object carrying `metadata["nsight"]`
-   → confirm the NSIGHT_PROFILE section renders and is absent when no nsight data exists.
-7. **Loop smoke test**: one short MCTS run on level-2 problem 1 with `use_remote_eval: false`,
-   `total_steps` small → confirm per-step metrics JSON in
-   `outputs/KB-l2_AdaExplore_50/<pid>/` carry nsight data and the saved evaluator prompt shows the section.
-
-## Out of scope (v1)
-- Remote judge (`online_judge/app_with_queue.py`) profiling — local path only.
-- Persisting `.nsys-rep`/`.ncu-rep` artifacts long-term (use temp files; optionally add a `nsight_keep_reports` flag later).
-- Per-kernel ncu on every iteration by default (expensive); ncu stays opt-in.
-
----
-
-## Open problem: Nsight guidance is thin (observed 2026-06-23, run `outputs/KB-l2_AdaExplore_50/2_15`)
-
-**Symptom.** After the data path was fixed (see below), the evaluator's `small_guidance` /
-`large_guidance` does cite real counters — e.g. step 3: *"conv_transpose3d kernel is compute-bound
-at 69% with 254 registers/thread and only 16% occupancy — register pressure is killing
-throughput"* — but the guidance feels under-leveraged relative to the data available. The model
-re-derives the same diagnosis from raw numbers every step and sometimes anchors on the wrong kernel.
-
-**Prerequisite fixes already landed (this run validated them):**
-- **Config loader bool bug** (`agent/utils.py` `load_config_from_yaml`): a `store_true` flag whose
-  default is `True` (e.g. `use_remote_eval`) could never be turned off from YAML — `use_remote_eval:
-  false` was silently dropped, so the run used the **remote** path where ncu is not wired. Fixed to
-  coerce YAML bools in both directions (`setattr(args, key, bool(value))`). This is why an earlier
-  inspection saw nsys-only data with no ncu.
-- **ncu CSV metric mapping** (`src/nsight_profiler.py` `_NCU_METRICS`): was keyed on internal metric
-  ids (`sm__throughput.avg...`) but `ncu --set basic --csv` emits *display* names (`Compute (SM)
-  Throughput`, `Achieved Occupancy`, `Registers Per Thread`, ...). Re-keyed to display names; added
-  `memory_throughput_pct` (SOL memory) and switched `_roofline_bound` to classify on SOL memory.
-- Confirmed: every **correct** kernel now carries fully-populated `ncu_kernels` (steps 1,2,3,7,8,10);
-  `correctness=False` steps (4,5,6,9) have no nsight by design (the hook only profiles correct kernels).
-
-**Root causes of the thin guidance (NOT a data-plumbing issue — data is present and cited):**
-
-1. **Promised noise-filtering was never implemented.** The module comment
-   (`src/nsight_profiler.py:44-45`) claims it "keeps the candidate's own kernels; drops
-   framework/library noise," but there is **no filtering code** — every framework kernel leaks into
-   both `kernels` and `ncu_kernels`. Measured dilution in this run:
-   - step 8: **10 of 11** profiled kernels are <1% of GPU time (mostly `void at::native::
-     vectorized_elementwise_kernel` / `reduce_kernel`), each carrying a full 6-counter ncu block.
-   - step 7: 8 of 10 are <1%. step 3: 6 of 10. The one kernel that is 85–99% of runtime is buried.
-   The candidate's own kernel is trivially separable: custom/Triton kernels have clean names
-   (`conv_transpose3d_kernel`), framework ones are `void at::… / void cudnn::… / void cutlass::…`.
-
-2. **Raw JSON dump, no pre-digested verdict.** `NSIGHT_PROFILE` pastes the dict + a generic "how to
-   read it." Nothing surfaces the one-line bottleneck (*"dominant kernel compute-bound at 69% SM, 254
-   reg/thread, occupancy capped at 16% → register-pressure-limited"*). The model must re-derive it
-   each step, and on a noisy list it can latch onto the wrong kernel.
-
-**Candidate fixes (not yet decided):**
-- **A. Filter to candidate kernel(s):** drop sub-1%-GPU-time framework kernels (`void at::/cudnn::/
-  cutlass::`) from both lists — implements the filtering the code already advertises; trims ~10 noise
-  kernels to 1–3. (Keep a small floor, e.g. always keep top-N by time even if named like framework,
-  so a candidate that legitimately calls a library kernel isn't dropped.)
-- **B. Append a derived diagnosis line** per dominant kernel (roofline bound + the limiting counter)
-  so the evaluator starts from an interpreted signal rather than raw numbers.
-- **C. Minimal:** just rank by GPU time and cap to top-N (already sorted; add the cap).
-
-A and B are complementary and the recommended pair; C is the low-effort fallback.
+## Risks
+- **Timeout/cost (primary):** sections multiply replay passes (~14 observed for 5 sections); four
+  sections on 1–3 targeted kernels should fit 600s. `_NCU_SECTIONS` is the single knob — drop
+  SchedulerStats first if timeouts appear.
+- **CSV columns vary by ncu version:** older ncu may omit `Rule Type`/`Estimated Speedup`; `.get` +
+  per-field try/except degrade gracefully.
+- **Empty `rules`** for a kernel at its roofline ceiling is legitimate; `roofline_bound` + counters
+  remain the fallback signal.
+- All new paths sit under the existing `try/except` + `# noqa: BLE001`, so nothing raises into eval.

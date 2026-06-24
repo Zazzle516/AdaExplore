@@ -21,8 +21,6 @@ def main():
     parser.add_argument("--dtype", type=str, default="fp32", choices=["fp32", "fp16", "bf16"])
     parser.add_argument("--use_remote_eval", action="store_true", default=False)
     parser.add_argument("--remote_eval_url", type=str, default="http://0.0.0.0:12017")
-    parser.add_argument("--nsight_ncu", action="store_true", default=False,
-                        help="Enable the ncu hardware-counter pass (needs root)")
     parser.add_argument("--nsight_ncu_sudo", type=str, default="",
                         help="sudo password used to run ncu as root")
     args = parser.parse_args()
@@ -46,7 +44,6 @@ def main():
         test_source=args.test_source,
         level=args.level,
         problem_id=args.problem_id,
-        nsight_ncu=args.nsight_ncu,
         nsight_ncu_sudo=args.nsight_ncu_sudo,
     )
 

@@ -220,10 +220,20 @@ How to read it:
   instances, total/avg ms, and % of GPU time. The top entry dominates runtime.
 * **memory_ops** (from nsys): host/device memcpy time -- large values signal a
   transfer bottleneck rather than a compute one.
-* **ncu_kernels** (only when the ncu pass ran): per-kernel hardware counters --
-  `compute_throughput_pct` / `memory_throughput_pct` / `dram_throughput_pct` (% of
-  peak), `achieved_occupancy_pct`, `l2_throughput_pct`, `registers_per_thread`, and
-  a `roofline_bound` classification (memory_bound / compute_bound / latency_bound).
+* **ncu_kernels** (targeted hardware counters for the dominant kernel(s)):
+  - **throughput / roofline:** `compute_throughput_pct` / `memory_throughput_pct`
+    / `dram_throughput_pct` / `l2_throughput_pct` (% of peak), `duration`, and a
+    `roofline_bound` classification (memory_bound / compute_bound / latency_bound).
+  - **occupancy + what caps it:** `achieved_occupancy_pct` is the realized warp
+    occupancy; `occ_limit_registers` / `occ_limit_shared_mem` / `occ_limit_warps`
+    / `occ_limit_blocks` are the per-cause occupancy ceilings -- the *smallest*
+    one is the binding constraint (e.g. a low `occ_limit_registers` means
+    register pressure is capping occupancy, so cut `registers_per_thread`).
+  - **launch config:** `grid_size`, `block_size`, `waves_per_sm`,
+    `shared_mem_per_block`.
+  - **cache + traffic:** `l1_hit_rate_pct` / `l2_hit_rate_pct` (low hit rates +
+    high `dram_bytes_read` / `dram_bytes_write` point at a memory-traffic problem
+    -- improve locality/coalescing or fuse to cut DRAM round-trips).
 
 """
 
