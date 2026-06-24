@@ -1,0 +1,885 @@
+## Problem Statement
+
+You evaluate the most recent custom Triton kernel and its measured performance, then emit guidance for the next iteration. Follow the Optimization Skills below.
+
+# Safety contract
+
+These two rules apply to every kernel you write, regardless of which
+operators appear in the reference and regardless of whether you are
+designing from scratch or tuning an existing kernel.
+
+1. **No graph-level algebraic shortcuts.** Every heavy op (Conv*, ConvTranspose*,
+   Linear, matmul) must materialize its full reference output shape at runtime,
+   and your kernel must perform the same asymptotic multiply-add count as the
+   reference. Specifically forbidden, whether done at init or inside `forward`,
+   on weight or on input: pre-reducing along any axis that a downstream linear
+   reduction (sum / mean / avg-pool) will later collapse, then running a smaller
+   GEMM / matvec against the pre-reduced tensor. Examples that **all violate**
+   this rule: precomputing `Σ_kh,kw w[ic,oc,kh,kw]`; precomputing
+   `sum_x[n,ic] = Σ_{h,w} x[n,ic,h,w]`; precomputing per-`(kh,kw)` partial input
+   sums `Σ_{h,w valid} x`; folding avg-pool's window sum into the conv-transpose
+   so adjacent output positions share one multiply. By linearity these are
+   mathematically equivalent and all skip the heavy op's real work. The comparison
+   baseline runs the graph as written.
+
+2. **Custom kernels are authorized.** Any `nn.*` operator in the reference is
+   a valid replacement target. You may rewrite it with a Triton kernel or a
+   CUDA C++ extension (`torch.utils.cpp_extension`). Do not assume any op is
+   the immovable part of the graph — the heaviest op usually has the most
+   headroom.
+
+   Your replacement must **execute unconditionally** on the forward path. The
+   eval harness runs the model at PyTorch's default `training=True` and never
+   calls `.eval()`, so any heavy-op replacement guarded behind `if self.training:`,
+   `if x.is_cuda:`, or parked in an `else:` / fallback branch is **dead code that
+   never runs** — the original PyTorch op executes and is timed instead. Such a
+   branch counts as **not** replacing the op. Equally, fusing only the cheap
+   surrounding work (BatchNorm, reductions, pointwise ops) while leaving the heavy
+   `nn.*`/`F.*` op on the live PyTorch path counts as **not** replacing it either —
+   the heavy op itself must be reimplemented in your custom kernel. The evaluator
+   verifies at runtime which path actually executed: if the reference heavy op
+   still ran in PyTorch, the kernel is scored **invalid**, whether that is because
+   the replacement was dead code or because no replacement was written. Call your
+   custom heavy-op kernel directly in `forward`, with no conditional that can route
+   execution back to the reference `nn.*`/`F.*` op.
+
+- Conv2d/3d: implement as im2col-style indexing into a tiled GEMM — one
+  program per `(N, OC tile, output-spatial tile)`. The im2col gather can stay
+  implicit (compute input offsets inside the kernel) to avoid materializing
+  the unfolded tensor.
+- ConvTranspose1d/2d/3d: implement as a scatter-add of the `input × kernel`
+  outer product into the output grid, handling `stride` / `padding` /
+  `output_padding` in the index math. Do not approximate it with a plain conv.
+- Fold BatchNorm into the conv weight/bias at eval time (the BN running stats
+  are constant), and absorb a trailing bias add and activation (ReLU, etc.)
+  into the same kernel epilogue.
+- When the torch convolution dominates runtime (symptom: `fast_p < 0.8` while
+  the epilogue is already fused), replacing the conv with a custom kernel is
+  the high-headroom move — not further tuning of the tail.
+- Pick tiles that fit the GPU's shared-memory budget on the **first** attempt
+  — otherwise the Triton launcher's gcc build fails as a
+  `subprocess.CalledProcessError` and the rewrite is silently dropped. For
+  fp32 on Ada / RTX-4090-D (~100 KB SMEM per SM) the operand tiles must satisfy
+  `(BLOCK_M·BLOCK_K + BLOCK_K·BLOCK_N) · 4 · num_stages ≲ 80 KB`. Tiles like
+  `BLOCK_M=BLOCK_N=128, BLOCK_K=32, num_stages=2` overflow this and will not
+  load. Wrap the kernel in `@triton.autotune` from the first emission, keyed
+  on `(OC, output-spatial, IC*KH*KW)`, with a safe starting grid such as
+  `(BLOCK_M, BLOCK_N, BLOCK_K) ∈ {(32,32,16), (64,32,16), (32,64,16), (64,64,32)}`
+  at `num_warps=4`, `num_stages=2`. Larger tiles can be added once a smaller
+  variant in the same autotune list is known to compile.
+
+- Tune the GEMM tile `BLOCK_M` / `BLOCK_N` / `BLOCK_K` against the
+  `(OC, output-spatial, IC*kh*kw)` shapes, but verify each config fits the
+  SMEM budget — see the Design block's
+  `(BM·BK + BK·BN) · 4 · num_stages ≲ 80 KB` heuristic for fp32 on Ada / RTX-4090-D. If a
+  previous attempt failed with a `subprocess.CalledProcessError` from the
+  Triton launcher gcc step, the cause is almost always an oversized tile;
+  drop to the safe starting grid before sweeping upward.
+- Set `num_warps` (4 or 8) and `num_stages` (2-4) per config; wrap in
+  `triton.autotune` over a small grid. Higher `num_stages` multiplies the
+  SMEM cost — keep it at 2 until smaller tiles are confirmed to compile.
+- Use a `channels_last` layout so the channel axis is contiguous and input
+  loads coalesce across the GEMM-K dimension.
+- Hoist constant index math (stride/pad offsets) out of the inner loop and
+  mask the spatial tail rather than branching.
+
+- BatchNorm / InstanceNorm: at eval the running mean/var are constant — fold
+  the normalization plus affine into a single scale/shift applied in one
+  elementwise kernel (or into the producing kernel's epilogue). Use Welford
+  only when stats must be computed at runtime.
+- LayerNorm / GroupNorm: two-pass (compute mean, then variance) over the
+  normalized axis inside one program; keep the whole reduction in-kernel so it
+  is not split across launches.
+- RMSNorm: skip the mean, normalize by `rsqrt(mean(x^2) + eps)`.
+- Fuse the normalization with the adjacent activation, and fold a pure affine
+  into a preceding Linear/Conv only when it is genuinely a pure affine.
+
+- Use one program per normalization group — per `(N, C)` for LN, per
+  `(N, group)` for GN, per channel for BN — and block the reduction axis with
+  `BLOCK_SIZE` over the feature dim.
+- For small feature dims, use a persistent kernel that keeps the row resident
+  rather than re-loading; for large dims, tile the reduction and combine.
+- Tune `num_warps` to the reduction width (4 for short rows, 8 for wide) and
+  `num_stages` 2-3.
+- Load the normalized axis contiguously; reorder to `channels_last` when the
+  stat axis would otherwise be strided.
+
+- Block-level reduction: one program per output element (or output tile),
+  reducing its slice of the input with a shared-memory / register tree reduce
+  over `BLOCK_SIZE` chunks of the reduction axis.
+- softmax / log_softmax / logsumexp: use the numerically stable form — compute
+  the running max, subtract it before `exp`, then normalize (online softmax in
+  a single pass when the row fits, two-pass otherwise).
+- Fuse the reduction with the op that produces its input and with any scalar
+  scaling applied to the result, so the reduced tensor is never written out
+  just to be read back.
+- Keep every operator in the chain executing at runtime — do not fold a
+  reduction into a weight rewrite (see safety contract).
+
+- Tune `BLOCK_SIZE` over the reduction axis (powers of two); for a reduction
+  dim that fits, use a persistent kernel that keeps the row resident.
+- Size `num_warps` to the reduction width (4 for short, 8 for wide rows) and
+  keep `num_stages` 2-3.
+- Lay the reduction axis out contiguously so the strided combine is avoided;
+  one program per output element keeps the grid simple and coalesced.## Common Pitfalls (from previous optimization attempts)
+
+The following are frequently observed failure patterns from prior kernel optimization runs. **Avoid** these patterns in your implementation:
+
+You cannot reference the name PADDING_LEFT when it is not defined.
+You cannot call the compiled Triton kernel without providing the required positional 'meta' argument.
+You cannot call tl.load(x_ptr + x_addrs, mask=mask_x, other=0.0) inside the Triton kernel.
+You cannot have an `else:` at line 223 of the module source (SyntaxError: invalid syntax).
+You cannot access triton.language.math.tanh.
+You cannot use the 'continue' statement in a Triton kernel.
+You cannot call tl.float32 as a function inside a Triton kernel.
+You cannot use k_mask & (offs_n[None, :] < N) as the mask argument to tl.load in this Triton kernel when k_mask and (offs_n[None, :] < N) have incompatible dimensions 32 and 128.
+You cannot access W.shape when W is an int.
+You cannot call tl.arange(0, BLOCK) inside the Triton kernel _mean_invstd_kernel.
+You cannot use Triton builder operations that require a `_builder` argument outside of functions compiled with @triton.jit.
+You cannot index a Triton tensor with an int32[] tensor index inside a Triton kernel during compilation.
+You cannot pass multiple values for the 'BLOCK' argument when launching the Triton kernel.
+You cannot access the .dtype attribute of a dict object.
+You cannot call triton.language.log1p.
+You cannot index a Triton tensor with a constexpr index inside a Triton kernel at compile time.
+You cannot call the Triton kernel without providing the required constexpr positional arguments 'BLOCK_C' and 'BLOCK_L'.
+You cannot specify the keyword argument meta when launching this Triton kernel.
+You cannot call the Triton kernel without passing the required constexpr parameter 'BLOCK'.
+You cannot call torch.cuda.reset().
+You cannot call .reshape(-1) inside a Triton kernel.
+You cannot access triton.language.div.
+You cannot call float() on a tensor (kernel_vol) inside the Triton kernel.
+You cannot pass an integer as the grid parameter when launching the Triton kernel.
+You cannot access the attribute 'dropout3d' on a ModelNew object.
+You cannot index tl.zeros((1,), dtype=tl.float32) with [0] inside a Triton @jit kernel.
+You cannot call tensor.view with a size argument that contains a torch.nn.Parameter.
+You cannot use triton.language.full_like.
+You cannot call tl.dot(x, x) inside the Triton kernel shown.
+You cannot call a function decorated with @triton.jit outside the scope of a kernel.
+You cannot call the .sum() method on the expression vals.to(tl.float32) inside a Triton @triton.jit kernel.
+You cannot use the break statement inside a Triton kernel.
+You cannot reference the name 'EMBED' when instantiating ModelNew.
+You cannot call triton.language.any.
+You cannot perform the assignment out_ptr[row * pooled_len + pidx] = acc in the Triton kernel (AssertionError during compilation).
+You cannot use chained boolean operators (e.g., A or B or C) inside a Triton kernel.
+You cannot index a Triton tensor using a non-constexpr integer variable inside a Triton kernel (e.g., w_vals[:, c_inner]).
+You cannot use tl.load(inp_ptr + in_index) in this Triton kernel.
+You cannot call int() on a tensor inside a Triton kernel.
+You cannot pass an indices tensor with float elements to torch.nn.functional.max_unpool3d.
+You cannot require more shared memory than the device's hardware limit when launching the Triton kernel.
+You cannot access triton.language.constant (i.e., call tl.constant).
+You cannot define class ModelNew that inherits from the name 'Model' when 'Model' is not defined.
+You cannot omit the @triton.jit decorator on a Triton kernel function.
+You cannot call tl.max with arguments max_val and m in this Triton kernel.
+You cannot pass a torch.cuda.FloatTensor as the indices (argument #1) to torch.embedding_bag.
+You cannot reference the name 'Model' inside ModelNew.__init__.
+You cannot access the attribute 'tanh' on module 'triton.language'.
+
+## Task Instruction
+
+You are given the following architecture:
+
+```
+import torch
+import torch.nn as nn
+
+class Model(nn.Module):
+    """
+    A 3D convolutional transpose layer followed by Batch Normalization and subtraction.
+    """
+    def __init__(self, in_channels, out_channels, kernel_size, stride, padding, bias=True):
+        super(Model, self).__init__()
+        self.conv_transpose = nn.ConvTranspose3d(in_channels, out_channels, kernel_size, stride=stride, padding=padding, bias=bias)
+        self.batch_norm = nn.BatchNorm3d(out_channels)
+
+    def forward(self, x):
+        x = self.conv_transpose(x)
+        x = self.batch_norm(x)
+        x = x - torch.mean(x, dim=(2, 3, 4), keepdim=True)  # Subtract mean along spatial dimensions
+        return x
+
+batch_size = 16
+in_channels = 16
+out_channels = 32
+depth, height, width = 16, 32, 32
+kernel_size = 3
+stride = 2
+padding = 1
+
+def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
+    return [torch.rand(batch_size, in_channels, depth, height, width)]
+
+def get_init_inputs():
+    return [in_channels, out_channels, kernel_size, stride, padding]
+```
+
+The input shapes can be found in the input of the architecture, and the dtype is fp32.
+
+An agent generated the following custom Triton kernels in the architecture:
+
+```
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import triton
+import triton.language as tl
+
+
+@triton.autotune(
+    configs=[
+        triton.Config({'BLOCK_OC': 8, 'BLOCK_SPATIAL': 128}, num_warps=2, num_stages=2),
+        triton.Config({'BLOCK_OC': 8, 'BLOCK_SPATIAL': 128}, num_warps=4, num_stages=2),
+        triton.Config({'BLOCK_OC': 8, 'BLOCK_SPATIAL': 64}, num_warps=2, num_stages=2),
+        triton.Config({'BLOCK_OC': 16, 'BLOCK_SPATIAL': 64}, num_warps=2, num_stages=2),
+        triton.Config({'BLOCK_OC': 16, 'BLOCK_SPATIAL': 64}, num_warps=4, num_stages=2),
+        triton.Config({'BLOCK_OC': 16, 'BLOCK_SPATIAL': 128}, num_warps=2, num_stages=2),
+        triton.Config({'BLOCK_OC': 16, 'BLOCK_SPATIAL': 128}, num_warps=4, num_stages=2),
+        triton.Config({'BLOCK_OC': 32, 'BLOCK_SPATIAL': 64}, num_warps=4, num_stages=2),
+        triton.Config({'BLOCK_OC': 32, 'BLOCK_SPATIAL': 32}, num_warps=2, num_stages=2),
+        triton.Config({'BLOCK_OC': 8, 'BLOCK_SPATIAL': 256}, num_warps=4, num_stages=2),
+    ],
+    key=['IC', 'OC', 'OD', 'OH', 'OW'],
+)
+@triton.jit
+def conv_transpose3d_kernel(
+    x_ptr, w_ptr, b_ptr, out_ptr,
+    N, IC, ID, IH, IW,
+    OC, OD, OH, OW,
+    KD: tl.constexpr, KH: tl.constexpr, KW: tl.constexpr,
+    SD: tl.constexpr, SH: tl.constexpr, SW: tl.constexpr,
+    PD: tl.constexpr, PH: tl.constexpr, PW: tl.constexpr,
+    BLOCK_OC: tl.constexpr,
+    BLOCK_SPATIAL: tl.constexpr,
+):
+    pid_n = tl.program_id(0)
+    pid_oc = tl.program_id(1)
+    pid_sp = tl.program_id(2)
+
+    oc_offs = pid_oc * BLOCK_OC + tl.arange(0, BLOCK_OC)
+    sp_offs = pid_sp * BLOCK_SPATIAL + tl.arange(0, BLOCK_SPATIAL)
+
+    oc_mask = oc_offs < OC
+    sp_mask = sp_offs < (OD * OH * OW)
+
+    od = sp_offs // (OH * OW)
+    rem = sp_offs % (OH * OW)
+    oh = rem // OW
+    ow = rem % OW
+
+    bias_vals = tl.load(b_ptr + oc_offs, mask=oc_mask, other=0.0)
+    acc = tl.zeros((BLOCK_OC, BLOCK_SPATIAL), dtype=tl.float32) + bias_vals[:, None]
+
+    x_batch_base = pid_n * IC * ID * IH * IW
+
+    for ic in range(IC):
+        x_ic_base = x_batch_base + ic * ID * IH * IW
+        for kd in tl.static_range(KD):
+            id_num = od + PD - kd
+            id_idx = id_num // SD
+            id_valid = (id_num >= 0) & (id_num % SD == 0) & (id_idx >= 0) & (id_idx < ID)
+            for kh in tl.static_range(KH):
+                ih_num = oh + PH - kh
+                ih_idx = ih_num // SH
+                ih_valid = (ih_num >= 0) & (ih_num % SH == 0) & (ih_idx >= 0) & (ih_idx < IH)
+                for kw in tl.static_range(KW):
+                    iw_num = ow + PW - kw
+                    iw_idx = iw_num // SW
+                    iw_valid = (iw_num >= 0) & (iw_num % SW == 0) & (iw_idx >= 0) & (iw_idx < IW)
+
+                    spatial_valid = id_valid & ih_valid & iw_valid & sp_mask
+
+                    x_off = x_ic_base + id_idx * IH * IW + ih_idx * IW + iw_idx
+                    x_val = tl.load(x_ptr + x_off, mask=spatial_valid, other=0.0)
+
+                    w_off = ((ic * OC + oc_offs) * KD + kd) * KH * KW + kh * KW + kw
+                    w_val = tl.load(w_ptr + w_off, mask=oc_mask, other=0.0)
+
+                    acc += w_val[:, None] * x_val[None, :]
+
+    out_off = ((pid_n * OC + oc_offs[:, None]) * OD * OH * OW) + sp_offs[None, :]
+    out_mask = oc_mask[:, None] & sp_mask[None, :]
+    tl.store(out_ptr + out_off, acc, mask=out_mask)
+
+
+@triton.jit
+def fused_bn_meansub_kernel(
+    x_ptr, scale_ptr, shift_ptr, out_ptr,
+    SPATIAL,
+    BLOCK: tl.constexpr,
+):
+    pid = tl.program_id(0)               
+    oc = pid % tl.num_programs(0)                                       
+                                                    
+                                                                         
+
+
+@triton.jit
+def fused_bn_meansub_kernel2(
+    x_ptr, scale_ptr, shift_ptr, out_ptr,
+    N, OC, SPATIAL,
+    BLOCK: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    n = pid // OC
+    oc = pid % OC
+
+    scale = tl.load(scale_ptr + oc)
+    shift = tl.load(shift_ptr + oc)
+
+    base = (n * OC + oc) * SPATIAL
+    inv_spatial = 1.0 / SPATIAL
+
+                                                                                   
+    sum_val = tl.zeros((), dtype=tl.float32)
+    for off in range(0, SPATIAL, BLOCK):
+        idx = off + tl.arange(0, BLOCK)
+        mask = idx < SPATIAL
+        x = tl.load(x_ptr + base + idx, mask=mask, other=0.0)
+        sum_val += tl.sum(x)
+
+    mean_x = sum_val * inv_spatial
+                                             
+                                                 
+                                                
+
+    for off in range(0, SPATIAL, BLOCK):
+        idx = off + tl.arange(0, BLOCK)
+        mask = idx < SPATIAL
+        x = tl.load(x_ptr + base + idx, mask=mask, other=0.0)
+        out = scale * (x - mean_x)
+        tl.store(out_ptr + base + idx, out, mask=mask)
+
+
+class ModelNew(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride, padding, bias=True):
+        super().__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.padding = padding
+
+        self.conv_transpose = nn.ConvTranspose3d(in_channels, out_channels, kernel_size,
+                                                  stride=stride, padding=padding, bias=bias)
+        self.batch_norm = nn.BatchNorm3d(out_channels)
+
+    def forward(self, x):
+        x = x.contiguous().cuda()
+        weight = self.conv_transpose.weight.contiguous().cuda()
+        if self.conv_transpose.bias is not None:
+            bias = self.conv_transpose.bias.contiguous().cuda()
+        else:
+            bias = torch.zeros(self.out_channels, device=x.device, dtype=x.dtype)
+
+        N, IC, ID, IH, IW = x.shape
+        OC = self.out_channels
+        KD = KH = KW = self.kernel_size
+        SD = SH = SW = self.stride
+        PD = PH = PW = self.padding
+
+        OD = (ID - 1) * SD - 2 * PD + KD
+        OH = (IH - 1) * SH - 2 * PH + KH
+        OW = (IW - 1) * SW - 2 * PW + KW
+
+        conv_out = torch.empty((N, OC, OD, OH, OW), device=x.device, dtype=x.dtype)
+
+        SPATIAL = OD * OH * OW
+
+        grid = lambda META: (N, triton.cdiv(OC, META['BLOCK_OC']), triton.cdiv(SPATIAL, META['BLOCK_SPATIAL']))
+        conv_transpose3d_kernel[grid](
+            x, weight, bias, conv_out,
+            N, IC, ID, IH, IW,
+            OC, OD, OH, OW,
+            KD, KH, KW,
+            SD, SH, SW,
+            PD, PH, PW,
+        )
+
+                                                                                       
+                                                                                 
+                                                                                   
+                                                                                    
+                                                                                             
+                                                
+        bn_out = self.batch_norm(conv_out)
+
+        out = torch.empty_like(bn_out)
+                                           
+                                                              
+        scale = torch.ones(OC, device=bn_out.device, dtype=bn_out.dtype)
+        shift = torch.zeros(OC, device=bn_out.device, dtype=bn_out.dtype)
+
+        BLOCK = 1024
+        grid2 = (N * OC,)
+        fused_bn_meansub_kernel2[grid2](
+            bn_out, scale, shift, out,
+            N, OC, SPATIAL,
+            BLOCK=BLOCK,
+            num_warps=4,
+        )
+
+        return out
+```
+
+The runtime metrics of the custom Triton kernels are:
+
+```
+compiled=True correctness=True metadata={'hardware': 'NVIDIA GeForce RTX 4090', 'device': '0', 'heavy_op_executed_in_pytorch': False, 'correctness_trials': '(5 / 5)', 'nsight': {'kernels': [{'name': 'conv_transpose3d_kernel', 'instances': 195.0, 'time_pct': 97.0, 'total_ms': 1714.893664, 'avg_ms': 8.7943265}, {'name': 'void at::native::vectorized_elementwise_kernel<(int)4, at::native::FillFunctor<int>, at::detail::Array<char *, (int)1>>(int, T2, T3)', 'instances': 154.0, 'time_pct': 2.1, 'total_ms': 37.081251, 'avg_ms': 0.24078729999999998}, {'name': 'void cudnn::bn_fw_tr_1C11_kernel_NCHW<float, float, int, (int)512, (bool)1, (int)1, (bool)1>(cudnnTensorStruct, const T1 *, cudnnTensorStruct, T1 *, const T2 *, const T2 *, T2, T2, T2 *, T2 *, T2 *, T2 *, T2, T2)', 'instances': 8.0, 'time_pct': 0.5, 'total_ms': 8.74919, 'avg_ms': 1.0936488}, {'name': 'fused_bn_meansub_kernel2', 'instances': 8.0, 'time_pct': 0.4, 'total_ms': 6.457106, 'avg_ms': 0.8071383000000001}], 'memory_ops': [{'operation': '[CUDA memcpy Host-to-Device]', 'time_pct': 99.9, 'total_ms': 1.172201, 'count': 8.0}, {'operation': '[CUDA memset]', 'time_pct': 0.1, 'total_ms': 0.001376, 'count': 1.0}], 'ncu_kernels': [{'name': 'conv_transpose3d_kernel', 'dram_bytes_read': 17477888.0, 'dram_bytes_write': 219754368.0, 'dram_throughput_pct': 2.71, 'memory_throughput_pct': 60.22, 'duration': 8685728.0, 'l1_hit_rate_pct': 95.58, 'block_size': 64.0, 'grid_size': 61568.0, 'occ_limit_blocks': 24.0, 'occ_limit_registers': 4.0, 'occ_limit_shared_mem': 6.0, 'occ_limit_warps': 24.0, 'registers_per_thread': 221.0, 'shared_mem_per_block': 0.0, 'waves_per_sm': 120.25, 'l2_hit_rate_pct': 97.84, 'l2_throughput_pct': 3.18, 'compute_throughput_pct': 60.22, 'achieved_occupancy_pct': 16.59, 'rules': [{'section': 'SchedulerStats', 'type': 'OPT', 'name': 'IssueSlotUtilization', 'desc': 'Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 2.1 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 1.99 active warps per scheduler, but only an average of 0.62 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.', 'speedup_pct': 39.8}, {'section': 'Occupancy', 'type': 'OPT', 'name': 'TheoreticalOccupancy', 'desc': "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.", 'speedup_pct': 39.8}, {'section': 'SchedulerStats', 'type': 'OPT', 'name': 'IssueSlotUtilization', 'desc': 'Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 2.1 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 1.99 active warps per scheduler, but only an average of 0.62 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.', 'speedup_pct': 39.78}, {'section': 'Occupancy', 'type': 'OPT', 'name': 'TheoreticalOccupancy', 'desc': "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.", 'speedup_pct': 39.78}, {'section': 'SchedulerStats', 'type': 'OPT', 'name': 'IssueSlotUtilization', 'desc': 'Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 2.1 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 1.99 active warps per scheduler, but only an average of 0.61 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.', 'speedup_pct': 37.61}, {'section': 'Occupancy', 'type': 'OPT', 'name': 'TheoreticalOccupancy', 'desc': "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.", 'speedup_pct': 37.61}, {'section': 'SchedulerStats', 'type': 'OPT', 'name': 'IssueSlotUtilization', 'desc': 'Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 2.1 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 1.99 active warps per scheduler, but only an average of 0.61 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.', 'speedup_pct': 37.62}, {'section': 'Occupancy', 'type': 'OPT', 'name': 'TheoreticalOccupancy', 'desc': "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.", 'speedup_pct': 37.62}, {'section': 'SchedulerStats', 'type': 'OPT', 'name': 'IssueSlotUtilization', 'desc': 'Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 2.0 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 1.99 active warps per scheduler, but only an average of 0.65 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.', 'speedup_pct': 34.75}, {'section': 'Occupancy', 'type': 'OPT', 'name': 'TheoreticalOccupancy', 'desc': "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.", 'speedup_pct': 34.75}, {'section': 'SchedulerStats', 'type': 'OPT', 'name': 'IssueSlotUtilization', 'desc': 'Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 2.0 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 1.99 active warps per scheduler, but only an average of 0.65 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.', 'speedup_pct': 34.74}, {'section': 'Occupancy', 'type': 'OPT', 'name': 'TheoreticalOccupancy', 'desc': "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.", 'speedup_pct': 34.74}, {'section': 'SchedulerStats', 'type': 'OPT', 'name': 'IssueSlotUtilization', 'desc': 'Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 1.9 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 1.99 active warps per scheduler, but only an average of 0.70 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.', 'speedup_pct': 38.39}, {'section': 'Occupancy', 'type': 'OPT', 'name': 'TheoreticalOccupancy', 'desc': "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.", 'speedup_pct': 38.39}, {'section': 'SchedulerStats', 'type': 'OPT', 'name': 'IssueSlotUtilization', 'desc': 'Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 1.9 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 1.99 active warps per scheduler, but only an average of 0.71 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.', 'speedup_pct': 38.37}, {'section': 'Occupancy', 'type': 'OPT', 'name': 'TheoreticalOccupancy', 'desc': "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.", 'speedup_pct': 38.37}, {'section': 'Occupancy', 'type': 'OPT', 'name': 'TheoreticalOccupancy', 'desc': "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.", 'speedup_pct': 83.33}, {'section': 'Occupancy', 'type': 'OPT', 'name': 'TheoreticalOccupancy', 'desc': "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.", 'speedup_pct': 83.33}, {'section': 'SpeedOfLight', 'type': 'OPT', 'name': 'SOLBottleneck', 'desc': 'This workload exhibits low compute throughput and memory bandwidth utilization relative to the peak performance of this device. Achieved compute throughput and/or memory bandwidth below 60.0% of peak typically indicate latency issues. Look at Scheduler Statistics and Warp State Statistics for potential reasons.', 'speedup_pct': None}, {'section': 'SchedulerStats', 'type': 'OPT', 'name': 'IssueSlotUtilization', 'desc': 'Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 2.2 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 1.99 active warps per scheduler, but only an average of 0.61 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.', 'speedup_pct': 43.94}, {'section': 'Occupancy', 'type': 'OPT', 'name': 'TheoreticalOccupancy', 'desc': "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.", 'speedup_pct': 43.94}, {'section': 'SpeedOfLight', 'type': 'OPT', 'name': 'SOLBottleneck', 'desc': 'This workload exhibits low compute throughput and memory bandwidth utilization relative to the peak performance of this device. Achieved compute throughput and/or memory bandwidth below 60.0% of peak typically indicate latency issues. Look at Scheduler Statistics and Warp State Statistics for potential reasons.', 'speedup_pct': None}, {'section': 'SchedulerStats', 'type': 'OPT', 'name': 'IssueSlotUtilization', 'desc': 'Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 2.2 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 1.99 active warps per scheduler, but only an average of 0.61 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.', 'speedup_pct': 43.9}, {'section': 'Occupancy', 'type': 'OPT', 'name': 'TheoreticalOccupancy', 'desc': "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.", 'speedup_pct': 43.9}, {'section': 'SchedulerStats', 'type': 'OPT', 'name': 'IssueSlotUtilization', 'desc': 'Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 1.9 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 1.99 active warps per scheduler, but only an average of 0.68 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.', 'speedup_pct': 39.9}, {'section': 'Occupancy', 'type': 'OPT', 'name': 'TheoreticalOccupancy', 'desc': "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.", 'speedup_pct': 39.9}, {'section': 'SchedulerStats', 'type': 'OPT', 'name': 'IssueSlotUtilization', 'desc': 'Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 1.9 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 1.99 active warps per scheduler, but only an average of 0.68 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.', 'speedup_pct': 39.9}, {'section': 'Occupancy', 'type': 'OPT', 'name': 'TheoreticalOccupancy', 'desc': "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.", 'speedup_pct': 39.9}, {'section': 'Occupancy', 'type': 'OPT', 'name': 'TheoreticalOccupancy', 'desc': "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.", 'speedup_pct': 83.33}, {'section': 'Occupancy', 'type': 'OPT', 'name': 'TheoreticalOccupancy', 'desc': "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.", 'speedup_pct': 83.33}, {'section': 'Occupancy', 'type': 'OPT', 'name': 'TheoreticalOccupancy', 'desc': "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.", 'speedup_pct': 83.33}, {'section': 'Occupancy', 'type': 'OPT', 'name': 'TheoreticalOccupancy', 'desc': "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.", 'speedup_pct': 83.33}, {'section': 'SpeedOfLight', 'type': 'OPT', 'name': 'SOLBottleneck', 'desc': 'This workload exhibits low compute throughput and memory bandwidth utilization relative to the peak performance of this device. Achieved compute throughput and/or memory bandwidth below 60.0% of peak typically indicate latency issues. Look at Scheduler Statistics and Warp State Statistics for potential reasons.', 'speedup_pct': None}, {'section': 'SchedulerStats', 'type': 'OPT', 'name': 'IssueSlotUtilization', 'desc': 'Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 2.2 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 1.99 active warps per scheduler, but only an average of 0.58 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.', 'speedup_pct': 42.56}, {'section': 'Occupancy', 'type': 'OPT', 'name': 'TheoreticalOccupancy', 'desc': "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.", 'speedup_pct': 42.56}, {'section': 'SpeedOfLight', 'type': 'OPT', 'name': 'SOLBottleneck', 'desc': 'This workload exhibits low compute throughput and memory bandwidth utilization relative to the peak performance of this device. Achieved compute throughput and/or memory bandwidth below 60.0% of peak typically indicate latency issues. Look at Scheduler Statistics and Warp State Statistics for potential reasons.', 'speedup_pct': None}, {'section': 'SchedulerStats', 'type': 'OPT', 'name': 'IssueSlotUtilization', 'desc': 'Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 2.2 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 1.99 active warps per scheduler, but only an average of 0.58 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.', 'speedup_pct': 42.59}, {'section': 'Occupancy', 'type': 'OPT', 'name': 'TheoreticalOccupancy', 'desc': "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.", 'speedup_pct': 42.59}, {'section': 'SchedulerStats', 'type': 'OPT', 'name': 'IssueSlotUtilization', 'desc': 'Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 2.1 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 1.99 active warps per scheduler, but only an average of 0.62 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.', 'speedup_pct': 39.8}, {'section': 'Occupancy', 'type': 'OPT', 'name': 'TheoreticalOccupancy', 'desc': "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.", 'speedup_pct': 39.8}, {'section': 'SchedulerStats', 'type': 'OPT', 'name': 'IssueSlotUtilization', 'desc': 'Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 2.1 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 1.99 active warps per scheduler, but only an average of 0.62 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.', 'speedup_pct': 39.78}, {'section': 'Occupancy', 'type': 'OPT', 'name': 'TheoreticalOccupancy', 'desc': "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.", 'speedup_pct': 39.78}, {'section': 'SchedulerStats', 'type': 'OPT', 'name': 'IssueSlotUtilization', 'desc': 'Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 2.1 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 1.99 active warps per scheduler, but only an average of 0.62 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.', 'speedup_pct': 39.8}, {'section': 'Occupancy', 'type': 'OPT', 'name': 'TheoreticalOccupancy', 'desc': "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.", 'speedup_pct': 39.8}, {'section': 'SchedulerStats', 'type': 'OPT', 'name': 'IssueSlotUtilization', 'desc': 'Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 2.1 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 1.99 active warps per scheduler, but only an average of 0.62 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.', 'speedup_pct': 39.78}, {'section': 'Occupancy', 'type': 'OPT', 'name': 'TheoreticalOccupancy', 'desc': "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.", 'speedup_pct': 39.78}], 'roofline_bound': 'memory_bound'}], 'noise_kernels_dropped': 2}} runtime=9.27 runtime_stats={'mean': 9.27, 'std': 0.00493, 'min': 9.27, 'max': 9.29, 'num_trials': 90, 'hardware': 'NVIDIA GeForce RTX 4090', 'device': '0', 'fast_p': 0.19228206252709473, 'baseline_time': 1.7824547196261682, 'baseline_type': 'recorded'}
+```
+
+The tuning metrics contain the following information:
+
+* **Compiled**: whether the kernel is compiled successfully
+* **Error Message**: the compilation or runtime error encountered by the kernel (if any)
+* **Correctness**: whether the kernel is correct
+* **Runtime**: the runtime of the kernel
+* **Fast_p**: compared with the standard PyTorch implementation, how much speedup the customized kernel achieves, calculated as *standard time / custom time*.
+
+## Nsight hardware profile (measured)
+
+The kernel(s) this candidate actually launched were profiled with NVIDIA Nsight.
+This is real per-operator hardware data for the executed forward path -- use it to
+ground your diagnosis instead of reasoning from the single latency number alone.
+
+```
+{
+  "kernels": [
+    {
+      "name": "conv_transpose3d_kernel",
+      "instances": 195.0,
+      "time_pct": 97.0,
+      "total_ms": 1714.893664,
+      "avg_ms": 8.7943265
+    },
+    {
+      "name": "void at::native::vectorized_elementwise_kernel<(int)4, at::native::FillFunctor<int>, at::detail::Array<char *, (int)1>>(int, T2, T3)",
+      "instances": 154.0,
+      "time_pct": 2.1,
+      "total_ms": 37.081251,
+      "avg_ms": 0.24078729999999998
+    },
+    {
+      "name": "void cudnn::bn_fw_tr_1C11_kernel_NCHW<float, float, int, (int)512, (bool)1, (int)1, (bool)1>(cudnnTensorStruct, const T1 *, cudnnTensorStruct, T1 *, const T2 *, const T2 *, T2, T2, T2 *, T2 *, T2 *, T2 *, T2, T2)",
+      "instances": 8.0,
+      "time_pct": 0.5,
+      "total_ms": 8.74919,
+      "avg_ms": 1.0936488
+    },
+    {
+      "name": "fused_bn_meansub_kernel2",
+      "instances": 8.0,
+      "time_pct": 0.4,
+      "total_ms": 6.457106,
+      "avg_ms": 0.8071383000000001
+    }
+  ],
+  "memory_ops": [
+    {
+      "operation": "[CUDA memcpy Host-to-Device]",
+      "time_pct": 99.9,
+      "total_ms": 1.172201,
+      "count": 8.0
+    },
+    {
+      "operation": "[CUDA memset]",
+      "time_pct": 0.1,
+      "total_ms": 0.001376,
+      "count": 1.0
+    }
+  ],
+  "ncu_kernels": [
+    {
+      "name": "conv_transpose3d_kernel",
+      "dram_bytes_read": 17477888.0,
+      "dram_bytes_write": 219754368.0,
+      "dram_throughput_pct": 2.71,
+      "memory_throughput_pct": 60.22,
+      "duration": 8685728.0,
+      "l1_hit_rate_pct": 95.58,
+      "block_size": 64.0,
+      "grid_size": 61568.0,
+      "occ_limit_blocks": 24.0,
+      "occ_limit_registers": 4.0,
+      "occ_limit_shared_mem": 6.0,
+      "occ_limit_warps": 24.0,
+      "registers_per_thread": 221.0,
+      "shared_mem_per_block": 0.0,
+      "waves_per_sm": 120.25,
+      "l2_hit_rate_pct": 97.84,
+      "l2_throughput_pct": 3.18,
+      "compute_throughput_pct": 60.22,
+      "achieved_occupancy_pct": 16.59,
+      "rules": [
+        {
+          "section": "SchedulerStats",
+          "type": "OPT",
+          "name": "IssueSlotUtilization",
+          "desc": "Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 2.1 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 1.99 active warps per scheduler, but only an average of 0.62 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.",
+          "speedup_pct": 39.8
+        },
+        {
+          "section": "Occupancy",
+          "type": "OPT",
+          "name": "TheoreticalOccupancy",
+          "desc": "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.",
+          "speedup_pct": 39.8
+        },
+        {
+          "section": "SchedulerStats",
+          "type": "OPT",
+          "name": "IssueSlotUtilization",
+          "desc": "Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 2.1 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 1.99 active warps per scheduler, but only an average of 0.62 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.",
+          "speedup_pct": 39.78
+        },
+        {
+          "section": "Occupancy",
+          "type": "OPT",
+          "name": "TheoreticalOccupancy",
+          "desc": "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.",
+          "speedup_pct": 39.78
+        },
+        {
+          "section": "SchedulerStats",
+          "type": "OPT",
+          "name": "IssueSlotUtilization",
+          "desc": "Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 2.1 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 1.99 active warps per scheduler, but only an average of 0.61 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.",
+          "speedup_pct": 37.61
+        },
+        {
+          "section": "Occupancy",
+          "type": "OPT",
+          "name": "TheoreticalOccupancy",
+          "desc": "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.",
+          "speedup_pct": 37.61
+        },
+        {
+          "section": "SchedulerStats",
+          "type": "OPT",
+          "name": "IssueSlotUtilization",
+          "desc": "Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 2.1 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 1.99 active warps per scheduler, but only an average of 0.61 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.",
+          "speedup_pct": 37.62
+        },
+        {
+          "section": "Occupancy",
+          "type": "OPT",
+          "name": "TheoreticalOccupancy",
+          "desc": "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.",
+          "speedup_pct": 37.62
+        },
+        {
+          "section": "SchedulerStats",
+          "type": "OPT",
+          "name": "IssueSlotUtilization",
+          "desc": "Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 2.0 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 1.99 active warps per scheduler, but only an average of 0.65 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.",
+          "speedup_pct": 34.75
+        },
+        {
+          "section": "Occupancy",
+          "type": "OPT",
+          "name": "TheoreticalOccupancy",
+          "desc": "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.",
+          "speedup_pct": 34.75
+        },
+        {
+          "section": "SchedulerStats",
+          "type": "OPT",
+          "name": "IssueSlotUtilization",
+          "desc": "Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 2.0 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 1.99 active warps per scheduler, but only an average of 0.65 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.",
+          "speedup_pct": 34.74
+        },
+        {
+          "section": "Occupancy",
+          "type": "OPT",
+          "name": "TheoreticalOccupancy",
+          "desc": "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.",
+          "speedup_pct": 34.74
+        },
+        {
+          "section": "SchedulerStats",
+          "type": "OPT",
+          "name": "IssueSlotUtilization",
+          "desc": "Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 1.9 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 1.99 active warps per scheduler, but only an average of 0.70 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.",
+          "speedup_pct": 38.39
+        },
+        {
+          "section": "Occupancy",
+          "type": "OPT",
+          "name": "TheoreticalOccupancy",
+          "desc": "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.",
+          "speedup_pct": 38.39
+        },
+        {
+          "section": "SchedulerStats",
+          "type": "OPT",
+          "name": "IssueSlotUtilization",
+          "desc": "Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 1.9 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 1.99 active warps per scheduler, but only an average of 0.71 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.",
+          "speedup_pct": 38.37
+        },
+        {
+          "section": "Occupancy",
+          "type": "OPT",
+          "name": "TheoreticalOccupancy",
+          "desc": "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.",
+          "speedup_pct": 38.37
+        },
+        {
+          "section": "Occupancy",
+          "type": "OPT",
+          "name": "TheoreticalOccupancy",
+          "desc": "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.",
+          "speedup_pct": 83.33
+        },
+        {
+          "section": "Occupancy",
+          "type": "OPT",
+          "name": "TheoreticalOccupancy",
+          "desc": "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.",
+          "speedup_pct": 83.33
+        },
+        {
+          "section": "SpeedOfLight",
+          "type": "OPT",
+          "name": "SOLBottleneck",
+          "desc": "This workload exhibits low compute throughput and memory bandwidth utilization relative to the peak performance of this device. Achieved compute throughput and/or memory bandwidth below 60.0% of peak typically indicate latency issues. Look at Scheduler Statistics and Warp State Statistics for potential reasons.",
+          "speedup_pct": null
+        },
+        {
+          "section": "SchedulerStats",
+          "type": "OPT",
+          "name": "IssueSlotUtilization",
+          "desc": "Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 2.2 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 1.99 active warps per scheduler, but only an average of 0.61 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.",
+          "speedup_pct": 43.94
+        },
+        {
+          "section": "Occupancy",
+          "type": "OPT",
+          "name": "TheoreticalOccupancy",
+          "desc": "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.",
+          "speedup_pct": 43.94
+        },
+        {
+          "section": "SpeedOfLight",
+          "type": "OPT",
+          "name": "SOLBottleneck",
+          "desc": "This workload exhibits low compute throughput and memory bandwidth utilization relative to the peak performance of this device. Achieved compute throughput and/or memory bandwidth below 60.0% of peak typically indicate latency issues. Look at Scheduler Statistics and Warp State Statistics for potential reasons.",
+          "speedup_pct": null
+        },
+        {
+          "section": "SchedulerStats",
+          "type": "OPT",
+          "name": "IssueSlotUtilization",
+          "desc": "Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 2.2 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 1.99 active warps per scheduler, but only an average of 0.61 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.",
+          "speedup_pct": 43.9
+        },
+        {
+          "section": "Occupancy",
+          "type": "OPT",
+          "name": "TheoreticalOccupancy",
+          "desc": "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.",
+          "speedup_pct": 43.9
+        },
+        {
+          "section": "SchedulerStats",
+          "type": "OPT",
+          "name": "IssueSlotUtilization",
+          "desc": "Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 1.9 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 1.99 active warps per scheduler, but only an average of 0.68 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.",
+          "speedup_pct": 39.9
+        },
+        {
+          "section": "Occupancy",
+          "type": "OPT",
+          "name": "TheoreticalOccupancy",
+          "desc": "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.",
+          "speedup_pct": 39.9
+        },
+        {
+          "section": "SchedulerStats",
+          "type": "OPT",
+          "name": "IssueSlotUtilization",
+          "desc": "Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 1.9 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 1.99 active warps per scheduler, but only an average of 0.68 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.",
+          "speedup_pct": 39.9
+        },
+        {
+          "section": "Occupancy",
+          "type": "OPT",
+          "name": "TheoreticalOccupancy",
+          "desc": "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.",
+          "speedup_pct": 39.9
+        },
+        {
+          "section": "Occupancy",
+          "type": "OPT",
+          "name": "TheoreticalOccupancy",
+          "desc": "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.",
+          "speedup_pct": 83.33
+        },
+        {
+          "section": "Occupancy",
+          "type": "OPT",
+          "name": "TheoreticalOccupancy",
+          "desc": "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.",
+          "speedup_pct": 83.33
+        },
+        {
+          "section": "Occupancy",
+          "type": "OPT",
+          "name": "TheoreticalOccupancy",
+          "desc": "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.",
+          "speedup_pct": 83.33
+        },
+        {
+          "section": "Occupancy",
+          "type": "OPT",
+          "name": "TheoreticalOccupancy",
+          "desc": "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.",
+          "speedup_pct": 83.33
+        },
+        {
+          "section": "SpeedOfLight",
+          "type": "OPT",
+          "name": "SOLBottleneck",
+          "desc": "This workload exhibits low compute throughput and memory bandwidth utilization relative to the peak performance of this device. Achieved compute throughput and/or memory bandwidth below 60.0% of peak typically indicate latency issues. Look at Scheduler Statistics and Warp State Statistics for potential reasons.",
+          "speedup_pct": null
+        },
+        {
+          "section": "SchedulerStats",
+          "type": "OPT",
+          "name": "IssueSlotUtilization",
+          "desc": "Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 2.2 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 1.99 active warps per scheduler, but only an average of 0.58 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.",
+          "speedup_pct": 42.56
+        },
+        {
+          "section": "Occupancy",
+          "type": "OPT",
+          "name": "TheoreticalOccupancy",
+          "desc": "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.",
+          "speedup_pct": 42.56
+        },
+        {
+          "section": "SpeedOfLight",
+          "type": "OPT",
+          "name": "SOLBottleneck",
+          "desc": "This workload exhibits low compute throughput and memory bandwidth utilization relative to the peak performance of this device. Achieved compute throughput and/or memory bandwidth below 60.0% of peak typically indicate latency issues. Look at Scheduler Statistics and Warp State Statistics for potential reasons.",
+          "speedup_pct": null
+        },
+        {
+          "section": "SchedulerStats",
+          "type": "OPT",
+          "name": "IssueSlotUtilization",
+          "desc": "Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 2.2 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 1.99 active warps per scheduler, but only an average of 0.58 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.",
+          "speedup_pct": 42.59
+        },
+        {
+          "section": "Occupancy",
+          "type": "OPT",
+          "name": "TheoreticalOccupancy",
+          "desc": "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.",
+          "speedup_pct": 42.59
+        },
+        {
+          "section": "SchedulerStats",
+          "type": "OPT",
+          "name": "IssueSlotUtilization",
+          "desc": "Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 2.1 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 1.99 active warps per scheduler, but only an average of 0.62 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.",
+          "speedup_pct": 39.8
+        },
+        {
+          "section": "Occupancy",
+          "type": "OPT",
+          "name": "TheoreticalOccupancy",
+          "desc": "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.",
+          "speedup_pct": 39.8
+        },
+        {
+          "section": "SchedulerStats",
+          "type": "OPT",
+          "name": "IssueSlotUtilization",
+          "desc": "Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 2.1 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 1.99 active warps per scheduler, but only an average of 0.62 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.",
+          "speedup_pct": 39.78
+        },
+        {
+          "section": "Occupancy",
+          "type": "OPT",
+          "name": "TheoreticalOccupancy",
+          "desc": "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.",
+          "speedup_pct": 39.78
+        },
+        {
+          "section": "SchedulerStats",
+          "type": "OPT",
+          "name": "IssueSlotUtilization",
+          "desc": "Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 2.1 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 1.99 active warps per scheduler, but only an average of 0.62 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.",
+          "speedup_pct": 39.8
+        },
+        {
+          "section": "Occupancy",
+          "type": "OPT",
+          "name": "TheoreticalOccupancy",
+          "desc": "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.",
+          "speedup_pct": 39.8
+        },
+        {
+          "section": "SchedulerStats",
+          "type": "OPT",
+          "name": "IssueSlotUtilization",
+          "desc": "Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 2.1 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 1.99 active warps per scheduler, but only an average of 0.62 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.",
+          "speedup_pct": 39.78
+        },
+        {
+          "section": "Occupancy",
+          "type": "OPT",
+          "name": "TheoreticalOccupancy",
+          "desc": "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.",
+          "speedup_pct": 39.78
+        }
+      ],
+      "roofline_bound": "memory_bound"
+    }
+  ],
+  "noise_kernels_dropped": 2
+}
+```
+
+Each `ncu_kernels` entry may carry a `rules` array: NVIDIA Nsight Compute's own
+roofline-aware expert verdicts (OPT/WRN) for that kernel, each with an
+`Estimated Speedup` (`speedup_pct`). Treat these as authoritative and prioritize
+the fix with the highest `speedup_pct` -- they already account for the kernel's
+roofline bound, so a verdict supersedes any generic counter-based reasoning.
+
+### Goal
+
+Your objective is to decide whether the next iteration should **tune** the
+current kernel or **redesign** it from scratch, for a kernel that is
+correct-but-moderate, compile-failed, or numerically wrong. Produce concrete
+guidance for both possibilities, judge which is more promising, and certify
+that the kernel actually does the reference work.
+
+Provide:
+
+* **small_guidance** — 1-3 concrete tuning bullets (block sizes, num_warps,
+  num_stages, layout, autotune configs, fusion opportunities within the
+  existing kernel structure). Consumed by the tuner if a refinement step is
+  chosen.
+* **large_guidance** — 1-3 concrete design bullets (what a from-scratch rewrite
+  should change about the kernel's strategy: im2col vs. direct, scatter-add vs.
+  gather, fusion boundary, persistence). Consumed by the proposer if a redesign
+  step is chosen.
+* **direction** — `"large"` if the current kernel is structurally unable to
+  reach the target and a from-scratch rewrite is more promising than continued
+  tuning; `"small"` if continued tuning of the current kernel will close the
+  gap. On compile failure, default to `"large"` unless the traceback points at a
+  trivially-fixable issue (e.g. a typo, a wrong constexpr, a missing import).
+* **valid** — `false` if the kernel reaches its measured performance via an
+  algebraic shortcut — i.e. one or more operators in the reference forward have
+  been collapsed at init time, folded into a downstream reduction, or replaced
+  with a substitute that does materially less arithmetic than the reference (the
+  "_base" skill section describes this contract). `true` in all other cases —
+  including kernels that are slow, compile-failed, or numerically wrong;
+  validity is about *whether the kernel is doing the reference work*, not whether
+  it is doing it well. `true` is the default — only emit `false` when you are
+  confident the contract was violated.
+
+Respond with a SINGLE JSON object and nothing else — no prose outside it, no
+markdown fences — using exactly these keys: "small_guidance" (string),
+"large_guidance" (string), "direction" ("large" or "small"), "valid" (boolean).
+

@@ -1,0 +1,490 @@
+## Problem Statement
+
+You tune the custom Triton kernels in the given architecture to get better performance. The architecture is the reference architecture, and the custom kernels are the previous kernels you have generated. Follow the Optimization Skills below — focus on low-level kernel tuning and fusion, and do not introduce graph-level algebraic shortcuts that eliminate a heavy operator.
+
+# Safety contract
+
+These two rules apply to every kernel you write, regardless of which
+operators appear in the reference and regardless of whether you are
+designing from scratch or tuning an existing kernel.
+
+1. **No graph-level algebraic shortcuts.** Every heavy op (Conv*, ConvTranspose*,
+   Linear, matmul) must materialize its full reference output shape at runtime,
+   and your kernel must perform the same asymptotic multiply-add count as the
+   reference. Specifically forbidden, whether done at init or inside `forward`,
+   on weight or on input: pre-reducing along any axis that a downstream linear
+   reduction (sum / mean / avg-pool) will later collapse, then running a smaller
+   GEMM / matvec against the pre-reduced tensor. Examples that **all violate**
+   this rule: precomputing `Σ_kh,kw w[ic,oc,kh,kw]`; precomputing
+   `sum_x[n,ic] = Σ_{h,w} x[n,ic,h,w]`; precomputing per-`(kh,kw)` partial input
+   sums `Σ_{h,w valid} x`; folding avg-pool's window sum into the conv-transpose
+   so adjacent output positions share one multiply. By linearity these are
+   mathematically equivalent and all skip the heavy op's real work. The comparison
+   baseline runs the graph as written.
+
+2. **Custom kernels are authorized.** Any `nn.*` operator in the reference is
+   a valid replacement target. You may rewrite it with a Triton kernel or a
+   CUDA C++ extension (`torch.utils.cpp_extension`). Do not assume any op is
+   the immovable part of the graph — the heaviest op usually has the most
+   headroom.
+
+   Your replacement must **execute unconditionally** on the forward path. The
+   eval harness runs the model at PyTorch's default `training=True` and never
+   calls `.eval()`, so any heavy-op replacement guarded behind `if self.training:`,
+   `if x.is_cuda:`, or parked in an `else:` / fallback branch is **dead code that
+   never runs** — the original PyTorch op executes and is timed instead. Such a
+   branch counts as **not** replacing the op. Equally, fusing only the cheap
+   surrounding work (BatchNorm, reductions, pointwise ops) while leaving the heavy
+   `nn.*`/`F.*` op on the live PyTorch path counts as **not** replacing it either —
+   the heavy op itself must be reimplemented in your custom kernel. The evaluator
+   verifies at runtime which path actually executed: if the reference heavy op
+   still ran in PyTorch, the kernel is scored **invalid**, whether that is because
+   the replacement was dead code or because no replacement was written. Call your
+   custom heavy-op kernel directly in `forward`, with no conditional that can route
+   execution back to the reference `nn.*`/`F.*` op.
+
+- Tune the GEMM tile `BLOCK_M` / `BLOCK_N` / `BLOCK_K` against the
+  `(OC, output-spatial, IC*kh*kw)` shapes, but verify each config fits the
+  SMEM budget — see the Design block's
+  `(BM·BK + BK·BN) · 4 · num_stages ≲ 80 KB` heuristic for fp32 on Ada / RTX-4090-D. If a
+  previous attempt failed with a `subprocess.CalledProcessError` from the
+  Triton launcher gcc step, the cause is almost always an oversized tile;
+  drop to the safe starting grid before sweeping upward.
+- Set `num_warps` (4 or 8) and `num_stages` (2-4) per config; wrap in
+  `triton.autotune` over a small grid. Higher `num_stages` multiplies the
+  SMEM cost — keep it at 2 until smaller tiles are confirmed to compile.
+- Use a `channels_last` layout so the channel axis is contiguous and input
+  loads coalesce across the GEMM-K dimension.
+- Hoist constant index math (stride/pad offsets) out of the inner loop and
+  mask the spatial tail rather than branching.
+
+- Use one program per normalization group — per `(N, C)` for LN, per
+  `(N, group)` for GN, per channel for BN — and block the reduction axis with
+  `BLOCK_SIZE` over the feature dim.
+- For small feature dims, use a persistent kernel that keeps the row resident
+  rather than re-loading; for large dims, tile the reduction and combine.
+- Tune `num_warps` to the reduction width (4 for short rows, 8 for wide) and
+  `num_stages` 2-3.
+- Load the normalized axis contiguously; reorder to `channels_last` when the
+  stat axis would otherwise be strided.
+
+- Tune `BLOCK_SIZE` over the reduction axis (powers of two); for a reduction
+  dim that fits, use a persistent kernel that keeps the row resident.
+- Size `num_warps` to the reduction width (4 for short, 8 for wide rows) and
+  keep `num_stages` 2-3.
+- Lay the reduction axis out contiguously so the strided combine is avoided;
+  one program per output element keeps the grid simple and coalesced.## Common Pitfalls (from previous optimization attempts)
+
+The following are frequently observed failure patterns from prior kernel optimization runs. **Avoid** these patterns in your implementation:
+
+You cannot reference the name PADDING_LEFT when it is not defined.
+You cannot call the compiled Triton kernel without providing the required positional 'meta' argument.
+You cannot call tl.load(x_ptr + x_addrs, mask=mask_x, other=0.0) inside the Triton kernel.
+You cannot have an `else:` at line 223 of the module source (SyntaxError: invalid syntax).
+You cannot access triton.language.math.tanh.
+You cannot use the 'continue' statement in a Triton kernel.
+You cannot call tl.float32 as a function inside a Triton kernel.
+You cannot use k_mask & (offs_n[None, :] < N) as the mask argument to tl.load in this Triton kernel when k_mask and (offs_n[None, :] < N) have incompatible dimensions 32 and 128.
+You cannot access W.shape when W is an int.
+You cannot call tl.arange(0, BLOCK) inside the Triton kernel _mean_invstd_kernel.
+You cannot use Triton builder operations that require a `_builder` argument outside of functions compiled with @triton.jit.
+You cannot index a Triton tensor with an int32[] tensor index inside a Triton kernel during compilation.
+You cannot pass multiple values for the 'BLOCK' argument when launching the Triton kernel.
+You cannot access the .dtype attribute of a dict object.
+You cannot call triton.language.log1p.
+You cannot index a Triton tensor with a constexpr index inside a Triton kernel at compile time.
+You cannot call the Triton kernel without providing the required constexpr positional arguments 'BLOCK_C' and 'BLOCK_L'.
+You cannot specify the keyword argument meta when launching this Triton kernel.
+You cannot call the Triton kernel without passing the required constexpr parameter 'BLOCK'.
+You cannot call torch.cuda.reset().
+You cannot call .reshape(-1) inside a Triton kernel.
+You cannot access triton.language.div.
+You cannot call float() on a tensor (kernel_vol) inside the Triton kernel.
+You cannot pass an integer as the grid parameter when launching the Triton kernel.
+You cannot access the attribute 'dropout3d' on a ModelNew object.
+You cannot index tl.zeros((1,), dtype=tl.float32) with [0] inside a Triton @jit kernel.
+You cannot call tensor.view with a size argument that contains a torch.nn.Parameter.
+You cannot use triton.language.full_like.
+You cannot call tl.dot(x, x) inside the Triton kernel shown.
+You cannot call a function decorated with @triton.jit outside the scope of a kernel.
+You cannot call the .sum() method on the expression vals.to(tl.float32) inside a Triton @triton.jit kernel.
+You cannot use the break statement inside a Triton kernel.
+You cannot reference the name 'EMBED' when instantiating ModelNew.
+You cannot call triton.language.any.
+You cannot perform the assignment out_ptr[row * pooled_len + pidx] = acc in the Triton kernel (AssertionError during compilation).
+You cannot use chained boolean operators (e.g., A or B or C) inside a Triton kernel.
+You cannot index a Triton tensor using a non-constexpr integer variable inside a Triton kernel (e.g., w_vals[:, c_inner]).
+You cannot use tl.load(inp_ptr + in_index) in this Triton kernel.
+You cannot call int() on a tensor inside a Triton kernel.
+You cannot pass an indices tensor with float elements to torch.nn.functional.max_unpool3d.
+You cannot require more shared memory than the device's hardware limit when launching the Triton kernel.
+You cannot access triton.language.constant (i.e., call tl.constant).
+You cannot define class ModelNew that inherits from the name 'Model' when 'Model' is not defined.
+You cannot omit the @triton.jit decorator on a Triton kernel function.
+You cannot call tl.max with arguments max_val and m in this Triton kernel.
+You cannot pass a torch.cuda.FloatTensor as the indices (argument #1) to torch.embedding_bag.
+You cannot reference the name 'Model' inside ModelNew.__init__.
+You cannot access the attribute 'tanh' on module 'triton.language'.
+
+## Task Instruction
+
+You are given the following architecture:
+
+```python
+import torch
+import torch.nn as nn
+
+class Model(nn.Module):
+    """
+    A 3D convolutional transpose layer followed by Batch Normalization and subtraction.
+    """
+    def __init__(self, in_channels, out_channels, kernel_size, stride, padding, bias=True):
+        super(Model, self).__init__()
+        self.conv_transpose = nn.ConvTranspose3d(in_channels, out_channels, kernel_size, stride=stride, padding=padding, bias=bias)
+        self.batch_norm = nn.BatchNorm3d(out_channels)
+
+    def forward(self, x):
+        x = self.conv_transpose(x)
+        x = self.batch_norm(x)
+        x = x - torch.mean(x, dim=(2, 3, 4), keepdim=True)  # Subtract mean along spatial dimensions
+        return x
+
+batch_size = 16
+in_channels = 16
+out_channels = 32
+depth, height, width = 16, 32, 32
+kernel_size = 3
+stride = 2
+padding = 1
+
+def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
+    return [torch.rand(batch_size, in_channels, depth, height, width)]
+
+def get_init_inputs():
+    return [in_channels, out_channels, kernel_size, stride, padding]
+```
+
+The input shapes can be found in the input of the architecture, and the dtype is fp32.
+
+The tuning metrics contain the following information:
+
+* **Compiled**: whether the kernel is compiled successfully
+* **Error Message**: the compilation or runtime error encountered by the kernel (if any)
+* **Correctness**: whether the kernel is correct
+* **Runtime**: the runtime of the kernel
+* **Fast_p**: compared with the standard PyTorch implementation, how much speedup the customized kernel achieves, calculated as *standard time / custom time*.
+
+### Test Conditions
+
+* **Correctness Test:**
+  First, verify the correctness of the custom kernels by running each kernel with the specified input shapes and data types.
+
+* **Warm-up Phase:**
+  Warm up the kernel by running it three times with the same input shapes and data types.
+  The runtime during the warm-up phase is **not** included in the final runtime, so you may include auto-tuning code as part of this phase.
+
+* **Performance Test:**
+  Finally, test the performance of the custom kernels by running each kernel 100 times with the same input shapes and data types.
+  The runtime from these test runs **is included** in the final performance measurement.
+
+### Goal
+
+- Perform small, localized updates to code in the last version of the custom kernels with the str_replace command to correct the correctness errors or improve the performance of the custom kernels. Keep the overall model interface unchanged. Apply the Optimization Skills above — do not introduce algebraic shortcuts that eliminate the reference's heavy operators.
+When making edits:
+   - Ensure the edit results in idiomatic, correct code
+   - Do not leave the code in a broken state
+
+CRITICAL REQUIREMENTS FOR USING THIS TOOL:
+
+1. EXACT MATCHING: The `old_str` parameter must match EXACTLY one or more consecutive lines from the file, including all whitespace and indentation. 
+- You should ensure the `old_str` matches exactly with the file content, otherwise the str_replace tool will fail.
+
+2. UNIQUENESS: The `old_str` must uniquely identify a single instance in the file:
+   - Include sufficient context before and after the change point (3-5 lines recommended)
+   - If not unique, the replacement will not be performed
+
+3. REPLACEMENT: The `new_str` parameter should contain the edited lines that replace the `old_str`. Both strings must be different.
+
+Remember: You should prefer to send all edits in a single message with multiple calls rather than multiple messages with a single call each.
+
+#### **Output Format**:
+
+You should output all the edits in a single message with multiple call. Each call should be a single edit as follows with id `1` to `n`. 
+- For each edit, you should provide the reasoning for the edit in the <reasoning_i> block, followed by the old code block in the <old_str_i> block, followed by the new code block in the <new_str_i> block.
+- You should ensure the `old_str_i` matches exactly with the file content, otherwise the str_replace tool will fail.
+
+Example output format:
+
+<reasoning_1>
+// reasoning for the edit 1
+...
+</reasoning_1>
+<old_str_1>
+// old code block (must match exactly)
+...
+</old_str_1>
+<new_str_1>
+// new code block
+...
+</new_str_1>
+
+...
+
+<reasoning_n>
+// reasoning for the edit n
+...
+</reasoning_n>
+<old_str_n>
+// old code block (must match exactly)
+...
+</old_str_n>
+<new_str_n>
+// new code block
+...
+</new_str_n>
+
+#### **Previous Kernels and Metrics:**
+
+Previously, you have generated the following custom kernels and got the following runtime metrics:
+
+<Previous Kernels and Metrics>
+
+### 0-th attempt: 
+
+```python
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import triton
+import triton.language as tl
+
+
+@triton.jit
+def conv_transpose3d_scatter_kernel(
+    x_ptr, w_ptr, out_ptr,
+    N, IC, ID, IH, IW,
+    OC, OD, OH, OW,
+    KD, KH, KW,
+    SD, SH, SW,
+    PD, PH, PW,
+    BLOCK_OC: tl.constexpr,
+    BLOCK_SP: tl.constexpr,
+):
+    # program_id(0): n
+    # program_id(1): oc tile
+    # program_id(2): input spatial tile (flattened ID*IH*IW)
+    n = tl.program_id(0)
+    oc_block = tl.program_id(1)
+    sp_block = tl.program_id(2)
+
+    oc_offs = oc_block * BLOCK_OC + tl.arange(0, BLOCK_OC)
+    sp_offs = sp_block * BLOCK_SP + tl.arange(0, BLOCK_SP)
+
+    oc_mask = oc_offs < OC
+    in_sp = ID * IH * IW
+    sp_mask = sp_offs < in_sp
+
+    # decompose input spatial offset into (id, ih, iw)
+    id_ = sp_offs // (IH * IW)
+    rem = sp_offs % (IH * IW)
+    ih_ = rem // IW
+    iw_ = rem % IW
+
+    # Load input values for all IC at this spatial location: shape (IC, BLOCK_SP)
+    # We loop over IC instead.
+    # For each (kd, kh, kw): out[n, oc, od, oh, ow] += sum_ic x[n,ic,id,ih,iw] * w[ic,oc,kd,kh,kw]
+    # Compute weight outer product -> (BLOCK_OC, BLOCK_SP) contribution, scatter.
+
+    for kd in range(KD):
+        od = id_ * SD - PD + kd
+        od_valid = (od >= 0) & (od < OD)
+        for kh in range(KH):
+            oh = ih_ * SH - PH + kh
+            oh_valid = (oh >= 0) & (oh < OH)
+            for kw in range(KW):
+                ow = iw_ * SW - PW + kw
+                ow_valid = (ow >= 0) & (ow < OW)
+                valid = od_valid & oh_valid & ow_valid & sp_mask
+
+                acc = tl.zeros((BLOCK_OC, BLOCK_SP), dtype=tl.float32)
+
+                w_kern_idx = kd * (KH * KW) + kh * KW + kw
+
+                for ic in range(IC):
+                    x_idx = n * (IC * ID * IH * IW) + ic * (ID * IH * IW) + sp_offs
+                    x_vals = tl.load(x_ptr + x_idx, mask=sp_mask, other=0.0)
+                    w_idx = ic * (OC * KD * KH * KW) + oc_offs * (KD * KH * KW) + w_kern_idx
+                    w_vals = tl.load(w_ptr + w_idx, mask=oc_mask, other=0.0)
+                    acc += w_vals[:, None] * x_vals[None, :]
+
+                out_idx = (n * (OC * OD * OH * OW)
+                           + oc_offs[:, None] * (OD * OH * OW)
+                           + od[None, :] * (OH * OW)
+                           + oh[None, :] * OW
+                           + ow[None, :])
+                store_mask = oc_mask[:, None] & valid[None, :]
+                tl.atomic_add(out_ptr + out_idx, acc, mask=store_mask)
+
+
+@triton.jit
+def init_bias_kernel(out_ptr, bias_ptr, N, OC, SP, BLOCK: tl.constexpr):
+    pid = tl.program_id(0)
+    nc = tl.program_id(1)
+    n = nc // OC
+    c = nc % OC
+    bias = tl.load(bias_ptr + c)
+    base = n * OC * SP + c * SP
+    offs = pid * BLOCK + tl.arange(0, BLOCK)
+    mask = offs < SP
+    tl.store(out_ptr + base + offs, bias, mask=mask)
+
+
+def conv_transpose3d_triton(x, weight, bias, stride, padding):
+    N, IC, ID, IH, IW = x.shape
+    IC_w, OC, KD, KH, KW = weight.shape
+    SD, SH, SW = stride
+    PD, PH, PW = padding
+
+    OD = (ID - 1) * SD - 2 * PD + KD
+    OH = (IH - 1) * SH - 2 * PH + KH
+    OW = (IW - 1) * SW - 2 * PW + KW
+
+    out = torch.empty((N, OC, OD, OH, OW), device=x.device, dtype=torch.float32)
+    SP_OUT = OD * OH * OW
+
+    # initialize with bias
+    BLOCK_INIT = 512
+    grid_init = (triton.cdiv(SP_OUT, BLOCK_INIT), N * OC)
+    init_bias_kernel[grid_init](out, bias, N, OC, SP_OUT, BLOCK=BLOCK_INIT, num_warps=4)
+
+    BLOCK_OC = 32
+    BLOCK_SP = 64
+    in_sp = ID * IH * IW
+    grid = (N, triton.cdiv(OC, BLOCK_OC), triton.cdiv(in_sp, BLOCK_SP))
+
+    conv_transpose3d_scatter_kernel[grid](
+        x, weight, out,
+        N, IC, ID, IH, IW,
+        OC, OD, OH, OW,
+        KD, KH, KW,
+        SD, SH, SW,
+        PD, PH, PW,
+        BLOCK_OC=BLOCK_OC,
+        BLOCK_SP=BLOCK_SP,
+        num_warps=4,
+        num_stages=2,
+    )
+    return out
+
+
+@triton.jit
+def bn_meansub_kernel(
+    x_ptr, out_ptr,
+    scale_ptr, shift_ptr,
+    N, C, SP,
+    BLOCK_SP: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    n = pid // C
+    c = pid % C
+
+    scale = tl.load(scale_ptr + c)
+    shift = tl.load(shift_ptr + c)
+
+    base = n * C * SP + c * SP
+
+    sum_val = 0.0
+    for off in range(0, SP, BLOCK_SP):
+        idx = off + tl.arange(0, BLOCK_SP)
+        mask = idx < SP
+        x = tl.load(x_ptr + base + idx, mask=mask, other=0.0)
+        y = x * scale + shift
+        sum_val += tl.sum(tl.where(mask, y, 0.0), axis=0)
+
+    mean = sum_val / SP
+
+    for off in range(0, SP, BLOCK_SP):
+        idx = off + tl.arange(0, BLOCK_SP)
+        mask = idx < SP
+        x = tl.load(x_ptr + base + idx, mask=mask, other=0.0)
+        y = x * scale + shift - mean
+        tl.store(out_ptr + base + idx, y, mask=mask)
+
+
+def bn_meansub_triton(x, scale, shift):
+    N, C, D, H, W = x.shape
+    SP = D * H * W
+    out = torch.empty_like(x)
+    grid = (N * C,)
+    BLOCK_SP = 1024
+    bn_meansub_kernel[grid](
+        x, out, scale, shift,
+        N, C, SP,
+        BLOCK_SP=BLOCK_SP,
+        num_warps=4,
+    )
+    return out
+
+
+class ModelNew(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride, padding, bias=True):
+        super().__init__()
+        self.conv_transpose = nn.ConvTranspose3d(in_channels, out_channels, kernel_size, stride=stride, padding=padding, bias=bias)
+        self.batch_norm = nn.BatchNorm3d(out_channels)
+
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        if isinstance(kernel_size, int):
+            self.kernel_size = (kernel_size, kernel_size, kernel_size)
+        else:
+            self.kernel_size = tuple(kernel_size)
+        if isinstance(stride, int):
+            self.stride = (stride, stride, stride)
+        else:
+            self.stride = tuple(stride)
+        if isinstance(padding, int):
+            self.padding = (padding, padding, padding)
+        else:
+            self.padding = tuple(padding)
+
+    def forward(self, x):
+        x = x.cuda().contiguous().float()
+        weight = self.conv_transpose.weight.cuda().contiguous().float()
+        if self.conv_transpose.bias is not None:
+            bias = self.conv_transpose.bias.cuda().contiguous().float()
+        else:
+            bias = torch.zeros(self.out_channels, device=x.device, dtype=torch.float32)
+
+        y = conv_transpose3d_triton(x, weight, bias, self.stride, self.padding)
+
+        bn = self.batch_norm
+        if bn.training:
+            y = bn(y)
+            y = y - torch.mean(y, dim=(2, 3, 4), keepdim=True)
+            return y
+        else:
+            running_mean = bn.running_mean
+            running_var = bn.running_var
+            eps = bn.eps
+            w = bn.weight if bn.weight is not None else torch.ones_like(running_mean)
+            b = bn.bias if bn.bias is not None else torch.zeros_like(running_mean)
+            invstd = torch.rsqrt(running_var + eps)
+            scale = (w * invstd).contiguous()
+            shift = (b - running_mean * w * invstd).contiguous()
+            y = bn_meansub_triton(y, scale, shift)
+            return y
+```
+
+### 0-th Runtime Metrics:
+compiled=True correctness=True metadata={'hardware': 'NVIDIA GeForce RTX 4090', 'device': '0', 'heavy_op_executed_in_pytorch': False, 'correctness_trials': '(5 / 5)', 'nsight': {'kernels': [{'name': 'conv_transpose3d_scatter_kernel', 'instances': 8.0, 'time_pct': 72.1, 'total_ms': 43.894789, 'avg_ms': 5.486848599999999}, {'name': 'void cudnn::bn_fw_tr_1C11_kernel_NCHW<float, float, int, (int)512, (bool)1, (int)1, (bool)1>(cudnnTensorStruct, const T1 *, cudnnTensorStruct, T1 *, const T2 *, const T2 *, T2, T2, T2 *, T2 *, T2 *, T2 *, T2, T2)', 'instances': 8.0, 'time_pct': 14.3, 'total_ms': 8.727264, 'avg_ms': 1.090908}, {'name': 'void at::native::elementwise_kernel<(int)128, (int)2, void at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctor_add<float>>(at::TensorIteratorBase &, const T1 &)::[lambda(int) (instance 1)]>(int, T3)', 'instances': 8.0, 'time_pct': 6.3, 'total_ms': 3.839019, 'avg_ms': 0.4798774}, {'name': 'void at::native::reduce_kernel<(int)512, (int)1, at::native::ReduceOp<float, at::native::MeanOps<float, float, float, float>, unsigned int, float, (int)4>>(T3)', 'instances': 8.0, 'time_pct': 3.9, 'total_ms': 2.393273, 'avg_ms': 0.29915909999999996}, {'name': 'init_bias_kernel', 'instances': 8.0, 'time_pct': 3.3, 'total_ms': 2.02015, 'avg_ms': 0.2525188}], 'memory_ops': [{'operation': '[CUDA memcpy Host-to-Device]', 'time_pct': 99.9, 'total_ms': 1.223597, 'count': 8.0}, {'operation': '[CUDA memset]', 'time_pct': 0.1, 'total_ms': 0.001376, 'count': 1.0}], 'ncu_kernels': [{'name': 'init_bias_kernel', 'dram_bytes_read': 18304.0, 'dram_bytes_write': 205892608.0, 'dram_throughput_pct': 89.61, 'memory_throughput_pct': 89.61, 'duration': 228192.0, 'l1_hit_rate_pct': 43.52, 'block_size': 128.0, 'grid_size': 123392.0, 'occ_limit_blocks': 24.0, 'occ_limit_registers': 32.0, 'occ_limit_shared_mem': 32.0, 'occ_limit_warps': 12.0, 'registers_per_thread': 16.0, 'shared_mem_per_block': 0.0, 'waves_per_sm': 80.33, 'l2_hit_rate_pct': 100.16, 'l2_throughput_pct': 73.89, 'compute_throughput_pct': 9.1, 'achieved_occupancy_pct': 71.49, 'rules': [{'section': 'SchedulerStats', 'type': 'OPT', 'name': 'IssueSlotUtilization', 'desc': 'Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 11.0 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 8.56 active warps per scheduler, but only an average of 0.15 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, reduce the time the active warps are stalled by inspecting the top stall reasons on the Warp State Statistics and Source Counters sections.', 'speedup_pct': 10.39}, {'section': 'Occupancy', 'type': 'OPT', 'name': 'AchievedOccupancy', 'desc': 'The difference between calculated theoretical (100.0%) and measured achieved occupancy (71.5%) can be the result of warp scheduling overheads or workload imbalances during the kernel execution. Load imbalances can occur between warps within a block as well as across blocks of the same kernel. See the CUDA Best Practices Guide (https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/index.html#occupancy) for more details on optimizing occupancy.', 'speedup_pct': 10.39}], 'roofline_bound': 'memory_bound'}, {'name': 'conv_transpose3d_scatter_kernel', 'dram_bytes_read': 268871680.0, 'dram_bytes_write': 222347648.0, 'dram_throughput_pct': 7.71, 'memory_throughput_pct': 70.19, 'duration': 6329472.0, 'l1_hit_rate_pct': 25.28, 'block_size': 128.0, 'grid_size': 4096.0, 'occ_limit_blocks': 24.0, 'occ_limit_registers': 2.0, 'occ_limit_shared_mem': 6.0, 'occ_limit_warps': 12.0, 'registers_per_thread': 207.0, 'shared_mem_per_block': 0.0, 'waves_per_sm': 16.0, 'l2_hit_rate_pct': 97.53, 'l2_throughput_pct': 70.19, 'compute_throughput_pct': 17.81, 'achieved_occupancy_pct': 16.64, 'rules': [{'section': 'SpeedOfLight', 'type': 'OPT', 'name': 'SOLBottleneck', 'desc': "Memory is more heavily utilized than Compute: Look at the Memory Workload Analysis section to see where the memory system bottleneck is. Check memory replay (coalescing) metrics to make sure you're efficiently utilizing the bytes transferred. Also consider whether it is possible to do more work per memory access (kernel fusion) or whether there are values you can (re)compute.", 'speedup_pct': None}, {'section': 'SchedulerStats', 'type': 'OPT', 'name': 'IssueSlotUtilization', 'desc': 'Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 5.6 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 2.00 active warps per scheduler, but only an average of 0.23 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.', 'speedup_pct': 29.89}, {'section': 'Occupancy', 'type': 'OPT', 'name': 'TheoreticalOccupancy', 'desc': "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.", 'speedup_pct': 29.89}, {'section': 'SpeedOfLight', 'type': 'OPT', 'name': 'SOLBottleneck', 'desc': "Memory is more heavily utilized than Compute: Look at the Memory Workload Analysis section to see where the memory system bottleneck is. Check memory replay (coalescing) metrics to make sure you're efficiently utilizing the bytes transferred. Also consider whether it is possible to do more work per memory access (kernel fusion) or whether there are values you can (re)compute.", 'speedup_pct': None}, {'section': 'SchedulerStats', 'type': 'OPT', 'name': 'IssueSlotUtilization', 'desc': 'Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 5.6 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 2.00 active warps per scheduler, but only an average of 0.23 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.', 'speedup_pct': 29.61}, {'section': 'Occupancy', 'type': 'OPT', 'name': 'TheoreticalOccupancy', 'desc': "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.", 'speedup_pct': 29.61}, {'section': 'SpeedOfLight', 'type': 'OPT', 'name': 'SOLBottleneck', 'desc': "Memory is more heavily utilized than Compute: Look at the Memory Workload Analysis section to see where the memory system bottleneck is. Check memory replay (coalescing) metrics to make sure you're efficiently utilizing the bytes transferred. Also consider whether it is possible to do more work per memory access (kernel fusion) or whether there are values you can (re)compute.", 'speedup_pct': None}, {'section': 'SchedulerStats', 'type': 'OPT', 'name': 'IssueSlotUtilization', 'desc': 'Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 5.6 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 2.00 active warps per scheduler, but only an average of 0.23 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.', 'speedup_pct': 29.72}, {'section': 'Occupancy', 'type': 'OPT', 'name': 'TheoreticalOccupancy', 'desc': "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.", 'speedup_pct': 29.72}, {'section': 'SpeedOfLight', 'type': 'OPT', 'name': 'SOLBottleneck', 'desc': "Memory is more heavily utilized than Compute: Look at the Memory Workload Analysis section to see where the memory system bottleneck is. Check memory replay (coalescing) metrics to make sure you're efficiently utilizing the bytes transferred. Also consider whether it is possible to do more work per memory access (kernel fusion) or whether there are values you can (re)compute.", 'speedup_pct': None}, {'section': 'SchedulerStats', 'type': 'OPT', 'name': 'IssueSlotUtilization', 'desc': 'Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only issues an instruction every 5.6 cycles. This might leave hardware resources underutilized and may lead to less optimal performance. Out of the maximum of 12 warps per scheduler, this workload allocates an average of 2.00 active warps per scheduler, but only an average of 0.23 warps were eligible per cycle. Eligible warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no eligible warp results in no instruction being issued and the issue slot remains unused. To increase the number of eligible warps, avoid possible load imbalances due to highly different execution durations per warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.', 'speedup_pct': 29.81}, {'section': 'Occupancy', 'type': 'OPT', 'name': 'TheoreticalOccupancy', 'desc': "The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the hardware maximum of 12. This kernel's theoretical occupancy (16.7%) is limited by the number of required registers.", 'speedup_pct': 29.81}], 'roofline_bound': 'memory_bound'}], 'noise_kernels_dropped': 1}} runtime=7.62 runtime_stats={'mean': 7.62, 'std': 0.0078, 'min': 7.6, 'max': 7.64, 'num_trials': 90, 'hardware': 'NVIDIA GeForce RTX 4090', 'device': '0', 'fast_p': 0.23391794220815856, 'baseline_time': 1.7824547196261682, 'baseline_type': 'recorded'}
+</Previous Kernels and Metrics>
+
+#### **Guidance from Evaluator Agent:**
+
+- An evaluator agent has provided a guidance to you on how to correct or improve the performance of your lastgenerated custom kernels, please tune the custom kernels based on the guidance in the unified diff format. Reminder to keep the name of `ModelNew` unchanged.
+
+<Tuning Guidance>
+Reduce register pressure in conv_transpose3d_scatter_kernel (currently 207 regs/thread, limiting occupancy to 16%): hoist the kd/kh/kw loops inside the IC loop or vice-versa so the accumulator doesn't balloon, and shrink BLOCK_OC to 16 with BLOCK_SP=128 to get more warps/SM. Also add num_stages=1 and num_warps=8, and skip kernel iterations where od/oh/ow are entirely out-of-range to cut wasted atomics.
+</Tuning Guidance>
+

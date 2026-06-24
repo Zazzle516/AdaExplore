@@ -215,25 +215,11 @@ ground your diagnosis instead of reasoning from the single latency number alone.
 {nsight_summary}
 ```
 
-How to read it:
-* **kernels** (from nsys): the GPU kernels this candidate launched -- name,
-  instances, total/avg ms, and % of GPU time. The top entry dominates runtime.
-* **memory_ops** (from nsys): host/device memcpy time -- large values signal a
-  transfer bottleneck rather than a compute one.
-* **ncu_kernels** (targeted hardware counters for the dominant kernel(s)):
-  - **throughput / roofline:** `compute_throughput_pct` / `memory_throughput_pct`
-    / `dram_throughput_pct` / `l2_throughput_pct` (% of peak), `duration`, and a
-    `roofline_bound` classification (memory_bound / compute_bound / latency_bound).
-  - **occupancy + what caps it:** `achieved_occupancy_pct` is the realized warp
-    occupancy; `occ_limit_registers` / `occ_limit_shared_mem` / `occ_limit_warps`
-    / `occ_limit_blocks` are the per-cause occupancy ceilings -- the *smallest*
-    one is the binding constraint (e.g. a low `occ_limit_registers` means
-    register pressure is capping occupancy, so cut `registers_per_thread`).
-  - **launch config:** `grid_size`, `block_size`, `waves_per_sm`,
-    `shared_mem_per_block`.
-  - **cache + traffic:** `l1_hit_rate_pct` / `l2_hit_rate_pct` (low hit rates +
-    high `dram_bytes_read` / `dram_bytes_write` point at a memory-traffic problem
-    -- improve locality/coalescing or fuse to cut DRAM round-trips).
+Each `ncu_kernels` entry may carry a `rules` array: NVIDIA Nsight Compute's own
+roofline-aware expert verdicts (OPT/WRN) for that kernel, each with an
+`Estimated Speedup` (`speedup_pct`). Treat these as authoritative and prioritize
+the fix with the highest `speedup_pct` -- they already account for the kernel's
+roofline bound, so a verdict supersedes any generic counter-based reasoning.
 
 """
 

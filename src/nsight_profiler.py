@@ -330,6 +330,12 @@ _NCU_METRICS = {
     "dram__bytes_write.sum":                                            "dram_bytes_write",
 }
 
+# ncu's section rule engine emits per-kernel, roofline-aware verdicts (OPT/WRN
+# text + estimated speedup). These four reliably produce rules without needing
+# source-level PC sampling. Adding sections multiplies ncu replay passes, so this
+# list is the single cost/timeout knob (drop SchedulerStats first if needed).
+_NCU_SECTIONS = ("SpeedOfLight", "Occupancy", "MemoryWorkloadAnalysis", "SchedulerStats")
+
 
 def _run_ncu(
     kernel_path: str, run_args: dict, ncu_sudo: str, timeout: int,
@@ -351,6 +357,8 @@ def _run_ncu(
             "--csv",
             "--target-processes", "all",
         ]
+        for section in _NCU_SECTIONS:
+            base += ["--section", section]
         if use_filter and candidate_names:
             # The nsys "Name" is demangled, so the regex must match the demangled form.
             base += [
@@ -417,17 +425,44 @@ def _parse_ncu_csv(csv_text: str) -> dict:
         kname = row.get("Kernel Name") or row.get("Demangled Name")
         metric = row.get("Metric Name")
         value = row.get("Metric Value")
-        if not kname or not metric:
+        if not kname:
             continue
         if kname not in per_kernel:
             per_kernel[kname] = {"name": kname}
             order.append(kname)
-        mapped = _NCU_METRICS.get(metric)
-        if mapped:
-            try:
-                per_kernel[kname][mapped] = float(str(value).replace(",", ""))
-            except (TypeError, ValueError):
-                per_kernel[kname][mapped] = value
+        if metric:
+            # Metric row: pivot the long-format metric into a stable key.
+            mapped = _NCU_METRICS.get(metric)
+            if mapped:
+                try:
+                    per_kernel[kname][mapped] = float(str(value).replace(",", ""))
+                except (TypeError, ValueError):
+                    per_kernel[kname][mapped] = value
+            continue
+        # Rule row: blank Metric Name but a populated rule description. These are
+        # ncu's own roofline-aware expert verdicts. Drop INF (informational) rows
+        # to cut noise; keep OPT (optimization) + WRN (warning).
+        rule_desc = row.get("Rule Description")
+        rule_name = row.get("Rule Name")
+        rule_type = row.get("Rule Type")
+        if not (rule_desc or rule_name):
+            continue
+        if rule_type == "INF":
+            continue
+        speedup_pct = None
+        try:
+            raw_speedup = row.get("Estimated Speedup")
+            if raw_speedup not in (None, ""):
+                speedup_pct = float(str(raw_speedup).replace(",", ""))
+        except (TypeError, ValueError):
+            speedup_pct = None
+        per_kernel[kname].setdefault("rules", []).append({
+            "section": row.get("Section Name") or None,
+            "type": rule_type or None,
+            "name": rule_name or None,
+            "desc": rule_desc or None,
+            "speedup_pct": speedup_pct,
+        })
 
     kernels = [per_kernel[k] for k in order]
     for k in kernels:
