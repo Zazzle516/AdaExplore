@@ -888,13 +888,25 @@ def run_and_check_correctness(
             set_seed(trial_seed)
             inputs = get_inputs_fn()
             if dtype_str == "fp16":
-                inputs = [x.cuda(device=device).to(dtype=torch.float16) if isinstance(x, torch.Tensor) else x for x in inputs]
+                target_dtype = torch.float16
             elif dtype_str == "fp32":
-                inputs = [x.cuda(device=device).to(dtype=torch.float32) if isinstance(x, torch.Tensor) else x for x in inputs]
+                target_dtype = torch.float32
             elif dtype_str == "bf16":
-                inputs = [x.cuda(device=device).to(dtype=torch.bfloat16) if isinstance(x, torch.Tensor) else x for x in inputs]
+                target_dtype = torch.bfloat16
             else:
                 raise ValueError(f"Invalid data type: {dtype_str}")
+
+            def _to_device_dtype(x):
+                # Only cast floating-point activations; leave integer/index tensors
+                # (e.g. token ids feeding nn.Embedding) untouched so they keep Long/Int.
+                if not isinstance(x, torch.Tensor):
+                    return x
+                x = x.cuda(device=device)
+                if x.is_floating_point():
+                    x = x.to(dtype=target_dtype)
+                return x
+
+            inputs = [_to_device_dtype(x) for x in inputs]
 
             set_seed(trial_seed)
             model = original_model_instance.cuda(device=device)
