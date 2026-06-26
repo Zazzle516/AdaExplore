@@ -1,0 +1,27 @@
+{
+    "node_id": 50,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "",
+    "large_guidance": "The heavy op in GPT-2 is the per-layer `Linear` projections (specifically `Conv1D` in HuggingFace GPT-2, which is mathematically `x @ W + b` with shapes like [B*T, 768] @ [768, 2304] for QKV, [B*T,768]@[768,3072] for MLP fc, [B*T,3072]@[3072,768] for MLP proj, and the final `lm_head` [B*T,768]@[768,50257]). These matmuls dominate runtime and you only fused LayerNorm/GELU around them \u2014 you must replace them with a custom Triton GEMM. Concretely: (1) Write a single tiled `tl.dot` GEMM kernel `gemm_kernel(A, B, bias, C, M, N, K, stride_am, stride_ak, stride_bk, stride_bn, stride_cm, stride_cn, HAS_BIAS, BLOCK_M, BLOCK_N, BLOCK_K, GROUP_M)` that loops `for k in range(0, K, BLOCK_K): a = tl.load(...); b = tl.load(...); acc += tl.dot(a, b)`, applies optional bias broadcast on N, and stores `acc.to(tl.float16/float32)`. Use BLOCK_M=64/128, BLOCK_N=128/256, BLOCK_K=32 with `num_warps=4 or 8`, `num_stages=3`, and a swizzled program-id (group-M of 8) for L2 reuse. Launch a 2D grid `((M+BM-1)//BM * (N+BN-1)//BN,)` with the standard pid_m/pid_n unswizzle. Handle M/N tails via masks; K is a multiple of 32 in GPT-2 so an inner mask is optional. (2) Walk `model.transformer.h[i]` and *replace* `attn.c_attn`, `attn.c_proj`, `mlp.c_fc`, `mlp.c_proj` (which are `transformers.pytorch_utils.Conv1D`) and the final `lm_head` (`nn.Linear`) with a `TritonLinear` `nn.Module` that stores `weight` (already [in,out] for Conv1D, transpose for nn.Linear so storage is always [K,N] contiguous on N) and `bias`, and in `forward` reshapes input to [M,K], calls the GEMM kernel directly (no `F.linear`, no `addmm`, no `@`), and reshapes back to [..., N]. This replacement must run unconditionally on every forward \u2014 do *not* guard it behind `self.training`, `x.is_cuda`, or an `else:` fallback, since the eval harness will detect the original `Conv1D`/`Linear` still executing and mark the kernel invalid. (3) Keep your existing TritonGELU and TritonLayerNorm, but ensure the GEMM is the path that actually runs; verify by printing the replaced module types once during `__init__`. Tie `lm_head.weight` to `wte.weight` as GPT-2 does (just assign the same Parameter into your TritonLinear so weights stay shared).",
+    "evaluator_direction": "large",
+    "evaluator_valid": false,
+    "total_nodes": 51,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        0.8945873432343234
+    ]
+}

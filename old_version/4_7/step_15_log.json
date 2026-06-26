@@ -1,0 +1,27 @@
+{
+    "node_id": 15,
+    "parent_node_id": 14,
+    "context_node_ids": [],
+    "depth": 3,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "",
+    "large_guidance": "The heavy op in GPT-2 is the per-token Linear/matmul work (the `Conv1D` projections inside each attention/MLP block \u2014 qkv, attn-out, fc-in, fc-out \u2014 and the final `lm_head` Linear to vocab=50257). Right now you only wrote a LayerNorm and GELU kernel and left every matmul on PyTorch's cuBLAS path, so the heavy op is unreplaced and you cannot beat baseline. You must implement a Triton GEMM and route every `Conv1D` and the `lm_head` Linear through it, unconditionally on the forward path. Concretely: (1) Write a single tiled `tl.dot` GEMM kernel `matmul_kernel(A, B, C, M, N, K, sA*, sB*, sC*, BLOCK_M, BLOCK_N, BLOCK_K, GROUP_M)` doing `C = A @ B + bias` with optional bias-add fused, using `pid_m, pid_n` from a grouped/swizzled program-id launch (`grid = (cdiv(M,BM)*cdiv(N,BN),)`), accumulate in fp32 via `acc += tl.dot(a, b)` inside a `for k in range(0, K, BLOCK_K)` loop with `tl.load` masked on the K tail, then store `acc + bias[None,:]` masked on M and N tails. Tune {BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, num_warps=4, num_stages=3} for the hidden=768 projections and a second config {BLOCK_M=64, BLOCK_N=128, BLOCK_K=64, num_warps=4, num_stages=3} for the wide 768\u21923072 / 3072\u2192768 MLP and the 768\u219250257 lm_head \u2014 pick via a tiny dict on (M,N,K) so you don't add autotune compile latency. (2) Build a `TritonLinear` nn.Module that holds `weight` (store as `[K, N]` to match HF `Conv1D` layout \u2014 for `nn.Linear`'s `lm_head` you can either transpose once in `__init__` and cache, or pass a `TRANS_B` constexpr to the kernel) and `bias`, reshapes input `[B, T, K] -> [B*T, K]`, calls the Triton GEMM, and reshapes back. Then walk `self.model` and replace **every** `transformers.pytorch_utils.Conv1D` instance (`c_attn`, `c_proj` in attention, `c_fc`, `c_proj` in MLP across all 12 layers) and the final `lm_head` `nn.Linear` with `TritonLinear`, copying weight/bias parameters over \u2014 do this in `__init__` after `from_pretrained`, with no `if`/`else` fallback to the original module. Keep the existing Triton LayerNorm and GELU. (3) Do not precompute or reduce any axis of the weights at init (no folding, no axis sums) \u2014 every GEMM must materialize the full `[M,N]` output with the same `2*M*N*K` FMA count as the reference; the `c_attn` projection in particular must produce the full `3*hidden` output, not a reduced form. Verify in `forward` that control flow goes through `TritonLinear.forward -> matmul_kernel` for all 49 matmuls (48 Conv1D + 1 lm_head) so the runtime path-check sees zero PyTorch `addmm`/`mm`/`Conv1D` calls.",
+    "evaluator_direction": "large",
+    "evaluator_valid": false,
+    "total_nodes": 16,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

@@ -1,0 +1,27 @@
+{
+    "node_id": 11,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "",
+    "large_guidance": "The heavy op in GPT-2 is the `Conv1D` (HuggingFace's custom Linear-equivalent used in `c_attn`, `c_proj`, `c_fc`) \u2014 these are matmuls of shape (B*T, in_features) @ (in_features, out_features) + bias. The current code only replaces LayerNorm and GELU and leaves every `transformers.pytorch_utils.Conv1D` running as `torch.addmm` in PyTorch, which is the bottleneck. You must replace these with a custom Triton GEMM kernel that executes unconditionally on the forward path. Concrete plan: (1) Walk `self.model` recursively and for every module whose class name is `Conv1D` (from `transformers.pytorch_utils`), swap it for a `TritonConv1D` module that stores the original `weight` (shape `[nf_in, nf_out]`, already in the layout `x @ W + b`) and `bias`, and in `forward` reshapes x to 2D `[M, K]` where `M = B*T`, `K = nf_in`, `N = nf_out`, then calls a Triton matmul kernel writing `[M, N]` and reshapes back to `[..., N]`. Do NOT call `nn.Linear`, `F.linear`, `torch.addmm`, `torch.matmul`, or `@` on these weights anywhere on the forward path \u2014 the matmul itself must be computed inside the Triton kernel via `tl.dot`. (2) Implement a standard tiled GEMM Triton kernel: program_id(0)=pid_m over `ceil(M/BLOCK_M)`, program_id(1)=pid_n over `ceil(N/BLOCK_N)`, with `BLOCK_M=128, BLOCK_N=128, BLOCK_K=32` (or autotune over a small set like {(128,128,32,4,4),(64,128,32,4,4),(128,64,32,4,4)}). Inside: `offs_m = pid_m*BLOCK_M + tl.arange(0, BLOCK_M)`, `offs_n = pid_n*BLOCK_N + tl.arange(0, BLOCK_N)`, `offs_k = tl.arange(0, BLOCK_K)`; build `a_ptrs = X + offs_m[:,None]*K + offs_k[None,:]`, `b_ptrs = W + offs_k[:,None]*N + offs_n[None,:]`; accumulator `acc = tl.zeros((BLOCK_M, BLOCK_N), tl.float32)`; loop `for k in range(0, K, BLOCK_K):` doing masked `tl.load` of a and b with `offs_k < K-k`, `acc += tl.dot(a, b)`, advance pointers by `BLOCK_K` (a by `+BLOCK_K`, b by `+BLOCK_K*N`). After the loop, add bias: `bias_vals = tl.load(bias_ptr + offs_n, mask=offs_n<N)`; `acc += bias_vals[None,:]`; store with full M/N masking. This performs the full M*N*K multiply-adds \u2014 no axis pre-reduction, no folding bias into weight tricks. (3) Also keep your existing LayerNorm and GELU Triton replacements, and additionally consider replacing the final `lm_head` `nn.Linear` (vocab projection, K=768, N=50257, M=B*T=8192) the same way since it is the single largest GEMM \u2014 register a `TritonLinear` wrapper around `nn.Linear` that calls the same Triton matmul (note: `nn.Linear` weight is `[N, K]` so either transpose-load by swapping the b_ptrs stride pattern to `W + offs_n[None,:]*K + offs_k[:,None]`, or store a contiguous transposed copy once in `__init__`). Make sure replacement modules are installed in `ModelNew.__init__` after `from_pretrained`, are called directly in forward with no `if self.training` / `if x.is_cuda` guard, and that no code path falls back to the original `Conv1D.forward` or `F.linear`.",
+    "evaluator_direction": "large",
+    "evaluator_valid": false,
+    "total_nodes": 12,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}

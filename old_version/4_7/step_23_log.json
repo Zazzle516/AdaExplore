@@ -1,0 +1,27 @@
+{
+    "node_id": 23,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "",
+    "large_guidance": "The heavy op here is GPT-2's `Conv1D` (used for `c_attn`, `c_proj`, `c_fc`, and the LM head's tied `Linear`), which is mathematically `y = x @ W + b` with `W` of shape `(in_features, out_features)`. Your previous kernel only fused LayerNorm and GELU and left every matmul on PyTorch \u2014 that is why the heavy op is flagged as unreplaced. You must write a custom Triton GEMM kernel and route ALL of these projections through it unconditionally (no `if`/`else` fallback to `nn.Linear` or `Conv1D.forward`). Concretely: (1) Write a tiled `tl.dot` GEMM kernel `matmul_kernel(A, B, C, bias, M, N, K, sA0, sA1, sB0, sB1, sC0, sC1, HAS_BIAS: tl.constexpr, BLOCK_M: tl.constexpr=64, BLOCK_N: tl.constexpr=64, BLOCK_K: tl.constexpr=32, GROUP_M: tl.constexpr=8)` that computes `C[m,n] = sum_k A[m,k]*B[k,n] (+ bias[n])`. Use the standard pid\u2192(pid_m,pid_n) swizzle for L2 reuse, accumulate in `tl.float32`, loop `for k in range(0, tl.cdiv(K, BLOCK_K))` with masked `tl.load`s on both A and B (mask on K with `k*BLOCK_K + tl.arange(0,BLOCK_K) < K`, mask on M/N with the row/col offsets), then `acc += tl.dot(a, b)`, add bias broadcast along M before the final masked `tl.store`. Flatten A to `(M, K)` where `M = batch*seq` before launch, and reshape the output back. Grid is `(cdiv(M,BLOCK_M)*cdiv(N,BLOCK_N),)`. (2) Build a `TritonLinear(nn.Module)` that stores `weight` and `bias` exactly as the original module held them (for HuggingFace's `Conv1D`, `weight` is already `(in, out)` so pass it directly as B with no transpose; for `nn.Linear`, weight is `(out, in)` so set `B = weight.t().contiguous()` once in `__init__` and cache it, never per-forward). Its `forward(x)` must call the Triton kernel directly \u2014 no `F.linear`, no `torch.addmm`, no `@` operator on the original parameter. Then walk `self.model` and replace every `transformers.pytorch_utils.Conv1D` instance and every `nn.Linear` (including the tied `lm_head`) with `TritonLinear`; iterate `named_modules()` and `setattr` the parent. Verify by printing module types after replacement during development \u2014 if any `Conv1D` or `Linear` remains in the GPT-2 blocks or in `lm_head`, the heavy op is still running in PyTorch and will be scored invalid. (3) Keep the existing fused LayerNorm and GELU kernels, but make sure the GEMM kernel is what executes for c_attn (K=768\u2192N=2304), c_proj (768\u2192768), c_fc (768\u21923072), proj back (3072\u2192768), and lm_head (768\u219250257). For the lm_head (large N=50257), this same kernel works; just ensure BLOCK_N divides reasonably and masking handles the non-multiple-of-BLOCK_N tail. Do not precompute any reduction of `W` along K, do not fold subsequent ops into the GEMM weight, and do not skip the bias add \u2014 every projection must perform its full `M*N*K` multiply-add count inside your Triton kernel.",
+    "evaluator_direction": "large",
+    "evaluator_valid": false,
+    "total_nodes": 24,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        0.8945873432343234
+    ]
+}

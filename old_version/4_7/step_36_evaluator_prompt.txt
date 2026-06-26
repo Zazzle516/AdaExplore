@@ -1,0 +1,497 @@
+## Problem Statement
+
+You evaluate the most recent custom Triton kernel and its measured performance, then emit guidance for the next iteration. Follow the Optimization Skills below.
+
+# Safety contract
+
+These two rules apply to every kernel you write, regardless of which
+operators appear in the reference and regardless of whether you are
+designing from scratch or tuning an existing kernel.
+
+1. **No graph-level algebraic shortcuts.** Every heavy op (Conv*, ConvTranspose*,
+   Linear, matmul) must materialize its full reference output shape at runtime,
+   and your kernel must perform the same asymptotic multiply-add count as the
+   reference. Specifically forbidden, whether done at init or inside `forward`,
+   on weight or on input: pre-reducing along any axis that a downstream linear
+   reduction (sum / mean / avg-pool) will later collapse, then running a smaller
+   GEMM / matvec against the pre-reduced tensor. Examples that **all violate**
+   this rule: precomputing `Σ_kh,kw w[ic,oc,kh,kw]`; precomputing
+   `sum_x[n,ic] = Σ_{h,w} x[n,ic,h,w]`; precomputing per-`(kh,kw)` partial input
+   sums `Σ_{h,w valid} x`; folding avg-pool's window sum into the conv-transpose
+   so adjacent output positions share one multiply. By linearity these are
+   mathematically equivalent and all skip the heavy op's real work. The comparison
+   baseline runs the graph as written.
+
+2. **Custom kernels are authorized.** Any `nn.*` operator in the reference is
+   a valid replacement target. You may rewrite it with a Triton kernel or a
+   CUDA C++ extension (`torch.utils.cpp_extension`). Do not assume any op is
+   the immovable part of the graph — the heaviest op usually has the most
+   headroom.
+
+   Your replacement must **execute unconditionally** on the forward path. The
+   eval harness runs the model at PyTorch's default `training=True` and never
+   calls `.eval()`, so any heavy-op replacement guarded behind `if self.training:`,
+   `if x.is_cuda:`, or parked in an `else:` / fallback branch is **dead code that
+   never runs** — the original PyTorch op executes and is timed instead. Such a
+   branch counts as **not** replacing the op. Equally, fusing only the cheap
+   surrounding work (BatchNorm, reductions, pointwise ops) while leaving the heavy
+   `nn.*`/`F.*` op on the live PyTorch path counts as **not** replacing it either —
+   the heavy op itself must be reimplemented in your custom kernel. The evaluator
+   verifies at runtime which path actually executed: if the reference heavy op
+   still ran in PyTorch, the kernel is scored **invalid**, whether that is because
+   the replacement was dead code or because no replacement was written. Call your
+   custom heavy-op kernel directly in `forward`, with no conditional that can route
+   execution back to the reference `nn.*`/`F.*` op.## Common Pitfalls (from previous optimization attempts)
+
+The following are frequently observed failure patterns from prior kernel optimization runs. **Avoid** these patterns in your implementation:
+
+You cannot reference the name PADDING_LEFT when it is not defined.
+You cannot call the compiled Triton kernel without providing the required positional 'meta' argument.
+You cannot call tl.load(x_ptr + x_addrs, mask=mask_x, other=0.0) inside the Triton kernel.
+You cannot have an `else:` at line 223 of the module source (SyntaxError: invalid syntax).
+You cannot access triton.language.math.tanh.
+You cannot use the 'continue' statement in a Triton kernel.
+You cannot call tl.float32 as a function inside a Triton kernel.
+You cannot use k_mask & (offs_n[None, :] < N) as the mask argument to tl.load in this Triton kernel when k_mask and (offs_n[None, :] < N) have incompatible dimensions 32 and 128.
+You cannot access W.shape when W is an int.
+You cannot call tl.arange(0, BLOCK) inside the Triton kernel _mean_invstd_kernel.
+You cannot use Triton builder operations that require a `_builder` argument outside of functions compiled with @triton.jit.
+You cannot index a Triton tensor with an int32[] tensor index inside a Triton kernel during compilation.
+You cannot pass multiple values for the 'BLOCK' argument when launching the Triton kernel.
+You cannot access the .dtype attribute of a dict object.
+You cannot call triton.language.log1p.
+You cannot index a Triton tensor with a constexpr index inside a Triton kernel at compile time.
+You cannot call the Triton kernel without providing the required constexpr positional arguments 'BLOCK_C' and 'BLOCK_L'.
+You cannot specify the keyword argument meta when launching this Triton kernel.
+You cannot call the Triton kernel without passing the required constexpr parameter 'BLOCK'.
+You cannot call torch.cuda.reset().
+You cannot call .reshape(-1) inside a Triton kernel.
+You cannot access triton.language.div.
+You cannot call float() on a tensor (kernel_vol) inside the Triton kernel.
+You cannot pass an integer as the grid parameter when launching the Triton kernel.
+You cannot access the attribute 'dropout3d' on a ModelNew object.
+You cannot index tl.zeros((1,), dtype=tl.float32) with [0] inside a Triton @jit kernel.
+You cannot call tensor.view with a size argument that contains a torch.nn.Parameter.
+You cannot use triton.language.full_like.
+You cannot call tl.dot(x, x) inside the Triton kernel shown.
+You cannot call a function decorated with @triton.jit outside the scope of a kernel.
+You cannot call the .sum() method on the expression vals.to(tl.float32) inside a Triton @triton.jit kernel.
+You cannot use the break statement inside a Triton kernel.
+You cannot reference the name 'EMBED' when instantiating ModelNew.
+You cannot call triton.language.any.
+You cannot perform the assignment out_ptr[row * pooled_len + pidx] = acc in the Triton kernel (AssertionError during compilation).
+You cannot use chained boolean operators (e.g., A or B or C) inside a Triton kernel.
+You cannot index a Triton tensor using a non-constexpr integer variable inside a Triton kernel (e.g., w_vals[:, c_inner]).
+You cannot use tl.load(inp_ptr + in_index) in this Triton kernel.
+You cannot call int() on a tensor inside a Triton kernel.
+You cannot pass an indices tensor with float elements to torch.nn.functional.max_unpool3d.
+You cannot require more shared memory than the device's hardware limit when launching the Triton kernel.
+You cannot access triton.language.constant (i.e., call tl.constant).
+You cannot define class ModelNew that inherits from the name 'Model' when 'Model' is not defined.
+You cannot omit the @triton.jit decorator on a Triton kernel function.
+You cannot call tl.max with arguments max_val and m in this Triton kernel.
+You cannot pass a torch.cuda.FloatTensor as the indices (argument #1) to torch.embedding_bag.
+You cannot reference the name 'Model' inside ModelNew.__init__.
+You cannot access the attribute 'tanh' on module 'triton.language'.
+
+## Task Instruction
+
+You are given the following architecture:
+
+```
+
+import torch
+from transformers import AutoModelForCausalLM, AutoConfig
+
+class Model(torch.nn.Module):
+    def __init__(self, model_name, config):
+        super().__init__()
+        self.model_name = model_name
+        self.config = config
+        self.model = AutoModelForCausalLM.from_pretrained(self.model_name, config=self.config)
+
+    def forward(self, x):
+        return self.model(x).logits
+
+model_name = "gpt2"
+config = AutoConfig.from_pretrained(model_name)
+vocab_size = config.vocab_size
+sequence_length = 256
+batch_size = 32
+
+def get_inputs():
+    torch.seed()  # reseed: fresh random inputs per run
+    inputs = torch.randint(0, vocab_size, (batch_size, sequence_length))
+    return [inputs]
+
+def get_init_inputs():
+    return [model_name, config]
+```
+
+The input shapes can be found in the input of the architecture, and the dtype is fp32.
+
+An agent generated the following custom Triton kernels in the architecture:
+
+```
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import triton
+import triton.language as tl
+from transformers import AutoModelForCausalLM, AutoConfig
+from transformers.models.gpt2.modeling_gpt2 import GPT2Attention, GPT2MLP, GPT2Block
+
+
+                                                       
+@triton.jit
+def layernorm_kernel(
+    x_ptr, w_ptr, b_ptr, y_ptr,
+    N: tl.constexpr,
+    eps: tl.constexpr,
+    BLOCK: tl.constexpr,
+):
+    row = tl.program_id(0)
+    x_ptr += row * N
+    y_ptr += row * N
+
+    offs = tl.arange(0, BLOCK)
+    mask = offs < N
+    x = tl.load(x_ptr + offs, mask=mask, other=0.0).to(tl.float32)
+    mean = tl.sum(x, axis=0) / N
+    xc = tl.where(mask, x - mean, 0.0)
+    var = tl.sum(xc * xc, axis=0) / N
+    rstd = 1.0 / tl.sqrt(var + eps)
+
+    w = tl.load(w_ptr + offs, mask=mask, other=0.0).to(tl.float32)
+    b = tl.load(b_ptr + offs, mask=mask, other=0.0).to(tl.float32)
+    y = xc * rstd * w + b
+    tl.store(y_ptr + offs, y, mask=mask)
+
+
+def triton_layernorm(x, weight, bias, eps=1e-5):
+    orig_shape = x.shape
+    N = orig_shape[-1]
+    x2 = x.reshape(-1, N).contiguous()
+    M = x2.shape[0]
+    y = torch.empty_like(x2)
+    BLOCK = triton.next_power_of_2(N)
+    num_warps = 4
+    if BLOCK >= 2048:
+        num_warps = 8
+    if BLOCK >= 4096:
+        num_warps = 16
+    layernorm_kernel[(M,)](x2, weight, bias, y, N, eps, BLOCK=BLOCK, num_warps=num_warps)
+    return y.reshape(orig_shape)
+
+
+                                                      
+@triton.jit
+def gelu_tanh_kernel(x_ptr, y_ptr, n, BLOCK: tl.constexpr):
+    pid = tl.program_id(0)
+    offs = pid * BLOCK + tl.arange(0, BLOCK)
+    mask = offs < n
+    x = tl.load(x_ptr + offs, mask=mask, other=0.0).to(tl.float32)
+                                                                                          
+    c = 0.7978845608028654              
+    inner = c * (x + 0.044715 * x * x * x)
+                  
+    e2 = tl.exp(2.0 * inner)
+    th = (e2 - 1.0) / (e2 + 1.0)
+    y = 0.5 * x * (1.0 + th)
+    tl.store(y_ptr + offs, y, mask=mask)
+
+
+def triton_gelu(x):
+    x_c = x.contiguous()
+    y = torch.empty_like(x_c)
+    n = x_c.numel()
+    BLOCK = 1024
+    grid = ((n + BLOCK - 1) // BLOCK,)
+    gelu_tanh_kernel[grid](x_c, y, n, BLOCK=BLOCK, num_warps=4)
+    return y.reshape(x.shape)
+
+
+                                                                        
+                                                                                    
+@triton.autotune(
+    configs=[
+        triton.Config({'BM': 64, 'BN': 64, 'BK': 32}, num_warps=4, num_stages=3),
+        triton.Config({'BM': 128, 'BN': 64, 'BK': 32}, num_warps=4, num_stages=3),
+        triton.Config({'BM': 64, 'BN': 128, 'BK': 32}, num_warps=4, num_stages=3),
+        triton.Config({'BM': 128, 'BN': 128, 'BK': 32}, num_warps=4, num_stages=3),
+        triton.Config({'BM': 128, 'BN': 128, 'BK': 64}, num_warps=8, num_stages=3),
+        triton.Config({'BM': 64, 'BN': 64, 'BK': 64}, num_warps=4, num_stages=4),
+    ],
+    key=['M', 'N', 'K', 'TRANS_B'],
+)
+@triton.jit
+def matmul_kernel(
+    A, B, C, Bias,
+    M, N, K,
+    sa0, sa1,
+    sb0, sb1,
+    sc0, sc1,
+    TRANS_B: tl.constexpr,
+    HAS_BIAS: tl.constexpr,
+    BM: tl.constexpr, BN: tl.constexpr, BK: tl.constexpr,
+):
+    pid_m = tl.program_id(0)
+    pid_n = tl.program_id(1)
+
+    offs_m = pid_m * BM + tl.arange(0, BM)
+    offs_n = pid_n * BN + tl.arange(0, BN)
+    offs_k = tl.arange(0, BK)
+
+    a_ptrs = A + offs_m[:, None] * sa0 + offs_k[None, :] * sa1
+    if TRANS_B:
+                                                  
+        b_ptrs = B + offs_n[None, :] * sb0 + offs_k[:, None] * sb1
+    else:
+        b_ptrs = B + offs_k[:, None] * sb0 + offs_n[None, :] * sb1
+
+    acc = tl.zeros((BM, BN), dtype=tl.float32)
+
+    mask_m = offs_m < M
+    mask_n = offs_n < N
+
+    for k0 in range(0, K, BK):
+        k_idx = k0 + offs_k
+        mask_k = k_idx < K
+        a = tl.load(a_ptrs, mask=mask_m[:, None] & mask_k[None, :], other=0.0)
+        if TRANS_B:
+            b = tl.load(b_ptrs, mask=mask_n[None, :] & mask_k[:, None], other=0.0)
+        else:
+            b = tl.load(b_ptrs, mask=mask_k[:, None] & mask_n[None, :], other=0.0)
+        acc += tl.dot(a, b)
+        a_ptrs += BK * sa1
+        if TRANS_B:
+            b_ptrs += BK * sb1
+        else:
+            b_ptrs += BK * sb0
+
+    if HAS_BIAS:
+        bias = tl.load(Bias + offs_n, mask=mask_n, other=0.0).to(tl.float32)
+        acc += bias[None, :]
+
+    c_ptrs = C + offs_m[:, None] * sc0 + offs_n[None, :] * sc1
+    tl.store(c_ptrs, acc, mask=mask_m[:, None] & mask_n[None, :])
+
+
+def triton_matmul(a, b, bias=None, trans_b=False):
+                                                  
+    a = a.contiguous()
+    b = b.contiguous()
+    M, K = a.shape
+    if trans_b:
+        N = b.shape[0]
+        assert b.shape[1] == K
+    else:
+        assert b.shape[0] == K
+        N = b.shape[1]
+    c = torch.empty((M, N), device=a.device, dtype=a.dtype)
+    has_bias = bias is not None
+    bias_t = bias if has_bias else a         
+    grid = lambda META: (triton.cdiv(M, META['BM']), triton.cdiv(N, META['BN']))
+    matmul_kernel[grid](
+        a, b, c, bias_t,
+        M, N, K,
+        a.stride(0), a.stride(1),
+        b.stride(0), b.stride(1),
+        c.stride(0), c.stride(1),
+        TRANS_B=trans_b,
+        HAS_BIAS=has_bias,
+    )
+    return c
+
+
+def linear_via_triton(x, weight, bias):
+                                                  
+    orig_shape = x.shape
+    in_features = weight.shape[1]
+    out_features = weight.shape[0]
+    x2 = x.reshape(-1, in_features)
+    y = triton_matmul(x2, weight, bias=bias, trans_b=True)
+    return y.reshape(*orig_shape[:-1], out_features)
+
+
+def conv1d_via_triton(x, weight, bias):
+                                                           
+    orig_shape = x.shape
+    in_features = weight.shape[0]
+    out_features = weight.shape[1]
+    x2 = x.reshape(-1, in_features)
+    y = triton_matmul(x2, weight, bias=bias, trans_b=False)
+    return y.reshape(*orig_shape[:-1], out_features)
+
+
+                                              
+class FastGPT2MLP(nn.Module):
+    def __init__(self, orig: GPT2MLP):
+        super().__init__()
+        self.c_fc_w = orig.c_fc.weight
+        self.c_fc_b = orig.c_fc.bias
+        self.c_proj_w = orig.c_proj.weight
+        self.c_proj_b = orig.c_proj.bias
+
+    def forward(self, x):
+        h = conv1d_via_triton(x, self.c_fc_w, self.c_fc_b)
+        h = triton_gelu(h)
+        h = conv1d_via_triton(h, self.c_proj_w, self.c_proj_b)
+        return h
+
+
+                                                                                                     
+class FastGPT2Attention(nn.Module):
+    def __init__(self, orig: GPT2Attention):
+        super().__init__()
+        self.embed_dim = orig.embed_dim
+        self.num_heads = orig.num_heads
+        self.head_dim = orig.head_dim
+        self.split_size = orig.split_size
+        self.c_attn_w = orig.c_attn.weight
+        self.c_attn_b = orig.c_attn.bias
+        self.c_proj_w = orig.c_proj.weight
+        self.c_proj_b = orig.c_proj.bias
+        self.scale = 1.0 / (self.head_dim ** 0.5)
+
+    def forward(self, hidden_states, layer_past=None, attention_mask=None,
+                head_mask=None, encoder_hidden_states=None, encoder_attention_mask=None,
+                use_cache=False, output_attentions=False, **kwargs):
+        B, T, C = hidden_states.shape
+        qkv = conv1d_via_triton(hidden_states, self.c_attn_w, self.c_attn_b)
+        q, k, v = qkv.split(self.split_size, dim=2)
+        q = q.view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
+        k = k.view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
+        v = v.view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
+
+                                   
+        attn_out = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+        attn_out = attn_out.transpose(1, 2).contiguous().view(B, T, C)
+        out = conv1d_via_triton(attn_out, self.c_proj_w, self.c_proj_b)
+        outputs = (out, None)
+        if output_attentions:
+            outputs = outputs + (None,)
+        return outputs
+
+
+                                                
+class FastGPT2Block(nn.Module):
+    def __init__(self, orig: GPT2Block):
+        super().__init__()
+        self.ln_1_w = orig.ln_1.weight
+        self.ln_1_b = orig.ln_1.bias
+        self.ln_1_eps = orig.ln_1.eps
+        self.ln_2_w = orig.ln_2.weight
+        self.ln_2_b = orig.ln_2.bias
+        self.ln_2_eps = orig.ln_2.eps
+        self.attn = FastGPT2Attention(orig.attn)
+        self.mlp = FastGPT2MLP(orig.mlp)
+
+    def forward(self, hidden_states, layer_past=None, attention_mask=None,
+                head_mask=None, encoder_hidden_states=None, encoder_attention_mask=None,
+                use_cache=False, output_attentions=False, **kwargs):
+        residual = hidden_states
+        h = triton_layernorm(hidden_states, self.ln_1_w, self.ln_1_b, self.ln_1_eps)
+        attn_outputs = self.attn(h, output_attentions=output_attentions)
+        h = attn_outputs[0]
+        hidden_states = residual + h
+
+        residual = hidden_states
+        h = triton_layernorm(hidden_states, self.ln_2_w, self.ln_2_b, self.ln_2_eps)
+        h = self.mlp(h)
+        hidden_states = residual + h
+        outputs = (hidden_states,)
+        return outputs
+
+
+class ModelNew(nn.Module):
+    def __init__(self, model_name, config):
+        super().__init__()
+        self.model_name = model_name
+        self.config = config
+        self.model = AutoModelForCausalLM.from_pretrained(model_name, config=config)
+        self.model = self.model.cuda()
+
+                        
+        transformer = self.model.transformer
+        new_blocks = nn.ModuleList([FastGPT2Block(b) for b in transformer.h])
+        transformer.h = new_blocks
+
+                                     
+        self.ln_f_w = transformer.ln_f.weight
+        self.ln_f_b = transformer.ln_f.bias
+        self.ln_f_eps = transformer.ln_f.eps
+        self.transformer = transformer
+                                        
+        self.wte_weight = transformer.wte.weight
+
+    def forward(self, x):
+        x = x.cuda()
+        transformer = self.transformer
+        B, T = x.shape
+        position_ids = torch.arange(T, device=x.device).unsqueeze(0)
+        inputs_embeds = transformer.wte(x)
+        position_embeds = transformer.wpe(position_ids)
+        hidden = inputs_embeds + position_embeds
+
+        for block in transformer.h:
+            outputs = block(hidden)
+            hidden = outputs[0]
+
+        hidden = triton_layernorm(hidden, self.ln_f_w, self.ln_f_b, self.ln_f_eps)
+                                                              
+        logits = linear_via_triton(hidden, self.wte_weight, None)
+        return logits
+```
+
+The runtime metrics of the custom Triton kernels are:
+
+```
+compiled=True correctness=False metadata={'hardware': 'NVIDIA GeForce RTX 4090', 'device': '0', 'heavy_op_executed_in_pytorch': False, 'max_difference': ['0.000000', '0.000000', '0.000000', '0.000000', '0.000000'], 'avg_difference': ['nan', 'nan', 'nan', 'nan', 'nan'], 'correctness_issue': 'Output mismatch', 'correctness_trials': '(0 / 5)'} runtime=-1.0 runtime_stats={}
+```
+
+The tuning metrics contain the following information:
+
+* **Compiled**: whether the kernel is compiled successfully
+* **Error Message**: the compilation or runtime error encountered by the kernel (if any)
+* **Correctness**: whether the kernel is correct
+* **Runtime**: the runtime of the kernel
+* **Fast_p**: compared with the standard PyTorch implementation, how much speedup the customized kernel achieves, calculated as *standard time / custom time*.
+
+### Goal
+
+Your objective is to decide whether the next iteration should **tune** the
+current kernel or **redesign** it from scratch, for a kernel that is
+correct-but-moderate, compile-failed, or numerically wrong. Produce concrete
+guidance for both possibilities, judge which is more promising, and certify
+that the kernel actually does the reference work.
+
+Provide:
+
+* **small_guidance** — 1-3 concrete tuning bullets (block sizes, num_warps,
+  num_stages, layout, autotune configs, fusion opportunities within the
+  existing kernel structure). Consumed by the tuner if a refinement step is
+  chosen.
+* **large_guidance** — 1-3 concrete design bullets (what a from-scratch rewrite
+  should change about the kernel's strategy: im2col vs. direct, scatter-add vs.
+  gather, fusion boundary, persistence). Consumed by the proposer if a redesign
+  step is chosen.
+* **direction** — `"large"` if the current kernel is structurally unable to
+  reach the target and a from-scratch rewrite is more promising than continued
+  tuning; `"small"` if continued tuning of the current kernel will close the
+  gap. On compile failure, default to `"large"` unless the traceback points at a
+  trivially-fixable issue (e.g. a typo, a wrong constexpr, a missing import).
+* **valid** — `false` if the kernel reaches its measured performance via an
+  algebraic shortcut — i.e. one or more operators in the reference forward have
+  been collapsed at init time, folded into a downstream reduction, or replaced
+  with a substitute that does materially less arithmetic than the reference (the
+  "_base" skill section describes this contract). `true` in all other cases —
+  including kernels that are slow, compile-failed, or numerically wrong;
+  validity is about *whether the kernel is doing the reference work*, not whether
+  it is doing it well. `true` is the default — only emit `false` when you are
+  confident the contract was violated.
+
+Respond with a SINGLE JSON object and nothing else — no prose outside it, no
+markdown fences — using exactly these keys: "small_guidance" (string),
+"large_guidance" (string), "direction" ("large" or "small"), "valid" (boolean).
+

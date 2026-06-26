@@ -1,0 +1,29 @@
+{
+    "node_id": 24,
+    "parent_node_id": 23,
+    "context_node_ids": [
+        23
+    ],
+    "depth": 2,
+    "created_by": "small_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "The avg_difference is NaN with max_difference 0 \u2014 likely the LayerNorm kernel produces NaN for some rows due to the _sum/_sumsq accumulators being BLOCK_SIZE-wide vectors that get reduced via tl.sum, but when N <= BLOCK_SIZE the loop runs once and works; when N > BLOCK_SIZE (e.g. vocab/lm_head paths shouldn't hit LN, but check). More likely culprit: TritonLinear caches `_wt` via hasattr but never sets it \u2014 fine \u2014 however `weight.t().contiguous()` is recomputed each forward; not a correctness issue. The real bug is probably the matmul kernel's masked load using `offs_k[None,:] < K - k*BLOCK_K` without also masking M/N rows, causing OOB reads on the final K tile when offs_am wraps via `% M` \u2014 that's actually safe. Investigate NaN source: in fused_ln, `var = mean_sq - mean*mean` can go slightly negative due to fp32 cancellation \u2192 sqrt(negative)=NaN. Fix by computing var as \u03a3(x-mean)^2/N in a second pass, or clamp var to >=0 before sqrt.",
+    "large_guidance": "Rewrite LayerNorm to use the numerically stable two-pass formulation (compute mean first, then \u03a3(x-mean)^2) or Welford's algorithm; require BLOCK_SIZE >= N for GPT-2 (N=768) so it's a single-pass kernel without the cancellation issue. Also consider fusing the residual-add + LayerNorm and the QKV projection's bias-add into single kernels. For the matmul, switch TritonLinear to call the kernel with B as weight^T computed once at __init__ (cache in a registered buffer) instead of per-forward .t().contiguous().",
+    "evaluator_direction": "small",
+    "evaluator_valid": true,
+    "total_nodes": 25,
+    "global_best_node_id": 18,
+    "global_best_score": [
+        1,
+        1,
+        0.8945873432343234
+    ]
+}

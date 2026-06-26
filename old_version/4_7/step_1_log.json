@@ -1,0 +1,27 @@
+{
+    "node_id": 1,
+    "parent_node_id": 0,
+    "context_node_ids": [],
+    "depth": 1,
+    "created_by": "large_step",
+    "visits": 1,
+    "total_reward": 0.05,
+    "max_reward": 0.05,
+    "avg_reward": 0.05,
+    "score": [
+        1,
+        0,
+        0
+    ],
+    "small_guidance": "",
+    "large_guidance": "The heavy op in GPT-2 is the Linear / matmul work inside each transformer block (the `Conv1D` modules for QKV projection, attention output projection, and the MLP fc/proj layers) plus the final LM head. The previous attempt only swapped GELU and LayerNorm, leaving every GEMM running in PyTorch \u2014 that is why `heavy_op_executed_in_pytorch=True` and why you cannot beat the baseline. You must replace these matmuls with a custom Triton GEMM that executes unconditionally on the forward path. Concrete plan:\n\n1. Write a single tiled Triton GEMM kernel `triton_addmm_kernel(A, B, bias, C, M, N, K, ...)` computing `C = A @ B + bias` with `BLOCK_M=128, BLOCK_N=128, BLOCK_K=32` (also try 64/128/32 and 128/64/32), using `tl.dot` over a K-loop: load `a_tile [BM,BK]` and `b_tile [BK,BN]` with masked `tl.load`, accumulate `acc += tl.dot(a, b)` in fp32, then add the broadcast `bias [BN]` and store with an M/N mask. Grid is `(ceildiv(M,BM), ceildiv(N,BN))`. Provide a Python wrapper `triton_linear(x, weight, bias)` that flattens the leading dims of `x` from `[B, T, K]` to `[B*T, K]`, calls the kernel into a `[B*T, N]` output, and reshapes back to `[B, T, N]`. Keep everything in fp32 (inputs are fp32) and make sure A, B, bias are `.contiguous()`. Note that HuggingFace GPT-2's `Conv1D` stores weight as `[in_features, out_features]` (no transpose needed: `out = x @ weight + bias`), while `nn.Linear` (used by the LM head when `tie_weights` ties to embedding) stores `[out_features, in_features]` and must be transposed via stride tricks (pass `stride_bk, stride_bn` swapped) \u2014 handle both by accepting a flag or by materializing the right view.\n\n2. Replace the modules in `replace_modules`: detect `transformers.pytorch_utils.Conv1D` by class name `'Conv1D'` and wrap it in a `TritonConv1D(nn.Module)` that stores `self.weight` (shape `[nx, nf]`) and `self.bias`, and whose `forward` calls `triton_linear(x, self.weight, self.bias, weight_is_transposed=False)`. Also replace `nn.Linear` (the LM head `lm_head`) with a `TritonLinear` wrapper that calls the same kernel with `weight_is_transposed=True` (or after a `.t().contiguous()` cached at init \u2014 but DO NOT pre-reduce or fold any axes; you must materialize the full `[M,N]` output and perform the full K-reduction). Call these wrappers directly in `forward` with no `if self.training` / `if x.is_cuda` guard so the custom path always executes. Keep the existing TritonGELU and TritonLayerNorm replacements as-is.\n\n3. Numerical and perf details: accumulate in fp32 inside `tl.dot` (`acc = tl.zeros((BM,BN), dtype=tl.float32)`), only cast on store; mask both the K-tail (`k_offs < K`) and the M/N tails independently \u2014 never combine masks of mismatched ranks, broadcast them as `(offs_m[:,None] < M) & (offs_n[None,:] < N)`. For GPT-2 the dominant shapes are `M=B*T=8192`, `K=768`, `N in {768, 2304, 3072, 50257}`; the LM head (`N=50257`) is the single biggest GEMM so it must go through the Triton kernel too. Launch with `num_warps=4` for the small projections and `num_warps=8` for the 3072 / 50257 outputs, `num_stages=3`. Verify at runtime that `heavy_op_executed_in_pytorch` flips to False by ensuring no `Conv1D.forward` or `Linear.forward` from PyTorch is reachable on the forward path.",
+    "evaluator_direction": "large",
+    "evaluator_valid": false,
+    "total_nodes": 2,
+    "global_best_node_id": 1,
+    "global_best_score": [
+        1,
+        0,
+        0
+    ]
+}
